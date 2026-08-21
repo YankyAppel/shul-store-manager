@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import type {
   AccountPayment,
   Customer,
@@ -20,6 +20,9 @@ export function AccountPaymentModal({
   onPaymentCompleted(payment: AccountPayment): void;
   setError(value: string): void;
 }) {
+  const operationIdRef = useRef<string>(crypto.randomUUID());
+  const isSubmittingRef = useRef<boolean>(false);
+
   const [method, setMethod] = useState<'cash' | 'external_terminal'>('cash');
   const [amountStr, setAmountStr] = useState(
     customer.currentBalanceCents > 0
@@ -35,6 +38,19 @@ export function AccountPaymentModal({
   const [terminalRef, setTerminalRef] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // When key fields change materially, rotate operationId
+  const handleAmountChange = (val: string) => {
+    operationIdRef.current = crypto.randomUUID();
+    setAmountStr(val);
+  };
+
+  const handleMethodChange = (newMethod: 'cash' | 'external_terminal') => {
+    if (newMethod !== method) {
+      operationIdRef.current = crypto.randomUUID();
+      setMethod(newMethod);
+    }
+  };
 
   let parsedAmountCents: number | null = null;
   let parsedCashReceivedCents: number | null = null;
@@ -74,11 +90,12 @@ export function AccountPaymentModal({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!valid || parsedAmountCents === null) return;
+    if (isSubmittingRef.current || !valid || parsedAmountCents === null) return;
+    isSubmittingRef.current = true;
     setSaving(true);
     try {
       const input = {
-        operationId: crypto.randomUUID(),
+        operationId: operationIdRef.current,
         customerId: customer.id,
         amountCents: parsedAmountCents,
         payment:
@@ -99,6 +116,8 @@ export function AccountPaymentModal({
       onPaymentCompleted(result);
     } catch (e) {
       setError(messageFrom(e));
+    } finally {
+      isSubmittingRef.current = false;
       setSaving(false);
     }
   }
@@ -148,7 +167,7 @@ export function AccountPaymentModal({
                 type="button"
                 className={method === 'cash' ? 'primary' : ''}
                 style={{ flex: 1 }}
-                onClick={() => setMethod('cash')}
+                onClick={() => handleMethodChange('cash')}
               >
                 Cash
               </button>
@@ -156,7 +175,7 @@ export function AccountPaymentModal({
                 type="button"
                 className={method === 'external_terminal' ? 'primary' : ''}
                 style={{ flex: 1 }}
-                onClick={() => setMethod('external_terminal')}
+                onClick={() => handleMethodChange('external_terminal')}
               >
                 External terminal
               </button>
@@ -172,7 +191,7 @@ export function AccountPaymentModal({
               step="0.01"
               required
               value={amountStr}
-              onChange={(e) => setAmountStr(e.target.value)}
+              onChange={(e) => handleAmountChange(e.target.value)}
             />
           </label>
 

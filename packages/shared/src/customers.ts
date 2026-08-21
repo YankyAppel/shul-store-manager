@@ -139,11 +139,48 @@ export const statementDateRangeSchema = z.enum([
 ]);
 export type StatementDateRange = z.infer<typeof statementDateRangeSchema>;
 
-export const statementOptionsSchema = z.object({
-  range: statementDateRangeSchema,
-  startDate: z.string().trim().nullable().optional(),
-  endDate: z.string().trim().nullable().optional(),
-});
+export const statementOptionsSchema = z
+  .object({
+    range: statementDateRangeSchema,
+    startDate: z.string().trim().nullable().optional(),
+    endDate: z.string().trim().nullable().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.range === 'custom') {
+      if (!val.startDate || !val.endDate) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'Both start date and end date are required for a custom date range.',
+          path: ['startDate'],
+        });
+        return;
+      }
+      const start = new Date(val.startDate).getTime();
+      const end = new Date(val.endDate).getTime();
+      if (Number.isNaN(start)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid start date format.',
+          path: ['startDate'],
+        });
+      }
+      if (Number.isNaN(end)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid end date format.',
+          path: ['endDate'],
+        });
+      }
+      if (!Number.isNaN(start) && !Number.isNaN(end) && start > end) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Start date cannot be after end date.',
+          path: ['startDate'],
+        });
+      }
+    }
+  });
 export type StatementOptions = z.infer<typeof statementOptionsSchema>;
 
 export interface StatementEntry {
@@ -165,7 +202,7 @@ export interface CustomerStatementData {
   settings: StoreSettings;
   period: {
     startDate: string | null;
-    endDate: string;
+    endDate: string | null;
     label: string;
   };
   openingBalanceCents: number;

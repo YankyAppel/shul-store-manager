@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   Customer,
   CustomerStatementData,
   StatementDateRange,
+  StatementOptions,
 } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../../utils/formatters';
 
@@ -21,57 +22,116 @@ export function CustomerStatementModal({
   const [statement, setStatement] = useState<CustomerStatementData | null>(
     null,
   );
+  const [currentOptions, setCurrentOptions] = useState<StatementOptions | null>(
+    null,
+  );
+  const [customError, setCustomError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
   const [printMessage, setPrintMessage] = useState('');
 
+  const reqIdRef = useRef(0);
+
   useEffect(() => {
-    async function loadStatement() {
+    const currentReqId = ++reqIdRef.current;
+    setCustomError(null);
+
+    let options: StatementOptions;
+
+    if (range === 'custom') {
+      if (!customStart && !customEnd) {
+        setStatement(null);
+        setCurrentOptions(null);
+        setLoading(false);
+        return;
+      }
+      if (!customStart || !customEnd) {
+        setCustomError('Please select both a start date and an end date.');
+        setStatement(null);
+        setCurrentOptions(null);
+        setLoading(false);
+        return;
+      }
+
+      const startParts = customStart.split('-').map(Number);
+      const endParts = customEnd.split('-').map(Number);
+
+      if (startParts.length !== 3 || endParts.length !== 3) {
+        setCustomError('Please enter valid calendar dates.');
+        setStatement(null);
+        setCurrentOptions(null);
+        setLoading(false);
+        return;
+      }
+
+      const [sy, sm, sd] = startParts as [number, number, number];
+      const [ey, em, ed] = endParts as [number, number, number];
+
+      const startDateObj = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+      const endDateExclusiveObj = new Date(ey, em - 1, ed + 1, 0, 0, 0, 0);
+
+      if (
+        Number.isNaN(startDateObj.getTime()) ||
+        Number.isNaN(endDateExclusiveObj.getTime())
+      ) {
+        setCustomError('Please enter valid calendar dates.');
+        setStatement(null);
+        setCurrentOptions(null);
+        setLoading(false);
+        return;
+      }
+
+      if (customStart > customEnd) {
+        setCustomError('Start date cannot be after end date.');
+        setStatement(null);
+        setCurrentOptions(null);
+        setLoading(false);
+        return;
+      }
+
+      options = {
+        range: 'custom',
+        startDate: startDateObj.toISOString(),
+        endDate: endDateExclusiveObj.toISOString(),
+      };
+    } else {
+      options = { range };
+    }
+
+    async function loadStatement(fetchOptions: StatementOptions) {
       setLoading(true);
+      setStatement(null);
       try {
-        const options = {
-          range,
-          startDate:
-            range === 'custom' && customStart
-              ? new Date(customStart).toISOString()
-              : undefined,
-          endDate:
-            range === 'custom' && customEnd
-              ? new Date(customEnd).toISOString()
-              : undefined,
-        };
         const data = await window.storeApi.customers.getStatement(
           customer.id,
-          options,
+          fetchOptions,
         );
-        setStatement(data);
+        if (reqIdRef.current === currentReqId) {
+          setStatement(data);
+          setCurrentOptions(fetchOptions);
+        }
       } catch (e) {
-        setError(messageFrom(e));
+        if (reqIdRef.current === currentReqId) {
+          setError(messageFrom(e));
+        }
       } finally {
-        setLoading(false);
+        if (reqIdRef.current === currentReqId) {
+          setLoading(false);
+        }
       }
     }
-    void loadStatement();
+
+    void loadStatement(options);
   }, [customer.id, range, customStart, customEnd, setError]);
 
   async function handlePrint() {
+    if (!statement || !currentOptions) return;
     setPrinting(true);
     setPrintMessage('');
     try {
-      const options = {
-        range,
-        startDate:
-          range === 'custom' && customStart
-            ? new Date(customStart).toISOString()
-            : undefined,
-        endDate:
-          range === 'custom' && customEnd
-            ? new Date(customEnd).toISOString()
-            : undefined,
-      };
       const result = await window.storeApi.customers.printStatement(
         customer.id,
-        options,
+        currentOptions,
       );
       if (result.success) {
         setPrintMessage('Statement sent to printer.');
@@ -159,6 +219,12 @@ export function CustomerStatementModal({
             </button>
           </div>
 
+          {customError && (
+            <div className="alert" style={{ marginBottom: '12px' }}>
+              {customError}
+            </div>
+          )}
+
           {printMessage && (
             <div
               className={printMessage.includes('failed') ? 'alert' : 'success'}
@@ -171,7 +237,11 @@ export function CustomerStatementModal({
           {loading ? (
             <p>Loading statement…</p>
           ) : !statement ? (
-            <p>No statement data.</p>
+            <p style={{ color: '#666' }}>
+              {range === 'custom' && (!customStart || !customEnd)
+                ? 'Please select both start and end dates to generate a statement.'
+                : 'No statement data available.'}
+            </p>
           ) : (
             <div
               style={{

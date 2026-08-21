@@ -205,6 +205,44 @@ describe('account payments', () => {
     expect(store.getCustomerBalance(customerId)).toBe(1000);
   });
 
+  it('rejects retried operationId with conflicting payload details', () => {
+    const opId = randomUUID();
+    store.recordAccountPayment({
+      operationId: opId,
+      customerId,
+      amountCents: 1000,
+      payment: { method: 'cash', cashReceivedCents: 1000 },
+    });
+
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId,
+        amountCents: 1500,
+        payment: { method: 'cash', cashReceivedCents: 1500 },
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+  });
+
+  it('prevents deletion of account payment linked to customer ledger via trigger', () => {
+    const payment = store.recordAccountPayment({
+      operationId: randomUUID(),
+      customerId,
+      amountCents: 1000,
+      payment: { method: 'cash', cashReceivedCents: 1000 },
+    });
+
+    expect(() =>
+      store.connection
+        .prepare('DELETE FROM account_payments WHERE id = ?')
+        .run(payment.id),
+    ).toThrow(
+      'Cannot delete account payment that is linked to customer ledger',
+    );
+  });
+
   it('rolls back completely if ledger write fails during payment', () => {
     store.connection.exec(`
       CREATE TRIGGER fail_payment_ledger_test

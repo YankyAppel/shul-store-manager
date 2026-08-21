@@ -36,19 +36,49 @@ type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
 
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-function assertSafeFinancialInteger(
-  value: number | bigint,
-  label: string,
-): number {
-  const b = typeof value === 'bigint' ? value : BigInt(value);
+
+export function readSafeCents(value: unknown, label = 'value'): number {
+  if (value === null || value === undefined) {
+    return 0;
+  }
+  let b: bigint;
+  if (typeof value === 'bigint') {
+    b = value;
+  } else if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
+      throw new Error(`${label} must be a safe integer: ${value}`);
+    }
+    b = BigInt(value);
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^-?\d+$/.test(trimmed)) {
+      throw new Error(`Invalid numeric format for ${label}: ${value}`);
+    }
+    b = BigInt(trimmed);
+  } else {
+    throw new Error(
+      `Invalid type for financial value ${label}: ${typeof value}`,
+    );
+  }
+
   if (b < -MAX_SAFE_INTEGER_BIGINT || b > MAX_SAFE_INTEGER_BIGINT) {
-    throw new Error(`${label} exceeds the supported safe integer range`);
+    throw new Error(
+      `${label} exceeds the supported safe integer range: ${b.toString()}`,
+    );
   }
   const n = Number(b);
   if (!Number.isSafeInteger(n)) {
-    throw new Error(`${label} must be a safe integer`);
+    throw new Error(`${label} must be a safe integer: ${n}`);
   }
   return n;
+}
+
+export function readNullableSafeCents(
+  value: unknown,
+  label = 'value',
+): number | null {
+  if (value === null || value === undefined) return null;
+  return readSafeCents(value, label);
 }
 
 export class StoreDatabase {
@@ -78,7 +108,7 @@ export class StoreDatabase {
       storeName: String(row.store_name),
       contactLines: JSON.parse(String(row.contact_lines_json)) as string[],
       currency: 'USD',
-      taxRateBps: Number(row.tax_rate_bps),
+      taxRateBps: readSafeCents(row.tax_rate_bps, 'taxRateBps'),
       pricesIncludeTax: Boolean(row.prices_include_tax),
       receiptFooter: String(row.receipt_footer),
       customerAccountsEnabled:
@@ -88,7 +118,10 @@ export class StoreDatabase {
       defaultCreditLimitCents:
         row.default_credit_limit_cents === undefined
           ? 50000
-          : Number(row.default_credit_limit_cents),
+          : readSafeCents(
+              row.default_credit_limit_cents,
+              'defaultCreditLimitCents',
+            ),
       allowCustomerCredit:
         row.allow_customer_credit === undefined
           ? false
@@ -96,7 +129,9 @@ export class StoreDatabase {
       statementFooter:
         row.statement_footer === undefined ? '' : String(row.statement_footer),
       overdueDays:
-        row.overdue_days === undefined ? 30 : Number(row.overdue_days),
+        row.overdue_days === undefined
+          ? 30
+          : readSafeCents(row.overdue_days, 'overdueDays'),
     };
   }
 
@@ -604,8 +639,8 @@ export class StoreDatabase {
       .prepare(
         'SELECT COALESCE(SUM(amount_cents), 0) AS balance FROM customer_ledger WHERE customer_id = ?',
       )
-      .get(customerId) as { balance: number } | undefined;
-    return assertSafeFinancialInteger(row?.balance ?? 0, 'Customer balance');
+      .get(customerId) as { balance: unknown } | undefined;
+    return readSafeCents(row?.balance ?? 0, 'Customer balance');
   }
 
   listCustomerLedger(customerId: string): CustomerLedgerEntry[] {
@@ -647,20 +682,28 @@ export class StoreDatabase {
 
   completeSale(input: CompleteSaleInput): Sale {
     const value = completeSaleInputSchema.parse(input);
-    const existing = this.connection
-      .prepare('SELECT id FROM sales WHERE completion_key = ?')
-      .get(value.completionKey) as { id: string } | undefined;
-    if (existing) return this.getSale(existing.id);
-
     const settings = this.getSettings();
+
+    // Check existing completion key idempotency before transaction
+    const existingPre = this.connection
+      .prepare('SELECT * FROM sales WHERE completion_key = ?')
+      .get(value.completionKey) as Row | undefined;
+    if (existingPre) {
+      this.validateExistingSaleMatch(existingPre, value, settings);
+      return this.getSale(String(existingPre.id));
+    }
+
     const saleId = randomUUID();
 
     try {
       this.connection.transaction(() => {
         const again = this.connection
-          .prepare('SELECT id FROM sales WHERE completion_key = ?')
-          .get(value.completionKey) as { id: string } | undefined;
-        if (again) return;
+          .prepare('SELECT * FROM sales WHERE completion_key = ?')
+          .get(value.completionKey) as Row | undefined;
+        if (again) {
+          this.validateExistingSaleMatch(again, value, settings);
+          return;
+        }
 
         // Merge cart lines
         const merged = new Map<
@@ -718,6 +761,12 @@ export class StoreDatabase {
         } | null = null;
 
         if (value.payment.method === 'account') {
+          if (totals.totalCents <= 0) {
+            throw new Error(
+              'Account tender cannot be used for a $0.00 sale. Please use cash or external terminal checkout.',
+            );
+          }
+
           if (!settings.customerAccountsEnabled) {
             throw new Error(
               'Customer accounts are currently disabled in store settings.',
@@ -744,13 +793,16 @@ export class StoreDatabase {
           const effectiveCreditLimit =
             customerRow.credit_limit_cents !== null &&
             customerRow.credit_limit_cents !== undefined
-              ? Number(customerRow.credit_limit_cents)
+              ? readSafeCents(
+                  customerRow.credit_limit_cents,
+                  'credit_limit_cents',
+                )
               : settings.defaultCreditLimitCents;
 
-          assertSafeFinancialInteger(effectiveCreditLimit, 'Credit limit');
+          readSafeCents(effectiveCreditLimit, 'Credit limit');
           const projectedBalanceBig =
             BigInt(currentBalance) + BigInt(totals.totalCents);
-          const projectedBalance = assertSafeFinancialInteger(
+          const projectedBalance = readSafeCents(
             projectedBalanceBig,
             'Projected balance',
           );
@@ -939,6 +991,47 @@ export class StoreDatabase {
     return this.getSale(completed.id);
   }
 
+  private validateExistingSaleMatch(
+    existingRow: Row,
+    input: CompleteSaleInput,
+    settings: StoreSettings,
+  ): void {
+    const existingTender = String(existingRow.tender_type ?? '');
+    const existingTotal = readSafeCents(
+      existingRow.total_cents,
+      'existing sale total_cents',
+    );
+    const existingCustomerId = existingRow.customer_id
+      ? String(existingRow.customer_id)
+      : null;
+    const requestedCustomerId =
+      input.payment.method === 'account' ? input.payment.customerId : null;
+
+    // Calculate requested total
+    const merged = new Map<string, number>();
+    for (const line of input.lines) {
+      merged.set(
+        line.productId,
+        (merged.get(line.productId) ?? 0) + line.quantity,
+      );
+    }
+    const snapshots = [...merged].map(([productId, quantity]) => ({
+      product: this.getProduct(productId),
+      quantity,
+    }));
+    const totals = calculateCart(snapshots, settings);
+
+    if (
+      existingTotal !== totals.totalCents ||
+      existingCustomerId !== requestedCustomerId ||
+      existingTender !== input.payment.method
+    ) {
+      throw new Error(
+        'A sale with this completion key already exists with different details.',
+      );
+    }
+  }
+
   listSales(): Sale[] {
     return (
       this.connection
@@ -969,7 +1062,7 @@ export class StoreDatabase {
     if (tenderType === 'account') {
       salePayment = {
         method: 'account',
-        amountCents: Number(sale.total_cents),
+        amountCents: readSafeCents(sale.total_cents, 'sale total_cents'),
         cashReceivedCents: null,
         changeDueCents: null,
         terminalReference: null,
@@ -979,30 +1072,31 @@ export class StoreDatabase {
         accountNumber: sale.customer_account_number
           ? String(sale.customer_account_number)
           : null,
-        previousBalanceCents:
-          sale.customer_balance_before_cents !== null &&
-          sale.customer_balance_before_cents !== undefined
-            ? Number(sale.customer_balance_before_cents)
-            : null,
-        newBalanceCents:
-          sale.customer_balance_after_cents !== null &&
-          sale.customer_balance_after_cents !== undefined
-            ? Number(sale.customer_balance_after_cents)
-            : null,
+        previousBalanceCents: readNullableSafeCents(
+          sale.customer_balance_before_cents,
+          'customer_balance_before_cents',
+        ),
+        newBalanceCents: readNullableSafeCents(
+          sale.customer_balance_after_cents,
+          'customer_balance_after_cents',
+        ),
       };
     } else {
       if (!payment) throw new Error('Sale payment not found');
       salePayment = {
         method: String(payment.method) as 'cash' | 'external_terminal',
-        amountCents: Number(payment.amount_cents),
-        cashReceivedCents:
-          payment.cash_received_cents === null
-            ? null
-            : Number(payment.cash_received_cents),
-        changeDueCents:
-          payment.change_due_cents === null
-            ? null
-            : Number(payment.change_due_cents),
+        amountCents: readSafeCents(
+          payment.amount_cents,
+          'payment amount_cents',
+        ),
+        cashReceivedCents: readNullableSafeCents(
+          payment.cash_received_cents,
+          'cash_received_cents',
+        ),
+        changeDueCents: readNullableSafeCents(
+          payment.change_due_cents,
+          'change_due_cents',
+        ),
         terminalReference:
           payment.terminal_reference === null
             ? null
@@ -1019,8 +1113,14 @@ export class StoreDatabase {
           id: String(sale.customer_id),
           name: String(sale.customer_name ?? ''),
           accountNumber: String(sale.customer_account_number ?? ''),
-          previousBalanceCents: Number(sale.customer_balance_before_cents ?? 0),
-          newBalanceCents: Number(sale.customer_balance_after_cents ?? 0),
+          previousBalanceCents: readSafeCents(
+            sale.customer_balance_before_cents,
+            'customer_balance_before_cents',
+          ),
+          newBalanceCents: readSafeCents(
+            sale.customer_balance_after_cents,
+            'customer_balance_after_cents',
+          ),
         }
       : null;
 
@@ -1028,9 +1128,9 @@ export class StoreDatabase {
       id: String(sale.id),
       receiptNumber: Number(sale.receipt_number),
       status: String(sale.status) as Sale['status'],
-      subtotalCents: Number(sale.subtotal_cents),
-      taxCents: Number(sale.tax_cents),
-      totalCents: Number(sale.total_cents),
+      subtotalCents: readSafeCents(sale.subtotal_cents, 'subtotal_cents'),
+      taxCents: readSafeCents(sale.tax_cents, 'tax_cents'),
+      totalCents: readSafeCents(sale.total_cents, 'total_cents'),
       createdAt: String(sale.created_at),
       completedAt: sale.completed_at ? String(sale.completed_at) : null,
       items: items.map((row) => ({
@@ -1040,12 +1140,21 @@ export class StoreDatabase {
         secondaryName: row.secondary_name ? String(row.secondary_name) : null,
         barcodeUsed: row.barcode_used ? String(row.barcode_used) : null,
         quantity: Number(row.quantity),
-        unitSellingPriceCents: Number(row.unit_selling_price_cents),
-        unitPurchaseCostCents: Number(row.unit_purchase_cost_cents),
+        unitSellingPriceCents: readSafeCents(
+          row.unit_selling_price_cents,
+          'unit_selling_price_cents',
+        ),
+        unitPurchaseCostCents: readSafeCents(
+          row.unit_purchase_cost_cents,
+          'unit_purchase_cost_cents',
+        ),
         taxable: Boolean(row.taxable),
-        taxCents: Number(row.tax_cents),
-        lineSubtotalCents: Number(row.line_subtotal_cents),
-        lineTotalCents: Number(row.line_total_cents),
+        taxCents: readSafeCents(row.tax_cents, 'tax_cents'),
+        lineSubtotalCents: readSafeCents(
+          row.line_subtotal_cents,
+          'line_subtotal_cents',
+        ),
+        lineTotalCents: readSafeCents(row.line_total_cents, 'line_total_cents'),
       })),
       payment: salePayment,
       customer: customerSnapshot,
@@ -1070,10 +1179,28 @@ export class StoreDatabase {
 
   recordAccountPayment(input: RecordAccountPaymentInput): AccountPayment {
     const value = recordAccountPaymentInputSchema.parse(input);
+
     const existing = this.connection
-      .prepare('SELECT id FROM account_payments WHERE operation_id = ?')
-      .get(value.operationId) as { id: string } | undefined;
-    if (existing) return this.getAccountPayment(existing.id);
+      .prepare('SELECT * FROM account_payments WHERE operation_id = ?')
+      .get(value.operationId) as Row | undefined;
+    if (existing) {
+      const existingCust = String(existing.customer_id);
+      const existingAmount = readSafeCents(
+        existing.amount_cents,
+        'existing payment amount_cents',
+      );
+      const existingMethod = String(existing.method);
+      if (
+        existingCust !== value.customerId ||
+        existingAmount !== value.amountCents ||
+        existingMethod !== value.payment.method
+      ) {
+        throw new Error(
+          'An account payment with this operation ID already exists with different details.',
+        );
+      }
+      return mapAccountPayment(existing);
+    }
 
     const paymentId = randomUUID();
     const timestamp = now();
@@ -1082,9 +1209,26 @@ export class StoreDatabase {
     try {
       this.connection.transaction(() => {
         const again = this.connection
-          .prepare('SELECT id FROM account_payments WHERE operation_id = ?')
-          .get(value.operationId) as { id: string } | undefined;
-        if (again) return;
+          .prepare('SELECT * FROM account_payments WHERE operation_id = ?')
+          .get(value.operationId) as Row | undefined;
+        if (again) {
+          const existingCust = String(again.customer_id);
+          const existingAmount = readSafeCents(
+            again.amount_cents,
+            'existing payment amount_cents',
+          );
+          const existingMethod = String(again.method);
+          if (
+            existingCust !== value.customerId ||
+            existingAmount !== value.amountCents ||
+            existingMethod !== value.payment.method
+          ) {
+            throw new Error(
+              'An account payment with this operation ID already exists with different details.',
+            );
+          }
+          return;
+        }
 
         const customerRow = this.connection
           .prepare('SELECT * FROM customers WHERE id = ?')
@@ -1092,13 +1236,13 @@ export class StoreDatabase {
         if (!customerRow) throw new Error('Customer not found');
 
         const currentBalance = this.getCustomerBalance(String(customerRow.id));
-        const paymentAmount = assertSafeFinancialInteger(
+        const paymentAmount = readSafeCents(
           value.amountCents,
           'Payment amount',
         );
         const projectedBalanceBig =
           BigInt(currentBalance) - BigInt(paymentAmount);
-        const projectedBalance = assertSafeFinancialInteger(
+        const projectedBalance = readSafeCents(
           projectedBalanceBig,
           'Projected balance',
         );
@@ -1118,7 +1262,7 @@ export class StoreDatabase {
           if (value.payment.cashReceivedCents < paymentAmount) {
             throw new Error('Cash received is less than the payment amount.');
           }
-          cashReceivedCents = assertSafeFinancialInteger(
+          cashReceivedCents = readSafeCents(
             value.payment.cashReceivedCents,
             'Cash received',
           );
@@ -1269,65 +1413,122 @@ export class StoreDatabase {
     );
 
     let startDate: string | null = null;
-    let endDate: string = now();
+    let endDate: string | null = null;
     let label = 'All activity';
-
-    if (options.range === 'last_30_days') {
-      const d = new Date();
-      d.setDate(d.getDate() - 30);
-      startDate = d.toISOString();
-      label = 'Last 30 days';
-    } else if (options.range === 'last_90_days') {
-      const d = new Date();
-      d.setDate(d.getDate() - 90);
-      startDate = d.toISOString();
-      label = 'Last 90 days';
-    } else if (options.range === 'custom') {
-      if (options.startDate)
-        startDate = new Date(options.startDate).toISOString();
-      if (options.endDate) endDate = new Date(options.endDate).toISOString();
-      label = `Custom (${startDate ? new Date(startDate).toLocaleDateString() : 'Beginning'} to ${new Date(endDate).toLocaleDateString()})`;
-    }
-
+    let ledgerRows: Row[];
     let openingBalanceCents = 0;
-    if (startDate) {
+
+    if (options.range === 'all_activity') {
+      startDate = null;
+      endDate = null;
+      label = 'All account activity';
+      openingBalanceCents = 0;
+      ledgerRows = this.connection
+        .prepare(
+          `
+          SELECT
+            l.*,
+            s.receipt_number AS sale_receipt_number,
+            p.receipt_number AS payment_receipt_number
+          FROM customer_ledger l
+          LEFT JOIN sales s ON s.id = l.related_sale_id
+          LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
+          WHERE l.customer_id = ?
+          ORDER BY l.occurred_at ASC, l.sequence ASC
+        `,
+        )
+        .all(customerId) as Row[];
+    } else if (
+      options.range === 'last_30_days' ||
+      options.range === 'last_90_days'
+    ) {
+      const days = options.range === 'last_30_days' ? 30 : 90;
+      const d = new Date();
+      d.setDate(d.getDate() - days);
+      startDate = d.toISOString();
+      endDate = null;
+      label =
+        options.range === 'last_30_days' ? 'Last 30 days' : 'Last 90 days';
+
       const openRow = this.connection
         .prepare(
           'SELECT COALESCE(SUM(amount_cents), 0) AS opening FROM customer_ledger WHERE customer_id = ? AND occurred_at < ?',
         )
-        .get(customerId, startDate) as { opening: number } | undefined;
-      openingBalanceCents = assertSafeFinancialInteger(
+        .get(customerId, startDate) as { opening: unknown } | undefined;
+      openingBalanceCents = readSafeCents(
         openRow?.opening ?? 0,
         'Opening balance',
       );
-    }
 
-    const ledgerRows = this.connection
-      .prepare(
-        `
-        SELECT
-          l.*,
-          s.receipt_number AS sale_receipt_number,
-          p.receipt_number AS payment_receipt_number
-        FROM customer_ledger l
-        LEFT JOIN sales s ON s.id = l.related_sale_id
-        LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
-        WHERE l.customer_id = ?
-          AND (? IS NULL OR l.occurred_at >= ?)
-          AND l.occurred_at <= ?
-        ORDER BY l.occurred_at ASC, l.sequence ASC
-      `,
-      )
-      .all(customerId, startDate, startDate, endDate) as Row[];
+      ledgerRows = this.connection
+        .prepare(
+          `
+          SELECT
+            l.*,
+            s.receipt_number AS sale_receipt_number,
+            p.receipt_number AS payment_receipt_number
+          FROM customer_ledger l
+          LEFT JOIN sales s ON s.id = l.related_sale_id
+          LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
+          WHERE l.customer_id = ?
+            AND l.occurred_at >= ?
+          ORDER BY l.occurred_at ASC, l.sequence ASC
+        `,
+        )
+        .all(customerId, startDate) as Row[];
+    } else if (options.range === 'custom') {
+      startDate = options.startDate ?? null;
+      endDate = options.endDate ?? null;
+
+      const startDisplay = startDate
+        ? new Date(startDate).toLocaleDateString()
+        : '';
+      const endDisplay = endDate
+        ? new Date(new Date(endDate).getTime() - 1000).toLocaleDateString()
+        : '';
+      label = `Custom (${startDisplay} to ${endDisplay})`;
+
+      if (startDate) {
+        const openRow = this.connection
+          .prepare(
+            'SELECT COALESCE(SUM(amount_cents), 0) AS opening FROM customer_ledger WHERE customer_id = ? AND occurred_at < ?',
+          )
+          .get(customerId, startDate) as { opening: unknown } | undefined;
+        openingBalanceCents = readSafeCents(
+          openRow?.opening ?? 0,
+          'Opening balance',
+        );
+      }
+
+      ledgerRows = this.connection
+        .prepare(
+          `
+          SELECT
+            l.*,
+            s.receipt_number AS sale_receipt_number,
+            p.receipt_number AS payment_receipt_number
+          FROM customer_ledger l
+          LEFT JOIN sales s ON s.id = l.related_sale_id
+          LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
+          WHERE l.customer_id = ?
+            AND (? IS NULL OR l.occurred_at >= ?)
+            AND (? IS NULL OR l.occurred_at < ?)
+          ORDER BY l.occurred_at ASC, l.sequence ASC
+        `,
+        )
+        .all(customerId, startDate, startDate, endDate, endDate) as Row[];
+    } else {
+      ledgerRows = [];
+    }
 
     let currentRunning = BigInt(openingBalanceCents);
     let totalChargesBig = 0n;
     let totalPaymentsBig = 0n;
 
     const entries: StatementEntry[] = ledgerRows.map((row) => {
-      const amt = BigInt(Number(row.amount_cents));
+      const amt = BigInt(readSafeCents(row.amount_cents, 'amount_cents'));
       currentRunning += amt;
-      const runningBalanceCents = assertSafeFinancialInteger(
+      const runningBalanceCents = readSafeCents(
         currentRunning,
         'Statement running balance',
       );
@@ -1358,21 +1559,18 @@ export class StoreDatabase {
           row.payment_receipt_number !== undefined
             ? Number(row.payment_receipt_number)
             : null,
-        chargeCents: isCharge ? Number(amt) : null,
-        paymentCents: !isCharge ? Number(-amt) : null,
+        chargeCents: isCharge ? readSafeCents(amt, 'chargeCents') : null,
+        paymentCents: !isCharge ? readSafeCents(-amt, 'paymentCents') : null,
         runningBalanceCents,
       };
     });
 
-    const closingBalanceCents = assertSafeFinancialInteger(
+    const closingBalanceCents = readSafeCents(
       currentRunning,
       'Closing balance',
     );
-    const totalChargesCents = assertSafeFinancialInteger(
-      totalChargesBig,
-      'Total charges',
-    );
-    const totalPaymentsCents = assertSafeFinancialInteger(
+    const totalChargesCents = readSafeCents(totalChargesBig, 'Total charges');
+    const totalPaymentsCents = readSafeCents(
       totalPaymentsBig,
       'Total payments',
     );
@@ -1420,12 +1618,21 @@ export class StoreDatabase {
       secondaryName:
         row.secondary_name === null ? null : String(row.secondary_name),
       imageId: row.image_id === null ? null : String(row.image_id),
-      purchaseCostCents: Number(row.purchase_cost_cents),
-      sellingPriceCents: Number(row.selling_price_cents),
+      purchaseCostCents: readSafeCents(
+        row.purchase_cost_cents,
+        'purchaseCostCents',
+      ),
+      sellingPriceCents: readSafeCents(
+        row.selling_price_cents,
+        'sellingPriceCents',
+      ),
       taxable: Boolean(row.taxable),
-      lowStockThreshold: Number(row.low_stock_threshold),
+      lowStockThreshold: readSafeCents(
+        row.low_stock_threshold,
+        'lowStockThreshold',
+      ),
       active: Boolean(row.active),
-      stockQuantity: Number(row.stock_quantity),
+      stockQuantity: readSafeCents(row.stock_quantity, 'stockQuantity'),
       barcodes: barcodes.map((barcode): Barcode => ({
         id: String(barcode.id),
         value: String(barcode.value),
@@ -1438,11 +1645,18 @@ export class StoreDatabase {
 
   private mapCustomer(row: Row, settings: StoreSettings): Customer {
     const currentBalance = this.getCustomerBalance(String(row.id));
+    const creditLimitCents = readNullableSafeCents(
+      row.credit_limit_cents,
+      'credit_limit_cents',
+    );
     const effectiveLimit =
-      row.credit_limit_cents !== null && row.credit_limit_cents !== undefined
-        ? Number(row.credit_limit_cents)
+      creditLimitCents !== null
+        ? creditLimitCents
         : settings.defaultCreditLimitCents;
-    const availableCredit = effectiveLimit - currentBalance;
+    const availableCredit = readSafeCents(
+      BigInt(effectiveLimit) - BigInt(currentBalance),
+      'availableCreditCents',
+    );
 
     return {
       id: String(row.id),
@@ -1458,10 +1672,7 @@ export class StoreDatabase {
       notes: row.notes === null ? null : String(row.notes),
       active: Boolean(row.active),
       blocked: Boolean(row.blocked),
-      creditLimitCents:
-        row.credit_limit_cents === null || row.credit_limit_cents === undefined
-          ? null
-          : Number(row.credit_limit_cents),
+      creditLimitCents,
       effectiveCreditLimitCents: effectiveLimit,
       currentBalanceCents: currentBalance,
       availableCreditCents: availableCredit,
@@ -1567,7 +1778,7 @@ function mapLedgerEntry(row: Row): CustomerLedgerEntry {
     id: String(row.id),
     operationId: String(row.operation_id),
     customerId: String(row.customer_id),
-    amountCents: Number(row.amount_cents),
+    amountCents: readSafeCents(row.amount_cents, 'ledger amount_cents'),
     entryType: String(row.entry_type) as CustomerLedgerEntry['entryType'],
     occurredAt: String(row.occurred_at),
     relatedSaleId: row.related_sale_id ? String(row.related_sale_id) : null,
@@ -1586,7 +1797,10 @@ function mapLedgerEntry(row: Row): CustomerLedgerEntry {
     deviceId: row.device_id ? String(row.device_id) : null,
     notes: String(row.notes),
     sequence: Number(row.sequence),
-    resultingBalanceCents: Number(row.resulting_balance_cents),
+    resultingBalanceCents: readSafeCents(
+      row.resulting_balance_cents,
+      'resulting_balance_cents',
+    ),
   };
 }
 
@@ -1598,16 +1812,16 @@ function mapAccountPayment(row: Row): AccountPayment {
     customerId: String(row.customer_id),
     customerName: String(row.customer_name),
     accountNumber: String(row.account_number),
-    amountCents: Number(row.amount_cents),
+    amountCents: readSafeCents(row.amount_cents, 'amount_cents'),
     method: String(row.method) as AccountPayment['method'],
-    cashReceivedCents:
-      row.cash_received_cents === null || row.cash_received_cents === undefined
-        ? null
-        : Number(row.cash_received_cents),
-    changeDueCents:
-      row.change_due_cents === null || row.change_due_cents === undefined
-        ? null
-        : Number(row.change_due_cents),
+    cashReceivedCents: readNullableSafeCents(
+      row.cash_received_cents,
+      'cash_received_cents',
+    ),
+    changeDueCents: readNullableSafeCents(
+      row.change_due_cents,
+      'change_due_cents',
+    ),
     terminalReference:
       row.terminal_reference === null || row.terminal_reference === undefined
         ? null
@@ -1616,8 +1830,11 @@ function mapAccountPayment(row: Row): AccountPayment {
       row.external_approved === null || row.external_approved === undefined
         ? null
         : Boolean(row.external_approved),
-    previousBalanceCents: Number(row.previous_balance_cents),
-    newBalanceCents: Number(row.new_balance_cents),
+    previousBalanceCents: readSafeCents(
+      row.previous_balance_cents,
+      'previous_balance_cents',
+    ),
+    newBalanceCents: readSafeCents(row.new_balance_cents, 'new_balance_cents'),
     notes:
       row.notes === null || row.notes === undefined ? null : String(row.notes),
     createdAt: String(row.created_at),

@@ -18,6 +18,7 @@ import type {
 
 export * from './checkout.js';
 export * from './customers.js';
+export * from './html-templates.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -189,7 +190,7 @@ export interface StoreApi {
     setBlocked(id: string, blocked: boolean): Promise<void>;
     generateAccountNumber(): Promise<string>;
     generateBarcode(): Promise<string>;
-    lookupBarcode(barcodeOrAccount: string): Promise<Customer | null>;
+    lookupBarcode(value: string): Promise<Customer | null>;
     getLedger(customerId: string): Promise<CustomerLedgerEntry[]>;
     getStatement(
       customerId: string,
@@ -207,6 +208,12 @@ export interface StoreApi {
     receipt(id: string): Promise<AccountPaymentReceiptData>;
     print(id: string): Promise<{ success: boolean; error: string | null }>;
   };
+}
+
+declare global {
+  interface Window {
+    storeApi: StoreApi;
+  }
 }
 
 export function errorMessage(error: unknown): string {

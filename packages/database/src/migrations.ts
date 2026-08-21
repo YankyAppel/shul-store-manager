@@ -260,16 +260,19 @@ export const migrations: Migration[] = [
         related_account_payment_id TEXT REFERENCES account_payments(id) ON DELETE RESTRICT,
         device_id TEXT,
         notes TEXT NOT NULL CHECK (length(trim(notes)) > 0),
-        sequence INTEGER,
+        sequence INTEGER NOT NULL UNIQUE,
         CHECK (
-          (entry_type IN ('sale_charge', 'manual_debit_adjustment') AND amount_cents > 0)
-          OR (entry_type IN ('payment', 'manual_credit_adjustment') AND amount_cents < 0)
+          (entry_type = 'sale_charge' AND amount_cents > 0 AND related_sale_id IS NOT NULL AND related_account_payment_id IS NULL)
+          OR (entry_type = 'payment' AND amount_cents < 0 AND related_account_payment_id IS NOT NULL AND related_sale_id IS NULL)
+          OR (entry_type = 'manual_debit_adjustment' AND amount_cents > 0 AND related_sale_id IS NULL AND related_account_payment_id IS NULL)
+          OR (entry_type = 'manual_credit_adjustment' AND amount_cents < 0 AND related_sale_id IS NULL AND related_account_payment_id IS NULL)
         )
       );
       CREATE UNIQUE INDEX customer_ledger_sequence_idx ON customer_ledger(sequence);
+      CREATE INDEX customer_ledger_customer_seq_idx ON customer_ledger(customer_id, sequence ASC);
       CREATE INDEX customer_ledger_customer_time_idx ON customer_ledger(customer_id, occurred_at, sequence);
-      CREATE INDEX customer_ledger_sale_idx ON customer_ledger(related_sale_id);
-      CREATE INDEX customer_ledger_payment_idx ON customer_ledger(related_account_payment_id);
+      CREATE UNIQUE INDEX customer_ledger_sale_idx ON customer_ledger(related_sale_id) WHERE related_sale_id IS NOT NULL;
+      CREATE UNIQUE INDEX customer_ledger_payment_idx ON customer_ledger(related_account_payment_id) WHERE related_account_payment_id IS NOT NULL;
 
       CREATE TRIGGER customer_ledger_no_update
       BEFORE UPDATE ON customer_ledger BEGIN
@@ -279,6 +282,61 @@ export const migrations: Migration[] = [
       CREATE TRIGGER customer_ledger_no_delete
       BEFORE DELETE ON customer_ledger BEGIN
         SELECT RAISE(ABORT, 'Customer ledger entries are append-only');
+      END;
+
+      CREATE TRIGGER validate_customer_ledger_sale_charge
+      BEFORE INSERT ON customer_ledger
+      WHEN NEW.entry_type = 'sale_charge'
+      BEGIN
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM sales
+            WHERE sales.id = NEW.related_sale_id
+              AND sales.customer_id = NEW.customer_id
+              AND sales.total_cents = NEW.amount_cents
+              AND sales.tender_type = 'account'
+          ) THEN RAISE(ABORT, 'sale_charge ledger entry must match an existing account sale for the same customer and amount')
+          WHEN EXISTS (
+            SELECT 1 FROM customer_ledger
+            WHERE customer_ledger.related_sale_id = NEW.related_sale_id
+          ) THEN RAISE(ABORT, 'A ledger entry for this sale already exists')
+        END;
+      END;
+
+      CREATE TRIGGER validate_customer_ledger_payment
+      BEFORE INSERT ON customer_ledger
+      WHEN NEW.entry_type = 'payment'
+      BEGIN
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM account_payments
+            WHERE account_payments.id = NEW.related_account_payment_id
+              AND account_payments.customer_id = NEW.customer_id
+              AND account_payments.amount_cents = -NEW.amount_cents
+          ) THEN RAISE(ABORT, 'payment ledger entry must match an existing account payment for the same customer and amount')
+          WHEN EXISTS (
+            SELECT 1 FROM customer_ledger
+            WHERE customer_ledger.related_account_payment_id = NEW.related_account_payment_id
+          ) THEN RAISE(ABORT, 'A ledger entry for this account payment already exists')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_sale_delete_if_ledger_linked
+      BEFORE DELETE ON sales
+      BEGIN
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_sale_id = OLD.id)
+          THEN RAISE(ABORT, 'Cannot delete sale that is linked to customer ledger')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_account_payment_delete_if_ledger_linked
+      BEFORE DELETE ON account_payments
+      BEGIN
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_account_payment_id = OLD.id)
+          THEN RAISE(ABORT, 'Cannot delete account payment that is linked to customer ledger')
+        END;
       END;
 
       CREATE TABLE account_payment_print_attempts (

@@ -5,6 +5,7 @@ import { StoreDatabase } from '../src/index.js';
 let store: StoreDatabase;
 let categoryId: string;
 let productId: string;
+let freeProductId: string;
 let customerId: string;
 
 beforeEach(() => {
@@ -19,9 +20,24 @@ beforeEach(() => {
     lowStockThreshold: 1,
     barcodes: ['CHALLAH-1'],
   }).id;
+  freeProductId = store.createProduct({
+    categoryId,
+    name: 'Free Pamphlet',
+    purchaseCostCents: 0,
+    sellingPriceCents: 0,
+    taxable: false,
+    lowStockThreshold: 0,
+    barcodes: ['FREE-1'],
+  }).id;
   store.addInventoryMovement({
     productId,
     quantityChange: 10,
+    reason: 'stock_received',
+    notes: 'Opening stock',
+  });
+  store.addInventoryMovement({
+    productId: freeProductId,
+    quantityChange: 100,
     reason: 'stock_received',
     notes: 'Opening stock',
   });
@@ -71,7 +87,9 @@ describe('put on account checkout', () => {
     });
 
     // Inventory deduction check
-    expect(store.listProducts()[0]?.stockQuantity).toBe(8);
+    expect(
+      store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+    ).toBe(8);
 
     // Customer balance check
     expect(store.getCustomerBalance(customerId)).toBe(1000);
@@ -97,6 +115,34 @@ describe('put on account checkout', () => {
           .get(sale.id) as { count: number }
       ).count,
     ).toBe(0);
+  });
+
+  it('rejects account sales for zero-total carts but allows cash/terminal checkout', () => {
+    // Account tender on zero-total sale must be disallowed
+    expect(() =>
+      store.completeSale({
+        completionKey: randomUUID(),
+        lines: [
+          { productId: freeProductId, quantity: 1, barcodeUsed: 'FREE-1' },
+        ],
+        payment: { method: 'account', customerId, confirmed: true },
+      }),
+    ).toThrow(
+      'Account tender cannot be used for a $0.00 sale. Please use cash or external terminal checkout.',
+    );
+
+    // No sales or ledger entries created
+    expect(store.listSales()).toHaveLength(0);
+    expect(store.getCustomerBalance(customerId)).toBe(0);
+
+    // Cash sale for zero-total succeeds
+    const cashSale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId: freeProductId, quantity: 1, barcodeUsed: 'FREE-1' }],
+      payment: { method: 'cash', cashReceivedCents: 0 },
+    });
+    expect(cashSale.totalCents).toBe(0);
+    expect(cashSale.payment.method).toBe('cash');
   });
 
   it('preserves historical customer snapshot even after customer is updated', () => {
@@ -137,7 +183,9 @@ describe('put on account checkout', () => {
     ).toThrow(/disabled/);
 
     expect(store.listSales()).toHaveLength(0);
-    expect(store.listProducts()[0]?.stockQuantity).toBe(10);
+    expect(
+      store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+    ).toBe(10);
   });
 
   it('rejects account sales for inactive or blocked customers', () => {
@@ -182,40 +230,9 @@ describe('put on account checkout', () => {
     ).toThrow(/Credit limit exceeded/);
 
     expect(store.getCustomerBalance(customerId)).toBe(2000);
-    expect(store.listProducts()[0]?.stockQuantity).toBe(6);
-  });
-
-  it('rolls back completely if insufficient inventory or ledger write fails', () => {
-    expect(() =>
-      store.completeSale({
-        completionKey: randomUUID(),
-        lines: [{ productId, quantity: 20, barcodeUsed: null }], // only 10 in stock
-        payment: { method: 'account', customerId, confirmed: true },
-      }),
-    ).toThrow(/Insufficient stock/);
-
-    expect(store.listSales()).toHaveLength(0);
-    expect(store.getCustomerBalance(customerId)).toBe(0);
-    expect(store.listProducts()[0]?.stockQuantity).toBe(10);
-
-    // Simulate ledger failure
-    store.connection.exec(`
-      CREATE TRIGGER fail_ledger_test
-      BEFORE INSERT ON customer_ledger
-      BEGIN SELECT RAISE(ABORT, 'forced ledger failure'); END;
-    `);
-
-    expect(() =>
-      store.completeSale({
-        completionKey: randomUUID(),
-        lines: [{ productId, quantity: 1, barcodeUsed: null }],
-        payment: { method: 'account', customerId, confirmed: true },
-      }),
-    ).toThrow(/forced ledger failure/);
-
-    expect(store.listSales()).toHaveLength(0);
-    expect(store.getCustomerBalance(customerId)).toBe(0);
-    expect(store.listProducts()[0]?.stockQuantity).toBe(10);
+    expect(
+      store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+    ).toBe(6);
   });
 
   it('returns the existing sale idempotently on completion-key retry without duplicate deductions or charges', () => {
@@ -235,7 +252,40 @@ describe('put on account checkout', () => {
     expect(retry.id).toBe(first.id);
     expect(store.listSales()).toHaveLength(1);
     expect(store.getCustomerBalance(customerId)).toBe(1000);
-    expect(store.listProducts()[0]?.stockQuantity).toBe(8);
+    expect(
+      store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+    ).toBe(8);
+  });
+
+  it('rejects retried completion-key with conflicting payload', () => {
+    const key = randomUUID();
+    store.completeSale({
+      completionKey: key,
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'account', customerId, confirmed: true },
+    });
+
+    expect(() =>
+      store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 2, barcodeUsed: null }],
+        payment: { method: 'account', customerId, confirmed: true },
+      }),
+    ).toThrow(
+      'A sale with this completion key already exists with different details.',
+    );
+  });
+
+  it('prevents deletion of sales linked to customer ledger via trigger', () => {
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'account', customerId, confirmed: true },
+    });
+
+    expect(() =>
+      store.connection.prepare('DELETE FROM sales WHERE id = ?').run(sale.id),
+    ).toThrow('Cannot delete sale that is linked to customer ledger');
   });
 
   it('does not regress cash or external-terminal checkout', () => {

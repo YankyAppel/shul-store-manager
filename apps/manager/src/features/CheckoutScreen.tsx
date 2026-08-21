@@ -53,10 +53,13 @@ export function CheckoutScreen({
   const [customerMatches, setCustomerMatches] = useState<Customer[]>([]);
   const [accountConfirmed, setAccountConfirmed] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
+  const [completing, setCompleting] = useState(false);
 
   const [sale, setSale] = useState<Sale>();
   const [printError, setPrintError] = useState('');
   const completionKey = useRef(crypto.randomUUID());
+  const searchReqIdRef = useRef(0);
+  const isCompletingRef = useRef(false);
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
@@ -127,12 +130,17 @@ export function CheckoutScreen({
     [cart, settings],
   );
 
-  // Customer search when typing in account query
+  // Customer search with race-condition protection
   useEffect(() => {
+    const currentReqId = ++searchReqIdRef.current;
     if (payment === 'account' && customerQuery.trim().length >= 1) {
       void window.storeApi.customers
         .search(customerQuery, false)
-        .then(setCustomerMatches);
+        .then((matches) => {
+          if (searchReqIdRef.current === currentReqId) {
+            setCustomerMatches(matches);
+          }
+        });
     } else {
       setCustomerMatches([]);
     }
@@ -140,6 +148,8 @@ export function CheckoutScreen({
 
   // Check account limits & warnings
   const saleTotalCents = totals?.totalCents ?? 0;
+  const isZeroTotal = totals !== null && totals.totalCents === 0;
+
   const projectedBalanceCents = selectedCustomer
     ? selectedCustomer.currentBalanceCents + saleTotalCents
     : 0;
@@ -148,20 +158,24 @@ export function CheckoutScreen({
     ? projectedBalanceCents > selectedCustomer.effectiveCreditLimitCents
     : false;
 
-  const accountBlockedReason = selectedCustomer
-    ? !selectedCustomer.active
-      ? 'Customer account is inactive and cannot place new charges.'
-      : selectedCustomer.blocked
-        ? 'Customer is blocked from placing new charges on account.'
-        : !settings?.customerAccountsEnabled
-          ? 'Customer accounts are currently disabled in store settings.'
-          : isOverCreditLimit
-            ? `Purchase exceeds customer credit limit (${formatMoney(selectedCustomer.effectiveCreditLimitCents)}). Projected balance: ${formatMoney(projectedBalanceCents)}.`
-            : null
-    : null;
+  const accountBlockedReason = isZeroTotal
+    ? 'Account tender cannot be used for a $0.00 sale. Please use cash or external terminal checkout.'
+    : selectedCustomer
+      ? !selectedCustomer.active
+        ? 'Customer account is inactive and cannot place new charges.'
+        : selectedCustomer.blocked
+          ? 'Customer is blocked from placing new charges on account.'
+          : !settings?.customerAccountsEnabled
+            ? 'Customer accounts are currently disabled in store settings.'
+            : isOverCreditLimit
+              ? `Purchase exceeds customer credit limit (${formatMoney(selectedCustomer.effectiveCreditLimitCents)}). Projected balance: ${formatMoney(projectedBalanceCents)}.`
+              : null
+      : null;
 
   async function complete() {
-    if (!totals) return;
+    if (!totals || isCompletingRef.current) return;
+    isCompletingRef.current = true;
+    setCompleting(true);
     setError('');
     try {
       let paymentInput: import('@shul-store/shared').CompleteSaleInput['payment'];
@@ -180,6 +194,12 @@ export function CheckoutScreen({
       } else if (payment === 'account') {
         if (!selectedCustomer) {
           setError('Please select a customer.');
+          return;
+        }
+        if (isZeroTotal) {
+          setError(
+            'Account tender cannot be used for a $0.00 sale. Please use cash or external terminal checkout.',
+          );
           return;
         }
         paymentInput = {
@@ -206,6 +226,9 @@ export function CheckoutScreen({
       await onInventoryChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Sale failed');
+    } finally {
+      isCompletingRef.current = false;
+      setCompleting(false);
     }
   }
 
@@ -347,7 +370,12 @@ export function CheckoutScreen({
               External card terminal
             </button>
             <button
-              disabled={!cart.length || insufficient}
+              disabled={!cart.length || insufficient || isZeroTotal}
+              title={
+                isZeroTotal
+                  ? 'Account tender is not available for $0.00 sales'
+                  : ''
+              }
               onClick={() => setPayment('account')}
             >
               Put on account
@@ -386,14 +414,17 @@ export function CheckoutScreen({
             <button
               className="primary"
               disabled={
+                completing ||
                 cashReceivedCents === null ||
                 cashReceivedCents < (totals?.totalCents ?? 0)
               }
               onClick={() => void complete()}
             >
-              Complete cash sale
+              {completing ? 'Processing…' : 'Complete cash sale'}
             </button>
-            <button onClick={() => setPayment(null)}>Back</button>
+            <button disabled={completing} onClick={() => setPayment(null)}>
+              Back
+            </button>
           </div>
         ) : payment === 'external_terminal' ? (
           <div className="pay-box">
@@ -419,18 +450,25 @@ export function CheckoutScreen({
             </label>
             <button
               className="primary"
-              disabled={!approved}
+              disabled={completing || !approved}
               onClick={() => void complete()}
             >
-              Complete approved sale
+              {completing ? 'Processing…' : 'Complete approved sale'}
             </button>
-            <button onClick={() => setPayment(null)}>Back</button>
+            <button disabled={completing} onClick={() => setPayment(null)}>
+              Back
+            </button>
           </div>
         ) : (
           <div className="pay-box">
             <h4>Put on account</h4>
 
-            {!selectedCustomer ? (
+            {isZeroTotal ? (
+              <div className="alert" style={{ margin: '8px 0' }}>
+                Account tender cannot be used for a $0.00 sale. Please use cash
+                or external terminal checkout.
+              </div>
+            ) : !selectedCustomer ? (
               <div>
                 <label>
                   Select customer
@@ -612,16 +650,21 @@ export function CheckoutScreen({
 
                 <button
                   className="primary"
-                  disabled={!accountConfirmed || Boolean(accountBlockedReason)}
+                  disabled={
+                    completing ||
+                    !accountConfirmed ||
+                    Boolean(accountBlockedReason)
+                  }
                   onClick={() => void complete()}
                 >
-                  Complete account sale
+                  {completing ? 'Processing…' : 'Complete account sale'}
                 </button>
               </div>
             )}
 
             <button
               style={{ marginTop: '8px' }}
+              disabled={completing}
               onClick={() => setPayment(null)}
             >
               Back

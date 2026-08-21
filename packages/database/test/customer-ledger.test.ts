@@ -4,6 +4,8 @@ import { StoreDatabase } from '../src/index.js';
 
 let store: StoreDatabase;
 let customerId: string;
+let categoryId: string;
+let productId: string;
 
 beforeEach(() => {
   store = new StoreDatabase(':memory:');
@@ -11,6 +13,22 @@ beforeEach(() => {
     name: 'Reuven',
     accountNumber: '1001',
   }).id;
+  categoryId = store.createCategory({ name: 'General' }).id;
+  productId = store.createProduct({
+    categoryId,
+    name: 'Siddur',
+    purchaseCostCents: 500,
+    sellingPriceCents: 1000,
+    taxable: false,
+    lowStockThreshold: 0,
+    barcodes: ['BAR-1'],
+  }).id;
+  store.addInventoryMovement({
+    productId,
+    quantityChange: 100,
+    reason: 'stock_received',
+    notes: 'Opening stock',
+  });
 });
 
 afterEach(() => {
@@ -25,7 +43,7 @@ describe('customer ledger', () => {
         `INSERT INTO customer_ledger (
           id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
           related_sale_id, related_account_payment_id, device_id, notes, sequence
-        ) VALUES (?, ?, ?, 500, 'sale_charge', ?, NULL, NULL, NULL, 'Test charge', 1)`,
+        ) VALUES (?, ?, ?, 500, 'manual_debit_adjustment', ?, NULL, NULL, NULL, 'Test adjustment', 1)`,
       )
       .run(randomUUID(), opId, customerId, new Date().toISOString());
 
@@ -45,28 +63,6 @@ describe('customer ledger', () => {
   });
 
   it('enforces entry type direction rules and rejects zero entries', () => {
-    // sale_charge must be positive
-    expect(() =>
-      store.connection
-        .prepare(
-          `INSERT INTO customer_ledger (
-            id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-          ) VALUES (?, ?, ?, -100, 'sale_charge', ?, 'Invalid', 1)`,
-        )
-        .run(randomUUID(), randomUUID(), customerId, new Date().toISOString()),
-    ).toThrow();
-
-    // payment must be negative
-    expect(() =>
-      store.connection
-        .prepare(
-          `INSERT INTO customer_ledger (
-            id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-          ) VALUES (?, ?, ?, 100, 'payment', ?, 'Invalid', 1)`,
-        )
-        .run(randomUUID(), randomUUID(), customerId, new Date().toISOString()),
-    ).toThrow();
-
     // manual debit must be positive
     expect(() =>
       store.connection
@@ -95,10 +91,48 @@ describe('customer ledger', () => {
         .prepare(
           `INSERT INTO customer_ledger (
             id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-          ) VALUES (?, ?, ?, 0, 'sale_charge', ?, 'Zero', 1)`,
+          ) VALUES (?, ?, ?, 0, 'manual_debit_adjustment', ?, 'Zero', 1)`,
         )
         .run(randomUUID(), randomUUID(), customerId, new Date().toISOString()),
     ).toThrow();
+  });
+
+  it('enforces cross-table constraints on sale_charge and payment entry types', () => {
+    // sale_charge without matching sale fails
+    expect(() =>
+      store.connection
+        .prepare(
+          `INSERT INTO customer_ledger (
+            id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+            related_sale_id, related_account_payment_id, notes, sequence
+          ) VALUES (?, ?, ?, 1000, 'sale_charge', ?, ?, NULL, 'Fake sale', 1)`,
+        )
+        .run(
+          randomUUID(),
+          randomUUID(),
+          customerId,
+          new Date().toISOString(),
+          randomUUID(),
+        ),
+    ).toThrow(/sale_charge ledger entry must match an existing account sale/);
+
+    // payment without matching account payment fails
+    expect(() =>
+      store.connection
+        .prepare(
+          `INSERT INTO customer_ledger (
+            id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+            related_sale_id, related_account_payment_id, notes, sequence
+          ) VALUES (?, ?, ?, -500, 'payment', ?, NULL, ?, 'Fake payment', 1)`,
+        )
+        .run(
+          randomUUID(),
+          randomUUID(),
+          customerId,
+          new Date().toISOString(),
+          randomUUID(),
+        ),
+    ).toThrow(/payment ledger entry must match an existing account payment/);
   });
 
   it('rejects duplicate operation IDs in the ledger', () => {
@@ -107,7 +141,7 @@ describe('customer ledger', () => {
       .prepare(
         `INSERT INTO customer_ledger (
           id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-        ) VALUES (?, ?, ?, 500, 'sale_charge', ?, 'First', 1)`,
+        ) VALUES (?, ?, ?, 500, 'manual_debit_adjustment', ?, 'First', 1)`,
       )
       .run(randomUUID(), opId, customerId, new Date().toISOString());
 
@@ -116,7 +150,7 @@ describe('customer ledger', () => {
         .prepare(
           `INSERT INTO customer_ledger (
             id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-          ) VALUES (?, ?, ?, 500, 'sale_charge', ?, 'Duplicate', 2)`,
+          ) VALUES (?, ?, ?, 500, 'manual_debit_adjustment', ?, 'Duplicate', 2)`,
         )
         .run(randomUUID(), opId, customerId, new Date().toISOString()),
     ).toThrow();
@@ -131,7 +165,7 @@ describe('customer ledger', () => {
       .prepare(
         `INSERT INTO customer_ledger (
           id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-        ) VALUES (?, ?, ?, 1000, 'sale_charge', ?, 'Sale 1', 1)`,
+        ) VALUES (?, ?, ?, 1000, 'manual_debit_adjustment', ?, 'Adjustment 1', 1)`,
       )
       .run(randomUUID(), randomUUID(), customerId, t1);
 
@@ -139,7 +173,7 @@ describe('customer ledger', () => {
       .prepare(
         `INSERT INTO customer_ledger (
           id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-        ) VALUES (?, ?, ?, -400, 'payment', ?, 'Payment 1', 2)`,
+        ) VALUES (?, ?, ?, -400, 'manual_credit_adjustment', ?, 'Adjustment 2', 2)`,
       )
       .run(randomUUID(), randomUUID(), customerId, t2);
 
@@ -147,7 +181,7 @@ describe('customer ledger', () => {
       .prepare(
         `INSERT INTO customer_ledger (
           id, operation_id, customer_id, amount_cents, entry_type, occurred_at, notes, sequence
-        ) VALUES (?, ?, ?, 250, 'sale_charge', ?, 'Sale 2', 3)`,
+        ) VALUES (?, ?, ?, 250, 'manual_debit_adjustment', ?, 'Adjustment 3', 3)`,
       )
       .run(randomUUID(), randomUUID(), customerId, t3);
 
@@ -157,9 +191,9 @@ describe('customer ledger', () => {
     expect(
       history.map((h) => [h.notes, h.amountCents, h.resultingBalanceCents]),
     ).toEqual([
-      ['Sale 2', 250, 850],
-      ['Payment 1', -400, 600],
-      ['Sale 1', 1000, 1000],
+      ['Adjustment 3', 250, 850],
+      ['Adjustment 2', -400, 600],
+      ['Adjustment 1', 1000, 1000],
     ]);
   });
 });
