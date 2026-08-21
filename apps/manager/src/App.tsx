@@ -1,0 +1,793 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from 'react';
+import type { Category, Product, StoredImage } from '@shul-store/shared';
+
+type View = 'products' | 'categories' | 'inventory';
+const imageUrl = (id: string | null) =>
+  id ? `store-image://local/${id}` : undefined;
+const money = (cents: number) =>
+  new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(
+    cents / 100,
+  );
+const messageFrom = (error: unknown) =>
+  error instanceof Error
+    ? error.message.replace(/^Error invoking remote method '[^']+': /, '')
+    : 'Something went wrong';
+
+export function App() {
+  const [view, setView] = useState<View>('products');
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [search, setSearch] = useState('');
+  const [showInactive, setShowInactive] = useState(false);
+  const [categoryEditor, setCategoryEditor] = useState<
+    Category | null | undefined
+  >();
+  const [productEditor, setProductEditor] = useState<
+    Product | null | undefined
+  >();
+  const [inventoryProduct, setInventoryProduct] = useState<
+    Product | undefined
+  >();
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(async () => {
+    try {
+      const [nextCategories, nextProducts] = await Promise.all([
+        window.storeApi.categories.list(true),
+        window.storeApi.products.list(true),
+      ]);
+      setCategories(nextCategories);
+      setProducts(nextProducts);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  }, []);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const visibleProducts = useMemo(
+    () =>
+      products.filter(
+        (product) =>
+          (showInactive || product.active) &&
+          `${product.name} ${product.secondaryName ?? ''} ${product.barcodes.map((b) => b.value).join(' ')}`
+            .toLowerCase()
+            .includes(search.toLowerCase()),
+      ),
+    [products, search, showInactive],
+  );
+  const visibleCategories = categories.filter(
+    (category) => showInactive || category.active,
+  );
+
+  async function toggleProduct(product: Product) {
+    try {
+      await window.storeApi.products.setActive(product.id, !product.active);
+      await refresh();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  }
+  async function toggleCategory(category: Category) {
+    try {
+      await window.storeApi.categories.setActive(category.id, !category.active);
+      await refresh();
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  }
+
+  return (
+    <div className="shell">
+      <aside>
+        <div className="brand">
+          <div className="brand-mark">S</div>
+          <div>
+            <strong>Shul Store</strong>
+            <small>Manager</small>
+          </div>
+        </div>
+        <nav>
+          <button
+            className={view === 'products' ? 'active' : ''}
+            onClick={() => setView('products')}
+          >
+            ▦ <span>Products</span>
+          </button>
+          <button
+            className={view === 'categories' ? 'active' : ''}
+            onClick={() => setView('categories')}
+          >
+            ◫ <span>Categories</span>
+          </button>
+          <button
+            className={view === 'inventory' ? 'active' : ''}
+            onClick={() => setView('inventory')}
+          >
+            ↕ <span>Inventory</span>
+          </button>
+        </nav>
+        <div className="offline">
+          <i /> Local database
+          <br />
+          <small>Ready offline</small>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <h1>
+              {view === 'products'
+                ? 'Products'
+                : view === 'categories'
+                  ? 'Categories'
+                  : 'Inventory'}
+            </h1>
+            <p>
+              {view === 'inventory'
+                ? 'Receive stock and record append-only adjustments.'
+                : `Manage your store ${view}.`}
+            </p>
+          </div>
+          <button
+            className="primary"
+            onClick={() =>
+              view === 'categories'
+                ? setCategoryEditor(null)
+                : view === 'products'
+                  ? setProductEditor(null)
+                  : undefined
+            }
+          >
+            {view === 'categories'
+              ? '+ New category'
+              : view === 'products'
+                ? '+ New product'
+                : ''}
+          </button>
+        </header>
+        {error && (
+          <div className="alert">
+            <span>{error}</span>
+            <button onClick={() => setError('')}>×</button>
+          </div>
+        )}
+        <section className="toolbar">
+          <label className="search">
+            ⌕
+            <input
+              placeholder="Search by name or barcode…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => setShowInactive(e.target.checked)}
+            />{' '}
+            Show inactive
+          </label>
+        </section>
+
+        {view === 'categories' && (
+          <div className="category-grid">
+            {visibleCategories.map((category) => (
+              <article
+                className={!category.active ? 'inactive card' : 'card'}
+                key={category.id}
+              >
+                <div className="category-image">
+                  {category.imageId ? (
+                    <img src={imageUrl(category.imageId)} />
+                  ) : (
+                    <span>{category.name.slice(0, 1).toUpperCase()}</span>
+                  )}
+                </div>
+                <div className="card-body">
+                  <div>
+                    <h3>{category.name}</h3>
+                    {category.secondaryName && <p>{category.secondaryName}</p>}
+                    <small>
+                      {
+                        products.filter(
+                          (p) => p.categoryId === category.id && p.active,
+                        ).length
+                      }{' '}
+                      products
+                    </small>
+                  </div>
+                  <div className="actions">
+                    <button onClick={() => setCategoryEditor(category)}>
+                      Edit
+                    </button>
+                    <button onClick={() => void toggleCategory(category)}>
+                      {category.active ? 'Deactivate' : 'Activate'}
+                    </button>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+
+        {view === 'products' && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th>Category</th>
+                  <th>Barcodes</th>
+                  <th>Price</th>
+                  <th>Stock</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleProducts.map((product) => (
+                  <tr
+                    className={!product.active ? 'inactive' : ''}
+                    key={product.id}
+                  >
+                    <td>
+                      <div className="product-cell">
+                        {product.imageId ? (
+                          <img src={imageUrl(product.imageId)} />
+                        ) : (
+                          <span className="thumb">{product.name[0]}</span>
+                        )}
+                        <div>
+                          <strong>{product.name}</strong>
+                          {product.secondaryName && (
+                            <small>{product.secondaryName}</small>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td>{product.categoryName}</td>
+                    <td>
+                      <code>{product.barcodes[0]?.value ?? '—'}</code>
+                      {product.barcodes.length > 1 && (
+                        <small> +{product.barcodes.length - 1}</small>
+                      )}
+                    </td>
+                    <td>
+                      <strong>{money(product.sellingPriceCents)}</strong>
+                      <small>Cost {money(product.purchaseCostCents)}</small>
+                    </td>
+                    <td>
+                      <span
+                        className={
+                          product.stockQuantity <= product.lowStockThreshold
+                            ? 'stock low'
+                            : 'stock'
+                        }
+                      >
+                        {product.stockQuantity}
+                      </span>
+                    </td>
+                    <td className="row-actions">
+                      <button onClick={() => setProductEditor(product)}>
+                        Edit
+                      </button>
+                      <button onClick={() => void toggleProduct(product)}>
+                        {product.active ? 'Deactivate' : 'Activate'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {view === 'inventory' && (
+          <div className="inventory-grid">
+            {visibleProducts.map((product) => (
+              <article className="inventory-card" key={product.id}>
+                <div>
+                  <small>{product.categoryName}</small>
+                  <h3>{product.name}</h3>
+                </div>
+                <div
+                  className={
+                    product.stockQuantity <= product.lowStockThreshold
+                      ? 'big-stock low-text'
+                      : 'big-stock'
+                  }
+                >
+                  {product.stockQuantity}
+                  <small>in stock</small>
+                </div>
+                <button onClick={() => setInventoryProduct(product)}>
+                  Record movement
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+        {((view === 'products' && visibleProducts.length === 0) ||
+          (view === 'categories' && visibleCategories.length === 0)) && (
+          <div className="empty">
+            <b>Nothing here yet</b>
+            <p>Add an item or change your filters.</p>
+          </div>
+        )}
+      </main>
+      {categoryEditor !== undefined && (
+        <CategoryModal
+          category={categoryEditor}
+          onClose={() => setCategoryEditor(undefined)}
+          onSaved={async () => {
+            setCategoryEditor(undefined);
+            await refresh();
+          }}
+          setError={setError}
+        />
+      )}
+      {productEditor !== undefined && (
+        <ProductModal
+          product={productEditor}
+          categories={categories.filter(
+            (c) => c.active || c.id === productEditor?.categoryId,
+          )}
+          onClose={() => setProductEditor(undefined)}
+          onSaved={async () => {
+            setProductEditor(undefined);
+            await refresh();
+          }}
+          setError={setError}
+        />
+      )}
+      {inventoryProduct && (
+        <InventoryModal
+          product={inventoryProduct}
+          onClose={() => setInventoryProduct(undefined)}
+          onSaved={async () => {
+            setInventoryProduct(undefined);
+            await refresh();
+          }}
+          setError={setError}
+        />
+      )}
+    </div>
+  );
+}
+
+function Modal({
+  title,
+  children,
+  onClose,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose(): void;
+}) {
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="modal">
+        <div className="modal-title">
+          <h2>{title}</h2>
+          <button onClick={onClose}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ImagePicker({
+  imageId,
+  onChange,
+}: {
+  imageId: string | null;
+  onChange(image: StoredImage): void;
+}) {
+  return (
+    <button
+      type="button"
+      className="image-picker"
+      onClick={async () => {
+        const image = await window.storeApi.images.choose();
+        if (image) onChange(image);
+      }}
+    >
+      {imageId ? <img src={imageUrl(imageId)} /> : <span>＋</span>}
+      <div>
+        <b>{imageId ? 'Change image' : 'Add image'}</b>
+        <small>JPG, PNG, WebP or GIF · max 10 MB</small>
+      </div>
+    </button>
+  );
+}
+
+function CategoryModal({
+  category,
+  onClose,
+  onSaved,
+  setError,
+}: {
+  category: Category | null;
+  onClose(): void;
+  onSaved(): Promise<void>;
+  setError(value: string): void;
+}) {
+  const [name, setName] = useState(category?.name ?? '');
+  const [secondaryName, setSecondaryName] = useState(
+    category?.secondaryName ?? '',
+  );
+  const [imageId, setImageId] = useState<string | null>(
+    category?.imageId ?? null,
+  );
+  const [saving, setSaving] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const input = { name, secondaryName: secondaryName || null, imageId };
+      if (category) await window.storeApi.categories.update(category.id, input);
+      else await window.storeApi.categories.create(input);
+      await onSaved();
+    } catch (e) {
+      setError(messageFrom(e));
+      setSaving(false);
+    }
+  }
+  return (
+    <Modal
+      title={category ? 'Edit category' : 'New category'}
+      onClose={onClose}
+    >
+      <form onSubmit={submit}>
+        <ImagePicker
+          imageId={imageId}
+          onChange={(image) => setImageId(image.id)}
+        />
+        <label>
+          Name
+          <input
+            autoFocus
+            required
+            maxLength={200}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label>
+          Secondary-language name <em>Optional</em>
+          <input
+            maxLength={200}
+            value={secondaryName}
+            onChange={(e) => setSecondaryName(e.target.value)}
+          />
+        </label>
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" disabled={saving}>
+            {saving ? 'Saving…' : 'Save category'}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+function ProductModal({
+  product,
+  categories,
+  onClose,
+  onSaved,
+  setError,
+}: {
+  product: Product | null;
+  categories: Category[];
+  onClose(): void;
+  onSaved(): Promise<void>;
+  setError(value: string): void;
+}) {
+  const [categoryId, setCategoryId] = useState(
+    product?.categoryId ?? categories[0]?.id ?? '',
+  );
+  const [name, setName] = useState(product?.name ?? '');
+  const [secondaryName, setSecondaryName] = useState(
+    product?.secondaryName ?? '',
+  );
+  const [cost, setCost] = useState(
+    product ? (product.purchaseCostCents / 100).toFixed(2) : '0.00',
+  );
+  const [price, setPrice] = useState(
+    product ? (product.sellingPriceCents / 100).toFixed(2) : '0.00',
+  );
+  const [threshold, setThreshold] = useState(
+    String(product?.lowStockThreshold ?? 0),
+  );
+  const [taxable, setTaxable] = useState(product?.taxable ?? false);
+  const [imageId, setImageId] = useState<string | null>(
+    product?.imageId ?? null,
+  );
+  const [barcodes, setBarcodes] = useState(
+    product?.barcodes.map((b) => b.value) ?? [],
+  );
+  const [barcode, setBarcode] = useState('');
+  const [saving, setSaving] = useState(false);
+  function addBarcode(value = barcode) {
+    const clean = value.trim();
+    if (clean && !barcodes.includes(clean)) setBarcodes([...barcodes, clean]);
+    setBarcode('');
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const input = {
+        categoryId,
+        name,
+        secondaryName: secondaryName || null,
+        imageId,
+        purchaseCostCents: Math.round(Number(cost) * 100),
+        sellingPriceCents: Math.round(Number(price) * 100),
+        taxable,
+        lowStockThreshold: Number(threshold),
+        barcodes,
+      };
+      if (product) await window.storeApi.products.update(product.id, input);
+      else await window.storeApi.products.create(input);
+      await onSaved();
+    } catch (e) {
+      setError(messageFrom(e));
+      setSaving(false);
+    }
+  }
+  return (
+    <Modal title={product ? 'Edit product' : 'New product'} onClose={onClose}>
+      <form onSubmit={submit}>
+        <ImagePicker
+          imageId={imageId}
+          onChange={(image) => setImageId(image.id)}
+        />
+        <div className="form-grid">
+          <label>
+            Product name
+            <input
+              autoFocus
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </label>
+          <label>
+            Secondary-language name <em>Optional</em>
+            <input
+              value={secondaryName}
+              onChange={(e) => setSecondaryName(e.target.value)}
+            />
+          </label>
+          <label>
+            Category
+            <select
+              required
+              value={categoryId}
+              onChange={(e) => setCategoryId(e.target.value)}
+            >
+              <option value="" disabled>
+                Choose…
+              </option>
+              {categories.map((c) => (
+                <option value={c.id} key={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Low-stock alert
+            <input
+              type="number"
+              min="0"
+              step="1"
+              required
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+            />
+          </label>
+          <label>
+            Purchase cost ($)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              required
+              value={cost}
+              onChange={(e) => setCost(e.target.value)}
+            />
+          </label>
+          <label>
+            Selling price ($)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              required
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={taxable}
+            onChange={(e) => setTaxable(e.target.checked)}
+          />{' '}
+          This product is taxable
+        </label>
+        <div className="barcode-box">
+          <label>
+            Barcodes <em>Scan or type, then press Enter</em>
+            <div className="barcode-entry">
+              <input
+                value={barcode}
+                onChange={(e) => setBarcode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addBarcode();
+                  }
+                }}
+              />
+              <button type="button" onClick={() => addBarcode()}>
+                Add
+              </button>
+              <button
+                type="button"
+                onClick={async () =>
+                  addBarcode(
+                    await window.storeApi.products.generateInternalBarcode(),
+                  )
+                }
+              >
+                Generate Code 128
+              </button>
+            </div>
+          </label>
+          <div className="chips">
+            {barcodes.map((value) => (
+              <button
+                type="button"
+                key={value}
+                onClick={() =>
+                  setBarcodes(barcodes.filter((item) => item !== value))
+                }
+              >
+                <code>{value}</code> ×
+              </button>
+            ))}
+          </div>
+        </div>
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" disabled={saving || !categoryId}>
+            {saving ? 'Saving…' : 'Save product'}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
+
+function InventoryModal({
+  product,
+  onClose,
+  onSaved,
+  setError,
+}: {
+  product: Product;
+  onClose(): void;
+  onSaved(): Promise<void>;
+  setError(value: string): void;
+}) {
+  const [reason, setReason] = useState('stock_received');
+  const [quantity, setQuantity] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const negative = reason === 'damaged' || reason === 'manual_decrease';
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const amount = Math.abs(Number(quantity)) * (negative ? -1 : 1);
+      await window.storeApi.inventory.addMovement({
+        productId: product.id,
+        quantityChange: amount,
+        reason: reason as any,
+        notes,
+      });
+      await onSaved();
+    } catch (e) {
+      setError(messageFrom(e));
+      setSaving(false);
+    }
+  }
+  return (
+    <Modal title="Record inventory movement" onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="stock-summary">
+          <div>
+            <small>Product</small>
+            <b>{product.name}</b>
+          </div>
+          <div>
+            <small>Current stock</small>
+            <b>{product.stockQuantity}</b>
+          </div>
+        </div>
+        <label>
+          Reason
+          <select value={reason} onChange={(e) => setReason(e.target.value)}>
+            <option value="stock_received">Stock received (+)</option>
+            <option value="manual_increase">Manual increase (+)</option>
+            <option value="customer_return">Customer return (+)</option>
+            <option value="manual_decrease">Manual reduction (−)</option>
+            <option value="damaged">Damaged inventory (−)</option>
+            <option value="stock_count_correction">
+              Stock count correction (+)
+            </option>
+          </select>
+        </label>
+        <label>
+          Quantity
+          <input
+            autoFocus
+            type="number"
+            min="1"
+            step="1"
+            required
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+          />
+        </label>
+        <label>
+          Reason details <em>Required for the audit history</em>
+          <textarea
+            required
+            maxLength={1000}
+            rows={3}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+          />
+        </label>
+        <p className="new-total">
+          New calculated stock:{' '}
+          <b>
+            {product.stockQuantity +
+              (Number(quantity) || 0) * (negative ? -1 : 1)}
+          </b>
+        </p>
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="primary" disabled={saving}>
+            {saving ? 'Recording…' : 'Record movement'}
+          </button>
+        </footer>
+      </form>
+    </Modal>
+  );
+}
