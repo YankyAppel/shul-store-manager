@@ -197,8 +197,7 @@ export interface StoreApi {
       options?: StatementOptions,
     ): Promise<CustomerStatementData>;
     printStatement(
-      customerId: string,
-      options?: StatementOptions,
+      statementData: CustomerStatementData,
     ): Promise<{ success: boolean; error: string | null }>;
   };
   accountPayments: {

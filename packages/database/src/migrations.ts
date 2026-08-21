@@ -129,6 +129,7 @@ export const migrations: Migration[] = [
       CREATE TRIGGER sales_status_transition BEFORE UPDATE OF status ON sales
       WHEN NOT ((OLD.status='open' AND NEW.status='awaiting_payment') OR
                 (OLD.status='awaiting_payment' AND NEW.status='paid') OR
+                (OLD.status='awaiting_payment' AND NEW.status='completed') OR
                 (OLD.status='paid' AND NEW.status='completed') OR
                 (OLD.status IN ('open','awaiting_payment') AND NEW.status='voided') OR
                 (OLD.status='completed' AND NEW.status='refunded'))
@@ -328,6 +329,13 @@ export const migrations: Migration[] = [
           WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_sale_id = OLD.id)
           THEN RAISE(ABORT, 'Cannot delete sale that is linked to customer ledger')
         END;
+      END;
+
+      CREATE TRIGGER prevent_sale_update_if_ledger_linked
+      BEFORE UPDATE OF customer_id, total_cents, tender_type ON sales
+      WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_sale_id = OLD.id)
+      BEGIN
+        SELECT RAISE(ABORT, 'Cannot modify financial fields of a sale that is linked to customer ledger');
       END;
 
       CREATE TRIGGER prevent_account_payment_delete_if_ledger_linked

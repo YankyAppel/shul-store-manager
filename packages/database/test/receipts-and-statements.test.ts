@@ -6,6 +6,7 @@ import {
   receiptHtml,
   statementHtml,
   statementOptionsSchema,
+  strictIsoUtcDateTimeSchema,
 } from '@shul-store/shared';
 import { StoreDatabase } from '../src/index.js';
 
@@ -77,7 +78,6 @@ describe('receipts and statements', () => {
   });
 
   it('records print attempts for sales and account payments without changing records', () => {
-    // 1. Complete an account sale so customer has balance
     const sale = store.completeSale({
       completionKey: randomUUID(),
       lines: [{ productId, quantity: 1, barcodeUsed: null }],
@@ -189,7 +189,6 @@ describe('receipts and statements', () => {
   });
 
   it('handles custom statement date boundaries with exact start-of-day and exclusive end-of-day', () => {
-    // Four entries on critical timestamps
     const beforeStart = '2026-02-01T23:59:59.999Z';
     const atStart = '2026-02-02T00:00:00.000Z';
     const duringPeriod = '2026-02-10T12:00:00.000Z';
@@ -236,29 +235,70 @@ describe('receipts and statements', () => {
       )
       .run(randomUUID(), randomUUID(), customerId, atNextDayStart);
 
-    // Range: 2026-02-02 to 2026-02-15 (exclusive upper bound 2026-02-16T00:00:00.000Z)
     const statement = store.getCustomerStatement(customerId, {
       range: 'custom',
       startDate: '2026-02-02T00:00:00.000Z',
       endDate: '2026-02-16T00:00:00.000Z',
     });
 
-    // Opening balance includes "Before" (100)
     expect(statement.openingBalanceCents).toBe(100);
-
-    // Entries include "At Start", "Middle", "End Of Day" (200, 300, 400 = 900)
-    // Does NOT include "After Exclusive End" (500)
     expect(statement.entries.map((e) => e.notes)).toEqual([
       'At Start',
       'Middle',
       'End Of Day',
     ]);
     expect(statement.totalChargesCents).toBe(900);
-    expect(statement.closingBalanceCents).toBe(1000); // 100 + 900
+    expect(statement.closingBalanceCents).toBe(1000);
   });
 
-  it('validates statement option schema constraints', () => {
-    // Missing dates on custom range
+  it('strictly validates ISO UTC datetimes, impossible calendar dates, leap days, and boundaries', () => {
+    // 1. Valid ISO UTC strings
+    expect(strictIsoUtcDateTimeSchema.parse('2026-02-01T00:00:00.000Z')).toBe(
+      '2026-02-01T00:00:00.000Z',
+    );
+    expect(strictIsoUtcDateTimeSchema.parse('2026-02-01T00:00:00Z')).toBe(
+      '2026-02-01T00:00:00Z',
+    );
+
+    // 2. Impossible calendar dates rejected
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2026-02-30T00:00:00.000Z'),
+    ).toThrow('Invalid calendar date or time');
+
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2026-04-31T00:00:00.000Z'),
+    ).toThrow('Invalid calendar date or time');
+
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2026-13-01T00:00:00.000Z'),
+    ).toThrow('Invalid calendar date or time');
+
+    // 3. Loose JS values rejected
+    expect(() => strictIsoUtcDateTimeSchema.parse('0')).toThrow(
+      'Must be a valid ISO 8601 UTC datetime string',
+    );
+    expect(() => strictIsoUtcDateTimeSchema.parse('invalid-text')).toThrow(
+      'Must be a valid ISO 8601 UTC datetime string',
+    );
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2026-02-01 00:00:00'),
+    ).toThrow('Must be a valid ISO 8601 UTC datetime string');
+
+    // 4. Leap day verification
+    // 2024 is a leap year -> 2024-02-29 is valid
+    expect(strictIsoUtcDateTimeSchema.parse('2024-02-29T12:00:00.000Z')).toBe(
+      '2024-02-29T12:00:00.000Z',
+    );
+
+    // 2025 and 2026 are not leap years -> 02-29 is invalid
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2025-02-29T00:00:00.000Z'),
+    ).toThrow('Invalid calendar date or time');
+    expect(() =>
+      strictIsoUtcDateTimeSchema.parse('2026-02-29T00:00:00.000Z'),
+    ).toThrow('Invalid calendar date or time');
+
+    // 5. Statement option range constraints
     expect(() =>
       statementOptionsSchema.parse({
         range: 'custom',
@@ -269,38 +309,27 @@ describe('receipts and statements', () => {
     expect(() =>
       statementOptionsSchema.parse({
         range: 'custom',
-        endDate: '2026-02-15T00:00:00.000Z',
-      }),
-    ).toThrow('Both start date and end date are required');
-
-    // Reversed dates
-    expect(() =>
-      statementOptionsSchema.parse({
-        range: 'custom',
         startDate: '2026-02-15T00:00:00.000Z',
         endDate: '2026-02-01T00:00:00.000Z',
       }),
-    ).toThrow('Start date cannot be after end date');
+    ).toThrow('Start date must be strictly before exclusive end date');
 
-    // Malformed date
     expect(() =>
       statementOptionsSchema.parse({
         range: 'custom',
-        startDate: 'invalid-date',
-        endDate: '2026-02-15T00:00:00.000Z',
+        startDate: '2026-02-01T00:00:00.000Z',
+        endDate: '2026-02-01T00:00:00.000Z',
       }),
-    ).toThrow('Invalid start date format');
+    ).toThrow('Start date must be strictly before exclusive end date');
   });
 
   it('escapes customer and settings strings in production HTML templates', () => {
-    // Test direct helper
     expect(
       escapeHtml('Dan & Sons <script>alert("xss")</script> "test" \'quote\''),
     ).toBe(
       'Dan &amp; Sons &lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt; &quot;test&quot; &#39;quote&#39;',
     );
 
-    // Test production statement HTML
     const statementData = store.getCustomerStatement(customerId, {
       range: 'all_activity',
     });
@@ -314,7 +343,6 @@ describe('receipts and statements', () => {
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
     expect(html).toContain('דן &amp; friends');
 
-    // Test production receipt HTML
     const sale = store.completeSale({
       completionKey: randomUUID(),
       lines: [{ productId, quantity: 1, barcodeUsed: null }],
@@ -327,7 +355,6 @@ describe('receipts and statements', () => {
     expect(saleReceiptHtml).not.toContain('<script>');
     expect(saleReceiptHtml).toContain('&lt;script&gt;');
 
-    // Test production account payment receipt HTML
     const payment = store.recordAccountPayment({
       operationId: randomUUID(),
       customerId,

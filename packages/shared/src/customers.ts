@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { StoreSettings } from './checkout.js';
+import { storeSettingsSchema, type StoreSettings } from './checkout.js';
 
 const nameSchema = z.string().trim().min(1).max(200);
 const optionalText = (max: number) =>
@@ -139,11 +139,53 @@ export const statementDateRangeSchema = z.enum([
 ]);
 export type StatementDateRange = z.infer<typeof statementDateRangeSchema>;
 
+/** Strict ISO 8601 UTC datetime validator. E.g. "2026-02-01T00:00:00.000Z" */
+export const strictIsoUtcDateTimeSchema = z
+  .string()
+  .trim()
+  .superRefine((val, ctx) => {
+    const match =
+      /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(
+        val,
+      );
+    if (!match) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'Must be a valid ISO 8601 UTC datetime string (e.g. 2026-02-01T00:00:00.000Z).',
+      });
+      return;
+    }
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const min = Number(match[5]);
+    const sec = Number(match[6]);
+    const ms = match[7] ? Number(match[7].padEnd(3, '0')) : 0;
+
+    const d = new Date(Date.UTC(year, month - 1, day, hour, min, sec, ms));
+    if (
+      Number.isNaN(d.getTime()) ||
+      d.getUTCFullYear() !== year ||
+      d.getUTCMonth() + 1 !== month ||
+      d.getUTCDate() !== day ||
+      d.getUTCHours() !== hour ||
+      d.getUTCMinutes() !== min ||
+      d.getUTCSeconds() !== sec
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Invalid calendar date or time.',
+      });
+    }
+  });
+
 export const statementOptionsSchema = z
   .object({
     range: statementDateRangeSchema,
-    startDate: z.string().trim().nullable().optional(),
-    endDate: z.string().trim().nullable().optional(),
+    startDate: strictIsoUtcDateTimeSchema.nullable().optional(),
+    endDate: strictIsoUtcDateTimeSchema.nullable().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.range === 'custom') {
@@ -158,57 +200,65 @@ export const statementOptionsSchema = z
       }
       const start = new Date(val.startDate).getTime();
       const end = new Date(val.endDate).getTime();
-      if (Number.isNaN(start)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Invalid start date format.',
-          path: ['startDate'],
-        });
-      }
-      if (Number.isNaN(end)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Invalid end date format.',
-          path: ['endDate'],
-        });
-      }
-      if (!Number.isNaN(start) && !Number.isNaN(end) && start > end) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Start date cannot be after end date.',
-          path: ['startDate'],
-        });
+      if (!Number.isNaN(start) && !Number.isNaN(end)) {
+        if (start >= end) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Start date must be strictly before exclusive end date.',
+            path: ['startDate'],
+          });
+        }
       }
     }
   });
 export type StatementOptions = z.infer<typeof statementOptionsSchema>;
 
-export interface StatementEntry {
-  id: string;
-  occurredAt: string;
-  entryType: LedgerEntryType;
-  notes: string;
-  relatedSaleId: string | null;
-  relatedSaleReceiptNumber: number | null;
-  relatedAccountPaymentId: string | null;
-  relatedPaymentReceiptNumber: number | null;
-  chargeCents: number | null;
-  paymentCents: number | null;
-  runningBalanceCents: number;
-}
+export const statementEntrySchema = z.object({
+  id: z.string().uuid(),
+  occurredAt: z.string(),
+  entryType: ledgerEntryTypeSchema,
+  notes: z.string(),
+  relatedSaleId: z.string().uuid().nullable(),
+  relatedSaleReceiptNumber: z.number().int().nullable(),
+  relatedAccountPaymentId: z.string().uuid().nullable(),
+  relatedPaymentReceiptNumber: z.number().int().nullable(),
+  chargeCents: z.number().int().nonnegative().nullable(),
+  paymentCents: z.number().int().nonnegative().nullable(),
+  runningBalanceCents: z.number().int(),
+});
+export type StatementEntry = z.infer<typeof statementEntrySchema>;
 
-export interface CustomerStatementData {
-  customer: Customer;
-  settings: StoreSettings;
-  period: {
-    startDate: string | null;
-    endDate: string | null;
-    label: string;
-  };
-  openingBalanceCents: number;
-  entries: StatementEntry[];
-  closingBalanceCents: number;
-  totalChargesCents: number;
-  totalPaymentsCents: number;
-  generatedAt: string;
-}
+export const customerStatementDataSchema = z.object({
+  customer: z.object({
+    id: z.string().uuid(),
+    accountNumber: z.string(),
+    accountBarcode: z.string().nullable(),
+    name: z.string(),
+    secondaryName: z.string().nullable(),
+    phone: z.string().nullable(),
+    email: z.string().nullable(),
+    address: z.string().nullable(),
+    notes: z.string().nullable(),
+    active: z.boolean(),
+    blocked: z.boolean(),
+    creditLimitCents: z.number().int().nullable(),
+    effectiveCreditLimitCents: z.number().int(),
+    currentBalanceCents: z.number().int(),
+    availableCreditCents: z.number().int(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  }),
+  settings: storeSettingsSchema,
+  period: z.object({
+    startDate: z.string().nullable(),
+    endDate: z.string().nullable(),
+    label: z.string(),
+  }),
+  openingBalanceCents: z.number().int(),
+  entries: z.array(statementEntrySchema),
+  closingBalanceCents: z.number().int(),
+  totalChargesCents: z.number().int().nonnegative(),
+  totalPaymentsCents: z.number().int().nonnegative(),
+  generatedAt: z.string(),
+});
+export type CustomerStatementData = z.infer<typeof customerStatementDataSchema>;

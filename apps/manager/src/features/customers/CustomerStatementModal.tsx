@@ -22,9 +22,6 @@ export function CustomerStatementModal({
   const [statement, setStatement] = useState<CustomerStatementData | null>(
     null,
   );
-  const [currentOptions, setCurrentOptions] = useState<StatementOptions | null>(
-    null,
-  );
   const [customError, setCustomError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
@@ -41,14 +38,12 @@ export function CustomerStatementModal({
     if (range === 'custom') {
       if (!customStart && !customEnd) {
         setStatement(null);
-        setCurrentOptions(null);
         setLoading(false);
         return;
       }
       if (!customStart || !customEnd) {
         setCustomError('Please select both a start date and an end date.');
         setStatement(null);
-        setCurrentOptions(null);
         setLoading(false);
         return;
       }
@@ -59,7 +54,6 @@ export function CustomerStatementModal({
       if (startParts.length !== 3 || endParts.length !== 3) {
         setCustomError('Please enter valid calendar dates.');
         setStatement(null);
-        setCurrentOptions(null);
         setLoading(false);
         return;
       }
@@ -67,8 +61,10 @@ export function CustomerStatementModal({
       const [sy, sm, sd] = startParts as [number, number, number];
       const [ey, em, ed] = endParts as [number, number, number];
 
-      const startDateObj = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
-      const endDateExclusiveObj = new Date(ey, em - 1, ed + 1, 0, 0, 0, 0);
+      const startDateObj = new Date(Date.UTC(sy, sm - 1, sd, 0, 0, 0, 0));
+      const endDateExclusiveObj = new Date(
+        Date.UTC(ey, em - 1, ed + 1, 0, 0, 0, 0),
+      );
 
       if (
         Number.isNaN(startDateObj.getTime()) ||
@@ -76,7 +72,6 @@ export function CustomerStatementModal({
       ) {
         setCustomError('Please enter valid calendar dates.');
         setStatement(null);
-        setCurrentOptions(null);
         setLoading(false);
         return;
       }
@@ -84,7 +79,6 @@ export function CustomerStatementModal({
       if (customStart > customEnd) {
         setCustomError('Start date cannot be after end date.');
         setStatement(null);
-        setCurrentOptions(null);
         setLoading(false);
         return;
       }
@@ -108,7 +102,6 @@ export function CustomerStatementModal({
         );
         if (reqIdRef.current === currentReqId) {
           setStatement(data);
-          setCurrentOptions(fetchOptions);
         }
       } catch (e) {
         if (reqIdRef.current === currentReqId) {
@@ -125,14 +118,11 @@ export function CustomerStatementModal({
   }, [customer.id, range, customStart, customEnd, setError]);
 
   async function handlePrint() {
-    if (!statement || !currentOptions) return;
+    if (!statement) return;
     setPrinting(true);
     setPrintMessage('');
     try {
-      const result = await window.storeApi.customers.printStatement(
-        customer.id,
-        currentOptions,
-      );
+      const result = await window.storeApi.customers.printStatement(statement);
       if (result.success) {
         setPrintMessage('Statement sent to printer.');
       } else {

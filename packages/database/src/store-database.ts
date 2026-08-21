@@ -383,20 +383,19 @@ export class StoreDatabase {
   }
 
   listInventoryMovements(productId: string): InventoryMovement[] {
-    return (
-      this.connection
-        .prepare(
-          `
-          SELECT *, SUM(quantity_change) OVER (
-            PARTITION BY product_id ORDER BY occurred_at, sequence ROWS UNBOUNDED PRECEDING
-          ) AS resulting_stock
-          FROM inventory_movements
-          WHERE product_id = ?
-          ORDER BY occurred_at DESC, sequence DESC
-        `,
-        )
-        .all(productId) as Row[]
-    ).map(mapMovement);
+    const rows = this.connection
+      .prepare(
+        `
+        SELECT *, SUM(quantity_change) OVER (
+          PARTITION BY product_id ORDER BY occurred_at, sequence ROWS UNBOUNDED PRECEDING
+        ) AS resulting_stock
+        FROM inventory_movements
+        WHERE product_id = ?
+        ORDER BY occurred_at DESC, sequence DESC
+      `,
+      )
+      .all(productId) as Row[];
+    return rows.map(mapMovement);
   }
 
   // --- IMAGES ---
@@ -686,11 +685,11 @@ export class StoreDatabase {
 
     // Check existing completion key idempotency before transaction
     const existingPre = this.connection
-      .prepare('SELECT * FROM sales WHERE completion_key = ?')
-      .get(value.completionKey) as Row | undefined;
+      .prepare('SELECT id FROM sales WHERE completion_key = ?')
+      .get(value.completionKey) as { id: string } | undefined;
     if (existingPre) {
-      this.validateExistingSaleMatch(existingPre, value, settings);
-      return this.getSale(String(existingPre.id));
+      this.validateExistingSaleMatch(existingPre.id, value, settings);
+      return this.getSale(existingPre.id);
     }
 
     const saleId = randomUUID();
@@ -698,41 +697,56 @@ export class StoreDatabase {
     try {
       this.connection.transaction(() => {
         const again = this.connection
-          .prepare('SELECT * FROM sales WHERE completion_key = ?')
-          .get(value.completionKey) as Row | undefined;
+          .prepare('SELECT id FROM sales WHERE completion_key = ?')
+          .get(value.completionKey) as { id: string } | undefined;
         if (again) {
-          this.validateExistingSaleMatch(again, value, settings);
+          this.validateExistingSaleMatch(again.id, value, settings);
           return;
         }
 
-        // Merge cart lines
+        // Merge cart lines with normalized barcode provenance
         const merged = new Map<
           string,
-          { quantity: number; barcodeUsed: string | null }
+          { product: Product; quantity: number; barcodeUsed: string | null }
         >();
         for (const line of value.lines) {
-          const current = merged.get(line.productId);
-          merged.set(line.productId, {
-            quantity: (current?.quantity ?? 0) + line.quantity,
-            barcodeUsed: current?.barcodeUsed ?? line.barcodeUsed,
-          });
+          const cleanBarcode = line.barcodeUsed?.trim() || null;
+          const key = `${line.productId}::${cleanBarcode ?? ''}`;
+          const current = merged.get(key);
+          if (current) {
+            current.quantity += line.quantity;
+          } else {
+            merged.set(key, {
+              product: this.getProduct(line.productId),
+              quantity: line.quantity,
+              barcodeUsed: cleanBarcode,
+            });
+          }
         }
-        const snapshots = [...merged].map(([productId, line]) => ({
-          product: this.getProduct(productId),
-          ...line,
-        }));
+        const snapshots = [...merged.values()];
+
+        // Aggregate stock demand per product ID
+        const productDemand = new Map<string, number>();
+        for (const line of snapshots) {
+          productDemand.set(
+            line.product.id,
+            (productDemand.get(line.product.id) ?? 0) + line.quantity,
+          );
+        }
+
+        for (const [prodId, qty] of productDemand) {
+          const product = this.getProduct(prodId);
+          if (!product.active) {
+            throw new Error(`${product.name} is inactive and cannot be sold.`);
+          }
+          if (qty > product.stockQuantity) {
+            throw new Error(
+              `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}.`,
+            );
+          }
+        }
 
         for (const line of snapshots) {
-          if (!line.product.active) {
-            throw new Error(
-              `${line.product.name} is inactive and cannot be sold.`,
-            );
-          }
-          if (line.quantity > line.product.stockQuantity) {
-            throw new Error(
-              `Insufficient stock for ${line.product.name}. Available: ${line.product.stockQuantity}.`,
-            );
-          }
           if (
             line.barcodeUsed &&
             !line.product.barcodes.some(
@@ -891,7 +905,9 @@ export class StoreDatabase {
             calculated.subtotalCents,
             calculated.totalCents,
           );
+        });
 
+        for (const [prodId, totalQty] of productDemand) {
           this.connection
             .prepare(
               `INSERT INTO inventory_movements (
@@ -902,13 +918,13 @@ export class StoreDatabase {
             .run(
               randomUUID(),
               randomUUID(),
-              line.product.id,
-              -line.quantity,
+              prodId,
+              -totalQty,
               timestamp,
               saleId,
               `Sale #${receipt}`,
             );
-        });
+        }
 
         if (value.payment.method === 'cash') {
           this.connection
@@ -930,17 +946,12 @@ export class StoreDatabase {
             .prepare("UPDATE sales SET status='paid' WHERE id=?")
             .run(saleId);
         } else if (value.payment.method === 'external_terminal') {
+          const cleanRef = value.payment.terminalReference?.trim() || null;
           this.connection
             .prepare(
               `INSERT INTO payments (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at) VALUES (?, ?, 'external_terminal', ?, ?, 1, ?)`,
             )
-            .run(
-              randomUUID(),
-              saleId,
-              totals.totalCents,
-              value.payment.terminalReference,
-              timestamp,
-            );
+            .run(randomUUID(), saleId, totals.totalCents, cleanRef, timestamp);
           this.connection
             .prepare("UPDATE sales SET status='paid' WHERE id=?")
             .run(saleId);
@@ -992,39 +1003,152 @@ export class StoreDatabase {
   }
 
   private validateExistingSaleMatch(
-    existingRow: Row,
+    existingSaleId: string,
     input: CompleteSaleInput,
     settings: StoreSettings,
   ): void {
-    const existingTender = String(existingRow.tender_type ?? '');
-    const existingTotal = readSafeCents(
-      existingRow.total_cents,
-      'existing sale total_cents',
-    );
-    const existingCustomerId = existingRow.customer_id
-      ? String(existingRow.customer_id)
-      : null;
-    const requestedCustomerId =
-      input.payment.method === 'account' ? input.payment.customerId : null;
+    const sale = this.connection
+      .prepare('SELECT * FROM sales WHERE id = ?')
+      .get(existingSaleId) as Row | undefined;
+    if (!sale) {
+      throw new Error('Existing sale not found for idempotency comparison');
+    }
 
-    // Calculate requested total
-    const merged = new Map<string, number>();
-    for (const line of input.lines) {
-      merged.set(
-        line.productId,
-        (merged.get(line.productId) ?? 0) + line.quantity,
+    const items = this.connection
+      .prepare(
+        'SELECT product_id, quantity, barcode_used FROM sale_items WHERE sale_id = ?',
+      )
+      .all(existingSaleId) as Row[];
+
+    const payment = this.connection
+      .prepare('SELECT * FROM payments WHERE sale_id = ?')
+      .get(existingSaleId) as Row | undefined;
+
+    // 1. Compare tender method
+    const existingTender = String(sale.tender_type ?? '');
+    if (existingTender !== input.payment.method) {
+      throw new Error(
+        'A sale with this completion key already exists with different details.',
       );
     }
-    const snapshots = [...merged].map(([productId, quantity]) => ({
-      product: this.getProduct(productId),
-      quantity,
+
+    // 2. Compare payment-specific details
+    if (input.payment.method === 'account') {
+      const existingCustomerId = sale.customer_id
+        ? String(sale.customer_id)
+        : null;
+      if (existingCustomerId !== input.payment.customerId) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+    } else if (input.payment.method === 'cash') {
+      if (!payment) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+      const existingCashReceived = readNullableSafeCents(
+        payment.cash_received_cents,
+        'cash_received_cents',
+      );
+      if (existingCashReceived !== input.payment.cashReceivedCents) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+    } else if (input.payment.method === 'external_terminal') {
+      if (!payment) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+      const existingRef =
+        (payment.terminal_reference
+          ? String(payment.terminal_reference).trim()
+          : null) || null;
+      const inputRef = input.payment.terminalReference?.trim() || null;
+      if (existingRef !== inputRef) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+    }
+
+    // 3. Compare normalized cart lines (order-independent comparison of product_id, barcode_used, quantity)
+    const incomingMerged = new Map<
+      string,
+      { productId: string; barcodeUsed: string | null; quantity: number }
+    >();
+    for (const line of input.lines) {
+      const cleanBarcode = line.barcodeUsed?.trim() || null;
+      const key = `${line.productId}::${cleanBarcode ?? ''}`;
+      const current = incomingMerged.get(key);
+      if (current) {
+        current.quantity += line.quantity;
+      } else {
+        incomingMerged.set(key, {
+          productId: line.productId,
+          barcodeUsed: cleanBarcode,
+          quantity: line.quantity,
+        });
+      }
+    }
+
+    const persistedMerged = new Map<
+      string,
+      { productId: string; barcodeUsed: string | null; quantity: number }
+    >();
+    for (const item of items) {
+      const cleanBarcode = item.barcode_used
+        ? String(item.barcode_used).trim() || null
+        : null;
+      const key = `${String(item.product_id)}::${cleanBarcode ?? ''}`;
+      const current = persistedMerged.get(key);
+      if (current) {
+        current.quantity += Number(item.quantity);
+      } else {
+        persistedMerged.set(key, {
+          productId: String(item.product_id),
+          barcodeUsed: cleanBarcode,
+          quantity: Number(item.quantity),
+        });
+      }
+    }
+
+    if (incomingMerged.size !== persistedMerged.size) {
+      throw new Error(
+        'A sale with this completion key already exists with different details.',
+      );
+    }
+
+    for (const [key, incomingItem] of incomingMerged) {
+      const persistedItem = persistedMerged.get(key);
+      if (!persistedItem || persistedItem.quantity !== incomingItem.quantity) {
+        throw new Error(
+          'A sale with this completion key already exists with different details.',
+        );
+      }
+    }
+
+    // 4. Compare financial totals against persisted sale
+    const snapshots = [...incomingMerged.values()].map((line) => ({
+      product: this.getProduct(line.productId),
+      quantity: line.quantity,
     }));
     const totals = calculateCart(snapshots, settings);
 
+    const existingSubtotal = readSafeCents(
+      sale.subtotal_cents,
+      'subtotal_cents',
+    );
+    const existingTax = readSafeCents(sale.tax_cents, 'tax_cents');
+    const existingTotal = readSafeCents(sale.total_cents, 'total_cents');
+
     if (
-      existingTotal !== totals.totalCents ||
-      existingCustomerId !== requestedCustomerId ||
-      existingTender !== input.payment.method
+      existingSubtotal !== totals.subtotalCents ||
+      existingTax !== totals.taxCents ||
+      existingTotal !== totals.totalCents
     ) {
       throw new Error(
         'A sale with this completion key already exists with different details.',
@@ -1184,21 +1308,7 @@ export class StoreDatabase {
       .prepare('SELECT * FROM account_payments WHERE operation_id = ?')
       .get(value.operationId) as Row | undefined;
     if (existing) {
-      const existingCust = String(existing.customer_id);
-      const existingAmount = readSafeCents(
-        existing.amount_cents,
-        'existing payment amount_cents',
-      );
-      const existingMethod = String(existing.method);
-      if (
-        existingCust !== value.customerId ||
-        existingAmount !== value.amountCents ||
-        existingMethod !== value.payment.method
-      ) {
-        throw new Error(
-          'An account payment with this operation ID already exists with different details.',
-        );
-      }
+      this.validateExistingAccountPaymentMatch(existing, value);
       return mapAccountPayment(existing);
     }
 
@@ -1212,21 +1322,7 @@ export class StoreDatabase {
           .prepare('SELECT * FROM account_payments WHERE operation_id = ?')
           .get(value.operationId) as Row | undefined;
         if (again) {
-          const existingCust = String(again.customer_id);
-          const existingAmount = readSafeCents(
-            again.amount_cents,
-            'existing payment amount_cents',
-          );
-          const existingMethod = String(again.method);
-          if (
-            existingCust !== value.customerId ||
-            existingAmount !== value.amountCents ||
-            existingMethod !== value.payment.method
-          ) {
-            throw new Error(
-              'An account payment with this operation ID already exists with different details.',
-            );
-          }
+          this.validateExistingAccountPaymentMatch(again, value);
           return;
         }
 
@@ -1354,6 +1450,60 @@ export class StoreDatabase {
       .get(value.operationId) as { id: string } | undefined;
     if (!completed) throw new Error('Account payment failed');
     return this.getAccountPayment(completed.id);
+  }
+
+  private validateExistingAccountPaymentMatch(
+    existingRow: Row,
+    input: RecordAccountPaymentInput,
+  ): void {
+    const existingCust = String(existingRow.customer_id);
+    const existingAmount = readSafeCents(
+      existingRow.amount_cents,
+      'existing payment amount_cents',
+    );
+    const existingMethod = String(existingRow.method);
+
+    if (
+      existingCust !== input.customerId ||
+      existingAmount !== input.amountCents ||
+      existingMethod !== input.payment.method
+    ) {
+      throw new Error(
+        'An account payment with this operation ID already exists with different details.',
+      );
+    }
+
+    if (input.payment.method === 'cash') {
+      const existingCashReceived = readNullableSafeCents(
+        existingRow.cash_received_cents,
+        'existing cash_received_cents',
+      );
+      if (existingCashReceived !== input.payment.cashReceivedCents) {
+        throw new Error(
+          'An account payment with this operation ID already exists with different details.',
+        );
+      }
+    } else if (input.payment.method === 'external_terminal') {
+      const existingRef =
+        (existingRow.terminal_reference
+          ? String(existingRow.terminal_reference).trim()
+          : null) || null;
+      const inputRef = input.payment.terminalReference?.trim() || null;
+      if (existingRef !== inputRef) {
+        throw new Error(
+          'An account payment with this operation ID already exists with different details.',
+        );
+      }
+    }
+
+    const existingNotes =
+      (existingRow.notes ? String(existingRow.notes).trim() : null) || null;
+    const inputNotes = input.notes?.trim() || null;
+    if (existingNotes !== inputNotes) {
+      throw new Error(
+        'An account payment with this operation ID already exists with different details.',
+      );
+    }
   }
 
   listAccountPayments(customerId?: string): AccountPayment[] {

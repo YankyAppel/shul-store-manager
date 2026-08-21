@@ -2,6 +2,7 @@ import { useRef, useState, type FormEvent } from 'react';
 import type {
   AccountPayment,
   Customer,
+  RecordAccountPaymentInput,
   StoreSettings,
 } from '@shul-store/shared';
 import { calculateCashChange, parseUsdToCents } from '@shul-store/shared';
@@ -22,6 +23,7 @@ export function AccountPaymentModal({
 }) {
   const operationIdRef = useRef<string>(crypto.randomUUID());
   const isSubmittingRef = useRef<boolean>(false);
+  const frozenIntentRef = useRef<RecordAccountPaymentInput | null>(null);
 
   const [method, setMethod] = useState<'cash' | 'external_terminal'>('cash');
   const [amountStr, setAmountStr] = useState(
@@ -39,17 +41,41 @@ export function AccountPaymentModal({
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // When key fields change materially, rotate operationId
-  const handleAmountChange = (val: string) => {
+  const resetIntent = () => {
     operationIdRef.current = crypto.randomUUID();
+    frozenIntentRef.current = null;
+  };
+
+  const handleAmountChange = (val: string) => {
+    resetIntent();
     setAmountStr(val);
+  };
+
+  const handleCashReceivedChange = (val: string) => {
+    resetIntent();
+    setCashReceivedStr(val);
   };
 
   const handleMethodChange = (newMethod: 'cash' | 'external_terminal') => {
     if (newMethod !== method) {
-      operationIdRef.current = crypto.randomUUID();
+      resetIntent();
       setMethod(newMethod);
     }
+  };
+
+  const handleTerminalRefChange = (val: string) => {
+    resetIntent();
+    setTerminalRef(val);
+  };
+
+  const handleApprovedChange = (checked: boolean) => {
+    resetIntent();
+    setApproved(checked);
+  };
+
+  const handleNotesChange = (val: string) => {
+    resetIntent();
+    setNotes(val);
   };
 
   let parsedAmountCents: number | null = null;
@@ -93,26 +119,31 @@ export function AccountPaymentModal({
     if (isSubmittingRef.current || !valid || parsedAmountCents === null) return;
     isSubmittingRef.current = true;
     setSaving(true);
-    try {
-      const input = {
-        operationId: operationIdRef.current,
-        customerId: customer.id,
-        amountCents: parsedAmountCents,
-        payment:
-          method === 'cash'
-            ? {
-                method: 'cash' as const,
-                cashReceivedCents: parsedCashReceivedCents!,
-              }
-            : {
-                method: 'external_terminal' as const,
-                approved: true as const,
-                terminalReference: terminalRef.trim() || null,
-              },
-        notes: notes.trim() || null,
-      };
 
-      const result = await window.storeApi.accountPayments.record(input);
+    try {
+      if (!frozenIntentRef.current) {
+        frozenIntentRef.current = {
+          operationId: operationIdRef.current,
+          customerId: customer.id,
+          amountCents: parsedAmountCents,
+          payment:
+            method === 'cash'
+              ? {
+                  method: 'cash' as const,
+                  cashReceivedCents: parsedCashReceivedCents!,
+                }
+              : {
+                  method: 'external_terminal' as const,
+                  approved: true as const,
+                  terminalReference: terminalRef.trim() || null,
+                },
+          notes: notes.trim() || null,
+        };
+      }
+
+      const result = await window.storeApi.accountPayments.record(
+        frozenIntentRef.current,
+      );
       onPaymentCompleted(result);
     } catch (e) {
       setError(messageFrom(e));
@@ -220,7 +251,7 @@ export function AccountPaymentModal({
                   step="0.01"
                   required
                   value={cashReceivedStr}
-                  onChange={(e) => setCashReceivedStr(e.target.value)}
+                  onChange={(e) => handleCashReceivedChange(e.target.value)}
                 />
               </label>
               <p
@@ -252,7 +283,7 @@ export function AccountPaymentModal({
                 Terminal reference <em>Optional</em>
                 <input
                   value={terminalRef}
-                  onChange={(e) => setTerminalRef(e.target.value)}
+                  onChange={(e) => handleTerminalRefChange(e.target.value)}
                   placeholder="e.g. Approval code or receipt ID"
                 />
               </label>
@@ -260,7 +291,7 @@ export function AccountPaymentModal({
                 <input
                   type="checkbox"
                   checked={approved}
-                  onChange={(e) => setApproved(e.target.checked)}
+                  onChange={(e) => handleApprovedChange(e.target.checked)}
                 />{' '}
                 I confirm the terminal approved this payment
               </label>
@@ -272,7 +303,7 @@ export function AccountPaymentModal({
             <input
               maxLength={1000}
               value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              onChange={(e) => handleNotesChange(e.target.value)}
               placeholder="e.g. Paid in office / check details"
             />
           </label>

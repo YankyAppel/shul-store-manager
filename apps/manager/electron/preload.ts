@@ -60,8 +60,8 @@ const api: StoreApi = {
       ipcRenderer.invoke('customers:getLedger', customerId),
     getStatement: (customerId, options) =>
       ipcRenderer.invoke('customers:getStatement', customerId, options),
-    printStatement: (customerId, options) =>
-      ipcRenderer.invoke('customers:printStatement', customerId, options),
+    printStatement: (statementData) =>
+      ipcRenderer.invoke('customers:printStatement', statementData),
   },
   accountPayments: {
     record: (input) => ipcRenderer.invoke('accountPayments:record', input),

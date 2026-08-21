@@ -10,6 +10,7 @@ import {
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
+  customerStatementDataSchema,
   inventoryMovementInputSchema,
   productInputSchema,
   receiptHtml,
@@ -18,6 +19,7 @@ import {
   statementOptionsSchema,
   storeSettingsSchema,
   type AccountPaymentReceiptData,
+  type CustomerStatementData,
   type ReceiptData,
 } from '@shul-store/shared';
 
@@ -186,11 +188,8 @@ function registerIpc(): void {
       statementOptionsSchema.optional().parse(options),
     ),
   );
-  ipcMain.handle('customers:printStatement', (_event, customerId, options) =>
-    printStatement(
-      idSchema.parse(customerId),
-      statementOptionsSchema.optional().parse(options),
-    ),
+  ipcMain.handle('customers:printStatement', (_event, statementData) =>
+    printStatement(customerStatementDataSchema.parse(statementData)),
   );
 
   // Account Payments
@@ -324,10 +323,8 @@ async function printAccountPayment(
 }
 
 async function printStatement(
-  customerId: string,
-  options?: any,
+  data: CustomerStatementData,
 ): Promise<{ success: boolean; error: string | null }> {
-  const data = database.getCustomerStatement(customerId, options);
   const printWindow = new BrowserWindow({
     show: false,
     webPreferences: {

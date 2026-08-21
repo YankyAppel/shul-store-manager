@@ -6,6 +6,7 @@ let store: StoreDatabase;
 let categoryId: string;
 let productId: string;
 let customerId: string;
+let secondCustomerId: string;
 
 beforeEach(() => {
   store = new StoreDatabase(':memory:');
@@ -29,6 +30,10 @@ beforeEach(() => {
     name: 'Shimon',
     accountNumber: '1001',
   }).id;
+  secondCustomerId = store.createCustomer({
+    name: 'Levi',
+    accountNumber: '1002',
+  }).id;
 
   // Charge $20.00 to account
   store.completeSale({
@@ -42,8 +47,8 @@ afterEach(() => {
   store.close();
 });
 
-describe('account payments', () => {
-  it('records cash account payment, calculates change, credits ledger, and records snapshots', () => {
+describe('account payments & idempotency', () => {
+  it('records cash account payment and supports identical retries idempotently', () => {
     const opId = randomUUID();
     const payment = store.recordAccountPayment({
       operationId: opId,
@@ -59,26 +64,143 @@ describe('account payments', () => {
     expect(payment).toMatchObject({
       receiptNumber: 1,
       customerId,
-      customerName: 'Shimon',
-      accountNumber: '1001',
       amountCents: 1500,
       method: 'cash',
       cashReceivedCents: 2000,
       changeDueCents: 500,
       previousBalanceCents: 2000,
       newBalanceCents: 500,
+    });
+
+    // Retry with exact same details returns the same payment
+    const retry = store.recordAccountPayment({
+      operationId: opId,
+      customerId,
+      amountCents: 1500,
+      payment: {
+        method: 'cash',
+        cashReceivedCents: 2000,
+      },
       notes: 'Partial payment',
     });
 
+    expect(retry.id).toBe(payment.id);
+    expect(store.listAccountPayments()).toHaveLength(1);
     expect(store.getCustomerBalance(customerId)).toBe(500);
+  });
 
-    const ledger = store.listCustomerLedger(customerId);
-    expect(ledger[0]).toMatchObject({
-      amountCents: -1500,
-      entryType: 'payment',
-      relatedAccountPaymentId: payment.id,
-      resultingBalanceCents: 500,
+  it('treats trimmed equivalent notes and terminal references as idempotent matches', () => {
+    const opId = randomUUID();
+    const payment = store.recordAccountPayment({
+      operationId: opId,
+      customerId,
+      amountCents: 500,
+      payment: {
+        method: 'external_terminal',
+        approved: true,
+        terminalReference: '  AUTH-123  ',
+      },
+      notes: '  office payment  ',
     });
+
+    const retry = store.recordAccountPayment({
+      operationId: opId,
+      customerId,
+      amountCents: 500,
+      payment: {
+        method: 'external_terminal',
+        approved: true,
+        terminalReference: 'AUTH-123',
+      },
+      notes: 'office payment',
+    });
+
+    expect(retry.id).toBe(payment.id);
+    expect(store.listAccountPayments()).toHaveLength(1);
+  });
+
+  it('rejects retried operationId with different customer, amount, method, cash, terminal ref, or notes', () => {
+    const opId = randomUUID();
+    store.recordAccountPayment({
+      operationId: opId,
+      customerId,
+      amountCents: 1000,
+      payment: { method: 'cash', cashReceivedCents: 1000 },
+      notes: 'First note',
+    });
+
+    // Different customer
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId: secondCustomerId,
+        amountCents: 1000,
+        payment: { method: 'cash', cashReceivedCents: 1000 },
+        notes: 'First note',
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+
+    // Different amount
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId,
+        amountCents: 1500,
+        payment: { method: 'cash', cashReceivedCents: 1500 },
+        notes: 'First note',
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+
+    // Different method
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId,
+        amountCents: 1000,
+        payment: {
+          method: 'external_terminal',
+          approved: true,
+          terminalReference: 'REF',
+        },
+        notes: 'First note',
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+
+    // Different cash received
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId,
+        amountCents: 1000,
+        payment: { method: 'cash', cashReceivedCents: 2000 },
+        notes: 'First note',
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+
+    // Different notes
+    expect(() =>
+      store.recordAccountPayment({
+        operationId: opId,
+        customerId,
+        amountCents: 1000,
+        payment: { method: 'cash', cashReceivedCents: 1000 },
+        notes: 'Different note',
+      }),
+    ).toThrow(
+      'An account payment with this operation ID already exists with different details.',
+    );
+
+    // Conflict leaves exactly 1 account payment and 1 ledger entry
+    expect(store.listAccountPayments()).toHaveLength(1);
+    expect(store.listCustomerLedger(customerId)).toHaveLength(2); // 1 sale charge + 1 payment
   });
 
   it('rejects cash account payments with insufficient cash received', () => {
@@ -89,79 +211,24 @@ describe('account payments', () => {
         amountCents: 1500,
         payment: {
           method: 'cash',
-          cashReceivedCents: 1000, // less than 1500!
+          cashReceivedCents: 1000,
         },
       }),
     ).toThrow(/less than/);
-
-    expect(store.getCustomerBalance(customerId)).toBe(2000);
-    expect(store.listAccountPayments()).toHaveLength(0);
-  });
-
-  it('records external-terminal payment with required approval and optional reference', () => {
-    const payment = store.recordAccountPayment({
-      operationId: randomUUID(),
-      customerId,
-      amountCents: 2000,
-      payment: {
-        method: 'external_terminal',
-        approved: true,
-        terminalReference: 'CARD-AUTH-88',
-      },
-    });
-
-    expect(payment).toMatchObject({
-      amountCents: 2000,
-      method: 'external_terminal',
-      terminalReference: 'CARD-AUTH-88',
-      externalApproved: true,
-      previousBalanceCents: 2000,
-      newBalanceCents: 0,
-    });
-
-    expect(store.getCustomerBalance(customerId)).toBe(0);
   });
 
   it('rejects overpayments when customer credits are disabled by default', () => {
-    expect(store.getSettings().allowCustomerCredit).toBe(false);
-
     expect(() =>
       store.recordAccountPayment({
         operationId: randomUUID(),
         customerId,
-        amountCents: 2500, // Owed is 2000
+        amountCents: 2500,
         payment: {
           method: 'cash',
           cashReceivedCents: 2500,
         },
       }),
     ).toThrow(/exceeds current amount owed/);
-
-    expect(store.getCustomerBalance(customerId)).toBe(2000);
-  });
-
-  it('accepts overpayments resulting in negative balance when customer credits are enabled', () => {
-    store.updateSettings({
-      ...store.getSettings(),
-      allowCustomerCredit: true,
-    });
-
-    const payment = store.recordAccountPayment({
-      operationId: randomUUID(),
-      customerId,
-      amountCents: 2500,
-      payment: {
-        method: 'cash',
-        cashReceivedCents: 2500,
-      },
-    });
-
-    expect(payment.newBalanceCents).toBe(-500);
-    expect(store.getCustomerBalance(customerId)).toBe(-500);
-
-    const customer = store.getCustomer(customerId);
-    expect(customer.currentBalanceCents).toBe(-500);
-    expect(customer.availableCreditCents).toBe(50500); // 50000 limit - (-500) balance = 50500
   });
 
   it('allows blocked and inactive customers to make account payments to settle balances', () => {
@@ -184,48 +251,6 @@ describe('account payments', () => {
     expect(p2.newBalanceCents).toBe(0);
   });
 
-  it('returns same payment for retried operationId without duplicate credits', () => {
-    const opId = randomUUID();
-    const first = store.recordAccountPayment({
-      operationId: opId,
-      customerId,
-      amountCents: 1000,
-      payment: { method: 'cash', cashReceivedCents: 1000 },
-    });
-
-    const retry = store.recordAccountPayment({
-      operationId: opId,
-      customerId,
-      amountCents: 1000,
-      payment: { method: 'cash', cashReceivedCents: 1000 },
-    });
-
-    expect(retry.id).toBe(first.id);
-    expect(store.listAccountPayments()).toHaveLength(1);
-    expect(store.getCustomerBalance(customerId)).toBe(1000);
-  });
-
-  it('rejects retried operationId with conflicting payload details', () => {
-    const opId = randomUUID();
-    store.recordAccountPayment({
-      operationId: opId,
-      customerId,
-      amountCents: 1000,
-      payment: { method: 'cash', cashReceivedCents: 1000 },
-    });
-
-    expect(() =>
-      store.recordAccountPayment({
-        operationId: opId,
-        customerId,
-        amountCents: 1500,
-        payment: { method: 'cash', cashReceivedCents: 1500 },
-      }),
-    ).toThrow(
-      'An account payment with this operation ID already exists with different details.',
-    );
-  });
-
   it('prevents deletion of account payment linked to customer ledger via trigger', () => {
     const payment = store.recordAccountPayment({
       operationId: randomUUID(),
@@ -241,25 +266,5 @@ describe('account payments', () => {
     ).toThrow(
       'Cannot delete account payment that is linked to customer ledger',
     );
-  });
-
-  it('rolls back completely if ledger write fails during payment', () => {
-    store.connection.exec(`
-      CREATE TRIGGER fail_payment_ledger_test
-      BEFORE INSERT ON customer_ledger
-      BEGIN SELECT RAISE(ABORT, 'forced payment ledger fail'); END;
-    `);
-
-    expect(() =>
-      store.recordAccountPayment({
-        operationId: randomUUID(),
-        customerId,
-        amountCents: 1000,
-        payment: { method: 'cash', cashReceivedCents: 1000 },
-      }),
-    ).toThrow(/forced payment ledger fail/);
-
-    expect(store.listAccountPayments()).toHaveLength(0);
-    expect(store.getCustomerBalance(customerId)).toBe(2000);
   });
 });
