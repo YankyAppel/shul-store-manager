@@ -9,9 +9,17 @@ import type { Category, Product, StoredImage } from '@shul-store/shared';
 import { CheckoutScreen } from './features/CheckoutScreen';
 import { SalesHistory } from './features/SalesHistory';
 import { SettingsScreen } from './features/SettingsScreen';
+import { CustomersScreen } from './features/customers/CustomersScreen';
 
 type View =
-  'checkout' | 'products' | 'categories' | 'inventory' | 'sales' | 'settings';
+  | 'checkout'
+  | 'products'
+  | 'categories'
+  | 'inventory'
+  | 'customers'
+  | 'sales'
+  | 'settings';
+
 const imageUrl = (id: string | null) =>
   id ? `store-image://local/${id}` : undefined;
 const money = (cents: number) =>
@@ -40,6 +48,9 @@ export function App() {
   >();
   const [error, setError] = useState('');
 
+  // Cross-screen navigation
+  const [targetCustomerId, setTargetCustomerId] = useState<string | null>(null);
+
   const refresh = useCallback(async () => {
     try {
       const [nextCategories, nextProducts] = await Promise.all([
@@ -52,6 +63,7 @@ export function App() {
       setError(messageFrom(reason));
     }
   }, []);
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -67,6 +79,7 @@ export function App() {
       ),
     [products, search, showInactive],
   );
+
   const visibleCategories = categories.filter(
     (category) => showInactive || category.active,
   );
@@ -79,6 +92,7 @@ export function App() {
       setError(messageFrom(reason));
     }
   }
+
   async function toggleCategory(category: Category) {
     try {
       await window.storeApi.categories.setActive(category.id, !category.active);
@@ -86,6 +100,11 @@ export function App() {
     } catch (reason) {
       setError(messageFrom(reason));
     }
+  }
+
+  function handleNavigateToCustomer(customerId: string) {
+    setTargetCustomerId(customerId);
+    setView('customers');
   }
 
   return (
@@ -124,6 +143,15 @@ export function App() {
             ↕ <span>Inventory</span>
           </button>
           <button
+            className={view === 'customers' ? 'active' : ''}
+            onClick={() => {
+              setTargetCustomerId(null);
+              setView('customers');
+            }}
+          >
+            ☺ <span>Customers</span>
+          </button>
+          <button
             className={view === 'sales' ? 'active' : ''}
             onClick={() => setView('sales')}
           >
@@ -152,6 +180,7 @@ export function App() {
                   products: 'Products',
                   categories: 'Categories',
                   inventory: 'Inventory',
+                  customers: 'Customers & Accounts',
                   sales: 'Sales history',
                   settings: 'Store settings',
                 }[view]
@@ -162,11 +191,13 @@ export function App() {
                 ? 'Fast local sales by barcode or search.'
                 : view === 'sales'
                   ? 'Completed local sales and receipt reprinting.'
-                  : view === 'settings'
-                    ? 'Local checkout, tax, and receipt configuration.'
-                    : view === 'inventory'
-                      ? 'Receive stock and record append-only adjustments.'
-                      : `Manage your store ${view}.`}
+                  : view === 'customers'
+                    ? 'Customer balances, credit limits, account payments, and statements.'
+                    : view === 'settings'
+                      ? 'Local checkout, tax, customer credit, and receipt configuration.'
+                      : view === 'inventory'
+                        ? 'Receive stock and record append-only adjustments.'
+                        : `Manage your store ${view}.`}
             </p>
           </div>
           {(view === 'products' || view === 'categories') && (
@@ -212,7 +243,16 @@ export function App() {
         {view === 'checkout' && (
           <CheckoutScreen products={products} onInventoryChanged={refresh} />
         )}
-        {view === 'sales' && <SalesHistory />}
+        {view === 'customers' && (
+          <CustomersScreen
+            initialCustomerId={targetCustomerId}
+            onClearInitialCustomer={() => setTargetCustomerId(null)}
+            onViewSale={() => setView('sales')}
+          />
+        )}
+        {view === 'sales' && (
+          <SalesHistory onViewCustomer={handleNavigateToCustomer} />
+        )}
         {view === 'settings' && <SettingsScreen />}
         {view === 'categories' && (
           <div className="category-grid">
@@ -783,6 +823,7 @@ const reasonLabels: Record<string, string> = {
   stock_count_correction: 'Stock count correction',
   sale: 'Sale',
 };
+
 function InventoryModal({
   product,
   onClose,
@@ -802,15 +843,18 @@ function InventoryModal({
   const [history, setHistory] = useState<
     import('@shul-store/shared').InventoryMovement[]
   >([]);
+
   useEffect(() => {
     void window.storeApi.inventory
       .list(product.id)
       .then(setHistory)
       .catch((e) => setError(messageFrom(e)));
   }, [product.id, setError]);
+
   const correction = Number(counted) - product.stockQuantity;
   const isCount = reason === 'stock_count_correction';
   const negative = reason === 'damaged' || reason === 'manual_decrease';
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const quantityChange = isCount
@@ -831,6 +875,7 @@ function InventoryModal({
       setSaving(false);
     }
   }
+
   return (
     <Modal title="Inventory & movement history" onClose={onClose}>
       <form onSubmit={submit}>

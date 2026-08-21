@@ -5,24 +5,51 @@ import {
   calculateCashChange,
   categoryInputSchema,
   completeSaleInputSchema,
+  customerInputSchema,
   inventoryMovementInputSchema,
   productInputSchema,
+  recordAccountPaymentInputSchema,
+  statementOptionsSchema,
   storeSettingsSchema,
+  type AccountPayment,
   type Barcode,
   type Category,
   type CategoryInput,
+  type CompleteSaleInput,
+  type Customer,
+  type CustomerInput,
+  type CustomerLedgerEntry,
+  type CustomerStatementData,
   type InventoryMovement,
   type InventoryMovementInput,
   type Product,
   type ProductInput,
-  type CompleteSaleInput,
+  type RecordAccountPaymentInput,
   type Sale,
+  type StatementEntry,
+  type StatementOptions,
   type StoreSettings,
 } from '@shul-store/shared';
 import { runMigrations } from './migrations.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+function assertSafeFinancialInteger(
+  value: number | bigint,
+  label: string,
+): number {
+  const b = typeof value === 'bigint' ? value : BigInt(value);
+  if (b < -MAX_SAFE_INTEGER_BIGINT || b > MAX_SAFE_INTEGER_BIGINT) {
+    throw new Error(`${label} exceeds the supported safe integer range`);
+  }
+  const n = Number(b);
+  if (!Number.isSafeInteger(n)) {
+    throw new Error(`${label} must be a safe integer`);
+  }
+  return n;
+}
 
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
@@ -40,6 +67,76 @@ export class StoreDatabase {
   schemaVersion(): number {
     return this.connection.pragma('user_version', { simple: true }) as number;
   }
+
+  // --- SETTINGS ---
+
+  getSettings(): StoreSettings {
+    const row = this.connection
+      .prepare('SELECT * FROM store_settings WHERE singleton_id = 1')
+      .get() as Row;
+    return {
+      storeName: String(row.store_name),
+      contactLines: JSON.parse(String(row.contact_lines_json)) as string[],
+      currency: 'USD',
+      taxRateBps: Number(row.tax_rate_bps),
+      pricesIncludeTax: Boolean(row.prices_include_tax),
+      receiptFooter: String(row.receipt_footer),
+      customerAccountsEnabled:
+        row.customer_accounts_enabled === undefined
+          ? true
+          : Boolean(row.customer_accounts_enabled),
+      defaultCreditLimitCents:
+        row.default_credit_limit_cents === undefined
+          ? 50000
+          : Number(row.default_credit_limit_cents),
+      allowCustomerCredit:
+        row.allow_customer_credit === undefined
+          ? false
+          : Boolean(row.allow_customer_credit),
+      statementFooter:
+        row.statement_footer === undefined ? '' : String(row.statement_footer),
+      overdueDays:
+        row.overdue_days === undefined ? 30 : Number(row.overdue_days),
+    };
+  }
+
+  updateSettings(input: StoreSettings): StoreSettings {
+    const value = storeSettingsSchema.parse(input);
+    this.connection
+      .prepare(
+        `UPDATE store_settings SET
+          store_name=?,
+          contact_lines_json=?,
+          currency=?,
+          tax_rate_bps=?,
+          prices_include_tax=?,
+          receipt_footer=?,
+          customer_accounts_enabled=?,
+          default_credit_limit_cents=?,
+          allow_customer_credit=?,
+          statement_footer=?,
+          overdue_days=?,
+          updated_at=?
+        WHERE singleton_id=1`,
+      )
+      .run(
+        value.storeName,
+        JSON.stringify(value.contactLines),
+        value.currency,
+        value.taxRateBps,
+        value.pricesIncludeTax ? 1 : 0,
+        value.receiptFooter,
+        value.customerAccountsEnabled ? 1 : 0,
+        value.defaultCreditLimitCents,
+        value.allowCustomerCredit ? 1 : 0,
+        value.statementFooter,
+        value.overdueDays,
+        now(),
+      );
+    return this.getSettings();
+  }
+
+  // --- CATEGORIES ---
 
   listCategories(includeInactive = false): Category[] {
     const rows = this.connection
@@ -100,6 +197,8 @@ export class StoreDatabase {
     if (!row) throw new Error('Category not found');
     return mapCategory(row);
   }
+
+  // --- PRODUCTS ---
 
   listProducts(includeInactive = false): Product[] {
     const rows = this.connection
@@ -203,9 +302,10 @@ export class StoreDatabase {
   }
 
   generateInternalBarcode(): string {
-    // The value can be rendered with any Code 128 encoder; entropy avoids a central online allocator.
     return `SSM-${Date.now().toString(36).toUpperCase()}-${randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`;
   }
+
+  // --- INVENTORY ---
 
   addInventoryMovement(input: InventoryMovementInput): InventoryMovement {
     const value = inventoryMovementInputSchema.parse(input);
@@ -264,6 +364,8 @@ export class StoreDatabase {
     ).map(mapMovement);
   }
 
+  // --- IMAGES ---
+
   registerImage(image: {
     id: string;
     relativePath: string;
@@ -314,37 +416,221 @@ export class StoreDatabase {
     })();
   }
 
-  getSettings(): StoreSettings {
-    const row = this.connection
-      .prepare('SELECT * FROM store_settings WHERE singleton_id = 1')
-      .get() as Row;
-    return {
-      storeName: String(row.store_name),
-      contactLines: JSON.parse(String(row.contact_lines_json)) as string[],
-      currency: 'USD',
-      taxRateBps: Number(row.tax_rate_bps),
-      pricesIncludeTax: Boolean(row.prices_include_tax),
-      receiptFooter: String(row.receipt_footer),
-    };
+  // --- CUSTOMERS ---
+
+  listCustomers(includeInactive = false): Customer[] {
+    const rows = this.connection
+      .prepare(
+        `SELECT * FROM customers ${includeInactive ? '' : 'WHERE active = 1'} ORDER BY name COLLATE NOCASE`,
+      )
+      .all() as Row[];
+    const settings = this.getSettings();
+    return rows.map((row) => this.mapCustomer(row, settings));
   }
 
-  updateSettings(input: StoreSettings): StoreSettings {
-    const value = storeSettingsSchema.parse(input);
-    this.connection
-      .prepare(
-        `UPDATE store_settings SET store_name=?, contact_lines_json=?, currency=?, tax_rate_bps=?, prices_include_tax=?, receipt_footer=?, updated_at=? WHERE singleton_id=1`,
-      )
-      .run(
-        value.storeName,
-        JSON.stringify(value.contactLines),
-        value.currency,
-        value.taxRateBps,
-        value.pricesIncludeTax ? 1 : 0,
-        value.receiptFooter,
-        now(),
-      );
-    return this.getSettings();
+  getCustomer(id: string): Customer {
+    const row = this.connection
+      .prepare('SELECT * FROM customers WHERE id = ?')
+      .get(id) as Row | undefined;
+    if (!row) throw new Error('Customer not found');
+    const settings = this.getSettings();
+    return this.mapCustomer(row, settings);
   }
+
+  searchCustomers(query: string, includeInactive = false): Customer[] {
+    const clean = query.trim();
+    if (!clean) return this.listCustomers(includeInactive);
+    const pattern = `%${clean}%`;
+    const rows = this.connection
+      .prepare(
+        `SELECT * FROM customers
+        WHERE (name LIKE ? OR secondary_name LIKE ? OR phone LIKE ? OR email LIKE ? OR account_number LIKE ? OR account_barcode LIKE ?)
+        ${includeInactive ? '' : 'AND active = 1'}
+        ORDER BY name COLLATE NOCASE`,
+      )
+      .all(pattern, pattern, pattern, pattern, pattern, pattern) as Row[];
+    const settings = this.getSettings();
+    return rows.map((row) => this.mapCustomer(row, settings));
+  }
+
+  createCustomer(input: CustomerInput): Customer {
+    const value = customerInputSchema.parse(input);
+    const id = randomUUID();
+    const timestamp = now();
+    try {
+      this.connection.transaction(() => {
+        this.connection
+          .prepare(
+            `INSERT INTO customers
+            (id, account_number, account_barcode, name, secondary_name, phone, email, address, notes, active, blocked, credit_limit_cents, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
+          )
+          .run(
+            id,
+            value.accountNumber.trim(),
+            value.accountBarcode?.trim() || null,
+            value.name.trim(),
+            value.secondaryName?.trim() || null,
+            value.phone?.trim() || null,
+            value.email?.trim() || null,
+            value.address?.trim() || null,
+            value.notes?.trim() || null,
+            value.creditLimitCents ?? null,
+            timestamp,
+            timestamp,
+          );
+        this.addAudit('customer.created', 'customer', id, {
+          name: value.name,
+          accountNumber: value.accountNumber,
+        });
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+    return this.getCustomer(id);
+  }
+
+  updateCustomer(id: string, input: CustomerInput): Customer {
+    const value = customerInputSchema.parse(input);
+    const timestamp = now();
+    try {
+      this.connection.transaction(() => {
+        const result = this.connection
+          .prepare(
+            `UPDATE customers SET
+              account_number = ?,
+              account_barcode = ?,
+              name = ?,
+              secondary_name = ?,
+              phone = ?,
+              email = ?,
+              address = ?,
+              notes = ?,
+              credit_limit_cents = ?,
+              updated_at = ?
+            WHERE id = ?`,
+          )
+          .run(
+            value.accountNumber.trim(),
+            value.accountBarcode?.trim() || null,
+            value.name.trim(),
+            value.secondaryName?.trim() || null,
+            value.phone?.trim() || null,
+            value.email?.trim() || null,
+            value.address?.trim() || null,
+            value.notes?.trim() || null,
+            value.creditLimitCents ?? null,
+            timestamp,
+            id,
+          );
+        if (result.changes === 0) throw new Error('Customer not found');
+        this.addAudit('customer.updated', 'customer', id, {
+          name: value.name,
+          accountNumber: value.accountNumber,
+        });
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+    return this.getCustomer(id);
+  }
+
+  setCustomerActive(id: string, active: boolean): void {
+    this.connection.transaction(() => {
+      const result = this.connection
+        .prepare('UPDATE customers SET active = ?, updated_at = ? WHERE id = ?')
+        .run(active ? 1 : 0, now(), id);
+      if (result.changes === 0) throw new Error('Customer not found');
+      this.addAudit(
+        active ? 'customer.activated' : 'customer.deactivated',
+        'customer',
+        id,
+        {},
+      );
+    })();
+  }
+
+  setCustomerBlocked(id: string, blocked: boolean): void {
+    this.connection.transaction(() => {
+      const result = this.connection
+        .prepare(
+          'UPDATE customers SET blocked = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(blocked ? 1 : 0, now(), id);
+      if (result.changes === 0) throw new Error('Customer not found');
+      this.addAudit(
+        blocked ? 'customer.blocked' : 'customer.unblocked',
+        'customer',
+        id,
+        {},
+      );
+    })();
+  }
+
+  generateAccountNumber(): string {
+    const rows = this.connection
+      .prepare('SELECT account_number FROM customers')
+      .all() as Array<{ account_number: string }>;
+    let max = 1000;
+    for (const row of rows) {
+      const match = /^(\d+)$/.exec(row.account_number.trim());
+      if (match) {
+        const num = Number(match[1]);
+        if (num > max && num < 1_000_000_000) max = num;
+      }
+    }
+    return String(max + 1);
+  }
+
+  generateCustomerBarcode(): string {
+    return `SSM-CUST-${Date.now().toString(36).toUpperCase()}-${randomUUID().replaceAll('-', '').slice(0, 8).toUpperCase()}`;
+  }
+
+  lookupCustomerByBarcodeOrAccount(value: string): Customer | null {
+    const clean = value.trim();
+    if (!clean) return null;
+    const row = this.connection
+      .prepare(
+        'SELECT * FROM customers WHERE account_barcode = ? COLLATE NOCASE OR account_number = ? COLLATE NOCASE',
+      )
+      .get(clean, clean) as Row | undefined;
+    if (!row) return null;
+    const settings = this.getSettings();
+    return this.mapCustomer(row, settings);
+  }
+
+  getCustomerBalance(customerId: string): number {
+    const row = this.connection
+      .prepare(
+        'SELECT COALESCE(SUM(amount_cents), 0) AS balance FROM customer_ledger WHERE customer_id = ?',
+      )
+      .get(customerId) as { balance: number } | undefined;
+    return assertSafeFinancialInteger(row?.balance ?? 0, 'Customer balance');
+  }
+
+  listCustomerLedger(customerId: string): CustomerLedgerEntry[] {
+    const rows = this.connection
+      .prepare(
+        `
+        SELECT
+          l.*,
+          s.receipt_number AS sale_receipt_number,
+          p.receipt_number AS payment_receipt_number,
+          SUM(l.amount_cents) OVER (
+            PARTITION BY l.customer_id ORDER BY l.occurred_at, l.sequence ROWS UNBOUNDED PRECEDING
+          ) AS resulting_balance_cents
+        FROM customer_ledger l
+        LEFT JOIN sales s ON s.id = l.related_sale_id
+        LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
+        WHERE l.customer_id = ?
+        ORDER BY l.occurred_at DESC, l.sequence DESC
+      `,
+      )
+      .all(customerId) as Row[];
+    return rows.map(mapLedgerEntry);
+  }
+
+  // --- CHECKOUT & SALES ---
 
   lookupProductByBarcode(value: string): Product | null {
     const clean = value.trim();
@@ -365,14 +651,18 @@ export class StoreDatabase {
       .prepare('SELECT id FROM sales WHERE completion_key = ?')
       .get(value.completionKey) as { id: string } | undefined;
     if (existing) return this.getSale(existing.id);
+
     const settings = this.getSettings();
     const saleId = randomUUID();
+
     try {
       this.connection.transaction(() => {
         const again = this.connection
           .prepare('SELECT id FROM sales WHERE completion_key = ?')
           .get(value.completionKey) as { id: string } | undefined;
         if (again) return;
+
+        // Merge cart lines
         const merged = new Map<
           string,
           { quantity: number; barcodeUsed: string | null }
@@ -388,24 +678,29 @@ export class StoreDatabase {
           product: this.getProduct(productId),
           ...line,
         }));
+
         for (const line of snapshots) {
-          if (!line.product.active)
+          if (!line.product.active) {
             throw new Error(
               `${line.product.name} is inactive and cannot be sold.`,
             );
-          if (line.quantity > line.product.stockQuantity)
+          }
+          if (line.quantity > line.product.stockQuantity) {
             throw new Error(
               `Insufficient stock for ${line.product.name}. Available: ${line.product.stockQuantity}.`,
             );
+          }
           if (
             line.barcodeUsed &&
             !line.product.barcodes.some(
               (barcode) =>
                 barcode.value.toLowerCase() === line.barcodeUsed?.toLowerCase(),
             )
-          )
+          ) {
             throw new Error('Barcode does not belong to the selected product.');
+          }
         }
+
         const totals = calculateCart(
           snapshots.map((line) => ({
             product: line.product,
@@ -413,11 +708,73 @@ export class StoreDatabase {
           })),
           settings,
         );
-        if (
+
+        let customerSnapshot: {
+          id: string;
+          name: string;
+          accountNumber: string;
+          balanceBeforeCents: number;
+          balanceAfterCents: number;
+        } | null = null;
+
+        if (value.payment.method === 'account') {
+          if (!settings.customerAccountsEnabled) {
+            throw new Error(
+              'Customer accounts are currently disabled in store settings.',
+            );
+          }
+          const customerRow = this.connection
+            .prepare('SELECT * FROM customers WHERE id = ?')
+            .get(value.payment.customerId) as Row | undefined;
+          if (!customerRow) throw new Error('Customer not found');
+          if (!customerRow.active) {
+            throw new Error(
+              'Customer is inactive and cannot place charges on account.',
+            );
+          }
+          if (customerRow.blocked) {
+            throw new Error(
+              'Customer is blocked from placing charges on account.',
+            );
+          }
+
+          const currentBalance = this.getCustomerBalance(
+            String(customerRow.id),
+          );
+          const effectiveCreditLimit =
+            customerRow.credit_limit_cents !== null &&
+            customerRow.credit_limit_cents !== undefined
+              ? Number(customerRow.credit_limit_cents)
+              : settings.defaultCreditLimitCents;
+
+          assertSafeFinancialInteger(effectiveCreditLimit, 'Credit limit');
+          const projectedBalanceBig =
+            BigInt(currentBalance) + BigInt(totals.totalCents);
+          const projectedBalance = assertSafeFinancialInteger(
+            projectedBalanceBig,
+            'Projected balance',
+          );
+
+          if (projectedBalance > effectiveCreditLimit) {
+            throw new Error(
+              `Credit limit exceeded. Account limit is $${(effectiveCreditLimit / 100).toFixed(2)}, current balance is $${(currentBalance / 100).toFixed(2)}, and purchase total is $${(totals.totalCents / 100).toFixed(2)}.`,
+            );
+          }
+
+          customerSnapshot = {
+            id: String(customerRow.id),
+            name: String(customerRow.name),
+            accountNumber: String(customerRow.account_number),
+            balanceBeforeCents: currentBalance,
+            balanceAfterCents: projectedBalance,
+          };
+        } else if (
           value.payment.method === 'cash' &&
           value.payment.cashReceivedCents < totals.totalCents
-        )
+        ) {
           throw new Error('Cash received is less than the amount due.');
+        }
+
         const timestamp = now();
         const receipt = Number(
           (
@@ -428,9 +785,14 @@ export class StoreDatabase {
               .get() as Row
           ).next,
         );
+
         this.connection
           .prepare(
-            `INSERT INTO sales (id,receipt_number,completion_key,status,subtotal_cents,tax_cents,total_cents,created_at) VALUES (?,?,?,'open',?,?,?,?)`,
+            `INSERT INTO sales (
+              id, receipt_number, completion_key, status, subtotal_cents, tax_cents, total_cents,
+              created_at, customer_id, customer_name, customer_account_number, customer_balance_before_cents,
+              customer_balance_after_cents, tender_type
+            ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             saleId,
@@ -440,13 +802,26 @@ export class StoreDatabase {
             totals.taxCents,
             totals.totalCents,
             timestamp,
+            customerSnapshot?.id ?? null,
+            customerSnapshot?.name ?? null,
+            customerSnapshot?.accountNumber ?? null,
+            customerSnapshot?.balanceBeforeCents ?? null,
+            customerSnapshot?.balanceAfterCents ?? null,
+            value.payment.method,
           );
+
         this.connection
           .prepare("UPDATE sales SET status='awaiting_payment' WHERE id=?")
           .run(saleId);
+
         const insertItem = this.connection.prepare(
-          `INSERT INTO sale_items (id,sale_id,product_id,product_name,secondary_name,barcode_used,quantity,unit_selling_price_cents,unit_purchase_cost_cents,taxable,tax_cents,line_subtotal_cents,line_total_cents) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO sale_items (
+            id, sale_id, product_id, product_name, secondary_name, barcode_used,
+            quantity, unit_selling_price_cents, unit_purchase_cost_cents, taxable,
+            tax_cents, line_subtotal_cents, line_total_cents
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
+
         snapshots.forEach((line, index) => {
           const calculated = totals.lines[index]!;
           insertItem.run(
@@ -464,9 +839,13 @@ export class StoreDatabase {
             calculated.subtotalCents,
             calculated.totalCents,
           );
+
           this.connection
             .prepare(
-              `INSERT INTO inventory_movements (id,operation_id,product_id,quantity_change,reason,occurred_at,device_id,related_sale_id,notes,sequence) VALUES (?,?,?,?, 'sale', ?,NULL,?, ?, (SELECT COALESCE(MAX(sequence),0)+1 FROM inventory_movements))`,
+              `INSERT INTO inventory_movements (
+                id, operation_id, product_id, quantity_change, reason, occurred_at,
+                device_id, related_sale_id, notes, sequence
+              ) VALUES (?, ?, ?, ?, 'sale', ?, NULL, ?, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements))`,
             )
             .run(
               randomUUID(),
@@ -478,10 +857,11 @@ export class StoreDatabase {
               `Sale #${receipt}`,
             );
         });
+
         if (value.payment.method === 'cash') {
           this.connection
             .prepare(
-              `INSERT INTO payments (id,sale_id,method,amount_cents,cash_received_cents,change_due_cents,created_at) VALUES (?,?,'cash',?,?,?,?)`,
+              `INSERT INTO payments (id, sale_id, method, amount_cents, cash_received_cents, change_due_cents, created_at) VALUES (?, ?, 'cash', ?, ?, ?, ?)`,
             )
             .run(
               randomUUID(),
@@ -494,10 +874,13 @@ export class StoreDatabase {
               ),
               timestamp,
             );
-        } else {
+          this.connection
+            .prepare("UPDATE sales SET status='paid' WHERE id=?")
+            .run(saleId);
+        } else if (value.payment.method === 'external_terminal') {
           this.connection
             .prepare(
-              `INSERT INTO payments (id,sale_id,method,amount_cents,terminal_reference,external_approved,created_at) VALUES (?,?,'external_terminal',?,?,1,?)`,
+              `INSERT INTO payments (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at) VALUES (?, ?, 'external_terminal', ?, ?, 1, ?)`,
             )
             .run(
               randomUUID(),
@@ -506,24 +889,49 @@ export class StoreDatabase {
               value.payment.terminalReference,
               timestamp,
             );
+          this.connection
+            .prepare("UPDATE sales SET status='paid' WHERE id=?")
+            .run(saleId);
+        } else if (value.payment.method === 'account' && customerSnapshot) {
+          this.connection
+            .prepare(
+              `INSERT INTO customer_ledger (
+                id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+                related_sale_id, related_account_payment_id, device_id, notes, sequence
+              ) VALUES (?, ?, ?, ?, 'sale_charge', ?, ?, NULL, NULL, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM customer_ledger))`,
+            )
+            .run(
+              randomUUID(),
+              randomUUID(),
+              customerSnapshot.id,
+              totals.totalCents,
+              timestamp,
+              saleId,
+              `Sale #${receipt}`,
+            );
         }
-        this.connection
-          .prepare("UPDATE sales SET status='paid' WHERE id=?")
-          .run(saleId);
+
         this.connection
           .prepare(
             "UPDATE sales SET status='completed', completed_at=? WHERE id=?",
           )
           .run(timestamp, saleId);
+
         this.addAudit('sale.completed', 'sale', saleId, {
           receiptNumber: receipt,
           totalCents: totals.totalCents,
           paymentMethod: value.payment.method,
+          customerId: customerSnapshot?.id,
+          customerName: customerSnapshot?.name,
+          accountNumber: customerSnapshot?.accountNumber,
+          previousBalanceCents: customerSnapshot?.balanceBeforeCents,
+          newBalanceCents: customerSnapshot?.balanceAfterCents,
         });
       })();
     } catch (error) {
       throw friendlyDatabaseError(error);
     }
+
     const completed = this.connection
       .prepare('SELECT id FROM sales WHERE completion_key=?')
       .get(value.completionKey) as { id: string } | undefined;
@@ -546,13 +954,76 @@ export class StoreDatabase {
       .prepare('SELECT * FROM sales WHERE id=?')
       .get(id) as Row | undefined;
     if (!sale) throw new Error('Sale not found');
+
     const items = this.connection
       .prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid')
       .all(id) as Row[];
+
     const payment = this.connection
       .prepare('SELECT * FROM payments WHERE sale_id=?')
       .get(id) as Row | undefined;
-    if (!payment) throw new Error('Sale payment not found');
+
+    const tenderType = String(sale.tender_type || 'cash');
+
+    let salePayment: Sale['payment'];
+    if (tenderType === 'account') {
+      salePayment = {
+        method: 'account',
+        amountCents: Number(sale.total_cents),
+        cashReceivedCents: null,
+        changeDueCents: null,
+        terminalReference: null,
+        externalApproved: null,
+        customerId: sale.customer_id ? String(sale.customer_id) : null,
+        customerName: sale.customer_name ? String(sale.customer_name) : null,
+        accountNumber: sale.customer_account_number
+          ? String(sale.customer_account_number)
+          : null,
+        previousBalanceCents:
+          sale.customer_balance_before_cents !== null &&
+          sale.customer_balance_before_cents !== undefined
+            ? Number(sale.customer_balance_before_cents)
+            : null,
+        newBalanceCents:
+          sale.customer_balance_after_cents !== null &&
+          sale.customer_balance_after_cents !== undefined
+            ? Number(sale.customer_balance_after_cents)
+            : null,
+      };
+    } else {
+      if (!payment) throw new Error('Sale payment not found');
+      salePayment = {
+        method: String(payment.method) as 'cash' | 'external_terminal',
+        amountCents: Number(payment.amount_cents),
+        cashReceivedCents:
+          payment.cash_received_cents === null
+            ? null
+            : Number(payment.cash_received_cents),
+        changeDueCents:
+          payment.change_due_cents === null
+            ? null
+            : Number(payment.change_due_cents),
+        terminalReference:
+          payment.terminal_reference === null
+            ? null
+            : String(payment.terminal_reference),
+        externalApproved:
+          payment.external_approved === null
+            ? null
+            : Boolean(payment.external_approved),
+      };
+    }
+
+    const customerSnapshot = sale.customer_id
+      ? {
+          id: String(sale.customer_id),
+          name: String(sale.customer_name ?? ''),
+          accountNumber: String(sale.customer_account_number ?? ''),
+          previousBalanceCents: Number(sale.customer_balance_before_cents ?? 0),
+          newBalanceCents: Number(sale.customer_balance_after_cents ?? 0),
+        }
+      : null;
+
     return {
       id: String(sale.id),
       receiptNumber: Number(sale.receipt_number),
@@ -576,26 +1047,8 @@ export class StoreDatabase {
         lineSubtotalCents: Number(row.line_subtotal_cents),
         lineTotalCents: Number(row.line_total_cents),
       })),
-      payment: {
-        method: String(payment.method) as Sale['payment']['method'],
-        amountCents: Number(payment.amount_cents),
-        cashReceivedCents:
-          payment.cash_received_cents === null
-            ? null
-            : Number(payment.cash_received_cents),
-        changeDueCents:
-          payment.change_due_cents === null
-            ? null
-            : Number(payment.change_due_cents),
-        terminalReference:
-          payment.terminal_reference === null
-            ? null
-            : String(payment.terminal_reference),
-        externalApproved:
-          payment.external_approved === null
-            ? null
-            : Boolean(payment.external_approved),
-      },
+      payment: salePayment,
+      customer: customerSnapshot,
     };
   }
 
@@ -612,6 +1065,336 @@ export class StoreDatabase {
       )
       .run(randomUUID(), saleId, now(), success ? 1 : 0, error);
   }
+
+  // --- ACCOUNT PAYMENTS ---
+
+  recordAccountPayment(input: RecordAccountPaymentInput): AccountPayment {
+    const value = recordAccountPaymentInputSchema.parse(input);
+    const existing = this.connection
+      .prepare('SELECT id FROM account_payments WHERE operation_id = ?')
+      .get(value.operationId) as { id: string } | undefined;
+    if (existing) return this.getAccountPayment(existing.id);
+
+    const paymentId = randomUUID();
+    const timestamp = now();
+    const settings = this.getSettings();
+
+    try {
+      this.connection.transaction(() => {
+        const again = this.connection
+          .prepare('SELECT id FROM account_payments WHERE operation_id = ?')
+          .get(value.operationId) as { id: string } | undefined;
+        if (again) return;
+
+        const customerRow = this.connection
+          .prepare('SELECT * FROM customers WHERE id = ?')
+          .get(value.customerId) as Row | undefined;
+        if (!customerRow) throw new Error('Customer not found');
+
+        const currentBalance = this.getCustomerBalance(String(customerRow.id));
+        const paymentAmount = assertSafeFinancialInteger(
+          value.amountCents,
+          'Payment amount',
+        );
+        const projectedBalanceBig =
+          BigInt(currentBalance) - BigInt(paymentAmount);
+        const projectedBalance = assertSafeFinancialInteger(
+          projectedBalanceBig,
+          'Projected balance',
+        );
+
+        if (!settings.allowCustomerCredit && projectedBalance < 0) {
+          throw new Error(
+            `Payment amount ($${(paymentAmount / 100).toFixed(2)}) exceeds current amount owed ($${(currentBalance / 100).toFixed(2)}) and customer credits are not permitted.`,
+          );
+        }
+
+        let cashReceivedCents: number | null = null;
+        let changeDueCents: number | null = null;
+        let terminalReference: string | null = null;
+        let externalApproved: number | null = null;
+
+        if (value.payment.method === 'cash') {
+          if (value.payment.cashReceivedCents < paymentAmount) {
+            throw new Error('Cash received is less than the payment amount.');
+          }
+          cashReceivedCents = assertSafeFinancialInteger(
+            value.payment.cashReceivedCents,
+            'Cash received',
+          );
+          changeDueCents = calculateCashChange(
+            paymentAmount,
+            cashReceivedCents,
+          );
+        } else {
+          terminalReference = value.payment.terminalReference?.trim() || null;
+          externalApproved = 1;
+        }
+
+        const receiptNumber = Number(
+          (
+            this.connection
+              .prepare(
+                'SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next FROM account_payments',
+              )
+              .get() as Row
+          ).next,
+        );
+
+        this.connection
+          .prepare(
+            `INSERT INTO account_payments (
+              id, operation_id, receipt_number, customer_id, customer_name, account_number,
+              amount_cents, method, cash_received_cents, change_due_cents, terminal_reference,
+              external_approved, previous_balance_cents, new_balance_cents, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            paymentId,
+            value.operationId,
+            receiptNumber,
+            String(customerRow.id),
+            String(customerRow.name),
+            String(customerRow.account_number),
+            paymentAmount,
+            value.payment.method,
+            cashReceivedCents,
+            changeDueCents,
+            terminalReference,
+            externalApproved,
+            currentBalance,
+            projectedBalance,
+            value.notes?.trim() || null,
+            timestamp,
+          );
+
+        this.connection
+          .prepare(
+            `INSERT INTO customer_ledger (
+              id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+              related_sale_id, related_account_payment_id, device_id, notes, sequence
+            ) VALUES (?, ?, ?, ?, 'payment', ?, NULL, ?, NULL, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM customer_ledger))`,
+          )
+          .run(
+            randomUUID(),
+            randomUUID(),
+            String(customerRow.id),
+            -paymentAmount,
+            timestamp,
+            paymentId,
+            value.notes?.trim() || `Payment #${receiptNumber}`,
+          );
+
+        this.addAudit(
+          'customer.payment_recorded',
+          'account_payment',
+          paymentId,
+          {
+            receiptNumber,
+            customerId: String(customerRow.id),
+            customerName: String(customerRow.name),
+            accountNumber: String(customerRow.account_number),
+            amountCents: paymentAmount,
+            method: value.payment.method,
+            previousBalanceCents: currentBalance,
+            newBalanceCents: projectedBalance,
+          },
+        );
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+
+    const completed = this.connection
+      .prepare('SELECT id FROM account_payments WHERE operation_id = ?')
+      .get(value.operationId) as { id: string } | undefined;
+    if (!completed) throw new Error('Account payment failed');
+    return this.getAccountPayment(completed.id);
+  }
+
+  listAccountPayments(customerId?: string): AccountPayment[] {
+    const rows = (
+      customerId
+        ? this.connection
+            .prepare(
+              'SELECT * FROM account_payments WHERE customer_id = ? ORDER BY created_at DESC, receipt_number DESC',
+            )
+            .all(customerId)
+        : this.connection
+            .prepare(
+              'SELECT * FROM account_payments ORDER BY created_at DESC, receipt_number DESC',
+            )
+            .all()
+    ) as Row[];
+    return rows.map(mapAccountPayment);
+  }
+
+  getAccountPayment(id: string): AccountPayment {
+    const row = this.connection
+      .prepare('SELECT * FROM account_payments WHERE id = ?')
+      .get(id) as Row | undefined;
+    if (!row) throw new Error('Account payment not found');
+    return mapAccountPayment(row);
+  }
+
+  recordAccountPaymentPrintAttempt(
+    paymentId: string,
+    success: boolean,
+    error: string | null,
+  ): void {
+    if (
+      !this.connection
+        .prepare('SELECT id FROM account_payments WHERE id = ?')
+        .get(paymentId)
+    ) {
+      throw new Error('Account payment not found');
+    }
+    this.connection
+      .prepare(
+        'INSERT INTO account_payment_print_attempts (id, account_payment_id, attempted_at, success, error_message) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(randomUUID(), paymentId, now(), success ? 1 : 0, error);
+  }
+
+  // --- STATEMENTS ---
+
+  getCustomerStatement(
+    customerId: string,
+    optionsInput?: StatementOptions,
+  ): CustomerStatementData {
+    const customer = this.getCustomer(customerId);
+    const settings = this.getSettings();
+    const options = statementOptionsSchema.parse(
+      optionsInput ?? { range: 'all_activity' },
+    );
+
+    let startDate: string | null = null;
+    let endDate: string = now();
+    let label = 'All activity';
+
+    if (options.range === 'last_30_days') {
+      const d = new Date();
+      d.setDate(d.getDate() - 30);
+      startDate = d.toISOString();
+      label = 'Last 30 days';
+    } else if (options.range === 'last_90_days') {
+      const d = new Date();
+      d.setDate(d.getDate() - 90);
+      startDate = d.toISOString();
+      label = 'Last 90 days';
+    } else if (options.range === 'custom') {
+      if (options.startDate)
+        startDate = new Date(options.startDate).toISOString();
+      if (options.endDate) endDate = new Date(options.endDate).toISOString();
+      label = `Custom (${startDate ? new Date(startDate).toLocaleDateString() : 'Beginning'} to ${new Date(endDate).toLocaleDateString()})`;
+    }
+
+    let openingBalanceCents = 0;
+    if (startDate) {
+      const openRow = this.connection
+        .prepare(
+          'SELECT COALESCE(SUM(amount_cents), 0) AS opening FROM customer_ledger WHERE customer_id = ? AND occurred_at < ?',
+        )
+        .get(customerId, startDate) as { opening: number } | undefined;
+      openingBalanceCents = assertSafeFinancialInteger(
+        openRow?.opening ?? 0,
+        'Opening balance',
+      );
+    }
+
+    const ledgerRows = this.connection
+      .prepare(
+        `
+        SELECT
+          l.*,
+          s.receipt_number AS sale_receipt_number,
+          p.receipt_number AS payment_receipt_number
+        FROM customer_ledger l
+        LEFT JOIN sales s ON s.id = l.related_sale_id
+        LEFT JOIN account_payments p ON p.id = l.related_account_payment_id
+        WHERE l.customer_id = ?
+          AND (? IS NULL OR l.occurred_at >= ?)
+          AND l.occurred_at <= ?
+        ORDER BY l.occurred_at ASC, l.sequence ASC
+      `,
+      )
+      .all(customerId, startDate, startDate, endDate) as Row[];
+
+    let currentRunning = BigInt(openingBalanceCents);
+    let totalChargesBig = 0n;
+    let totalPaymentsBig = 0n;
+
+    const entries: StatementEntry[] = ledgerRows.map((row) => {
+      const amt = BigInt(Number(row.amount_cents));
+      currentRunning += amt;
+      const runningBalanceCents = assertSafeFinancialInteger(
+        currentRunning,
+        'Statement running balance',
+      );
+
+      const isCharge = amt > 0n;
+      if (isCharge) {
+        totalChargesBig += amt;
+      } else {
+        totalPaymentsBig += -amt;
+      }
+
+      return {
+        id: String(row.id),
+        occurredAt: String(row.occurred_at),
+        entryType: String(row.entry_type) as StatementEntry['entryType'],
+        notes: String(row.notes),
+        relatedSaleId: row.related_sale_id ? String(row.related_sale_id) : null,
+        relatedSaleReceiptNumber:
+          row.sale_receipt_number !== null &&
+          row.sale_receipt_number !== undefined
+            ? Number(row.sale_receipt_number)
+            : null,
+        relatedAccountPaymentId: row.related_account_payment_id
+          ? String(row.related_account_payment_id)
+          : null,
+        relatedPaymentReceiptNumber:
+          row.payment_receipt_number !== null &&
+          row.payment_receipt_number !== undefined
+            ? Number(row.payment_receipt_number)
+            : null,
+        chargeCents: isCharge ? Number(amt) : null,
+        paymentCents: !isCharge ? Number(-amt) : null,
+        runningBalanceCents,
+      };
+    });
+
+    const closingBalanceCents = assertSafeFinancialInteger(
+      currentRunning,
+      'Closing balance',
+    );
+    const totalChargesCents = assertSafeFinancialInteger(
+      totalChargesBig,
+      'Total charges',
+    );
+    const totalPaymentsCents = assertSafeFinancialInteger(
+      totalPaymentsBig,
+      'Total payments',
+    );
+
+    return {
+      customer,
+      settings,
+      period: {
+        startDate,
+        endDate,
+        label,
+      },
+      openingBalanceCents,
+      entries,
+      closingBalanceCents,
+      totalChargesCents,
+      totalPaymentsCents,
+      generatedAt: now(),
+    };
+  }
+
+  // --- PRIVATE HELPERS ---
 
   private getProduct(id: string): Product {
     const row = this.connection
@@ -648,6 +1431,40 @@ export class StoreDatabase {
         value: String(barcode.value),
         kind: String(barcode.kind) as Barcode['kind'],
       })),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapCustomer(row: Row, settings: StoreSettings): Customer {
+    const currentBalance = this.getCustomerBalance(String(row.id));
+    const effectiveLimit =
+      row.credit_limit_cents !== null && row.credit_limit_cents !== undefined
+        ? Number(row.credit_limit_cents)
+        : settings.defaultCreditLimitCents;
+    const availableCredit = effectiveLimit - currentBalance;
+
+    return {
+      id: String(row.id),
+      accountNumber: String(row.account_number),
+      accountBarcode:
+        row.account_barcode === null ? null : String(row.account_barcode),
+      name: String(row.name),
+      secondaryName:
+        row.secondary_name === null ? null : String(row.secondary_name),
+      phone: row.phone === null ? null : String(row.phone),
+      email: row.email === null ? null : String(row.email),
+      address: row.address === null ? null : String(row.address),
+      notes: row.notes === null ? null : String(row.notes),
+      active: Boolean(row.active),
+      blocked: Boolean(row.blocked),
+      creditLimitCents:
+        row.credit_limit_cents === null || row.credit_limit_cents === undefined
+          ? null
+          : Number(row.credit_limit_cents),
+      effectiveCreditLimitCents: effectiveLimit,
+      currentBalanceCents: currentBalance,
+      availableCreditCents: availableCredit,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
@@ -745,11 +1562,81 @@ function mapMovement(row: Row): InventoryMovement {
   };
 }
 
+function mapLedgerEntry(row: Row): CustomerLedgerEntry {
+  return {
+    id: String(row.id),
+    operationId: String(row.operation_id),
+    customerId: String(row.customer_id),
+    amountCents: Number(row.amount_cents),
+    entryType: String(row.entry_type) as CustomerLedgerEntry['entryType'],
+    occurredAt: String(row.occurred_at),
+    relatedSaleId: row.related_sale_id ? String(row.related_sale_id) : null,
+    relatedSaleReceiptNumber:
+      row.sale_receipt_number !== null && row.sale_receipt_number !== undefined
+        ? Number(row.sale_receipt_number)
+        : null,
+    relatedAccountPaymentId: row.related_account_payment_id
+      ? String(row.related_account_payment_id)
+      : null,
+    relatedPaymentReceiptNumber:
+      row.payment_receipt_number !== null &&
+      row.payment_receipt_number !== undefined
+        ? Number(row.payment_receipt_number)
+        : null,
+    deviceId: row.device_id ? String(row.device_id) : null,
+    notes: String(row.notes),
+    sequence: Number(row.sequence),
+    resultingBalanceCents: Number(row.resulting_balance_cents),
+  };
+}
+
+function mapAccountPayment(row: Row): AccountPayment {
+  return {
+    id: String(row.id),
+    operationId: String(row.operation_id),
+    receiptNumber: Number(row.receipt_number),
+    customerId: String(row.customer_id),
+    customerName: String(row.customer_name),
+    accountNumber: String(row.account_number),
+    amountCents: Number(row.amount_cents),
+    method: String(row.method) as AccountPayment['method'],
+    cashReceivedCents:
+      row.cash_received_cents === null || row.cash_received_cents === undefined
+        ? null
+        : Number(row.cash_received_cents),
+    changeDueCents:
+      row.change_due_cents === null || row.change_due_cents === undefined
+        ? null
+        : Number(row.change_due_cents),
+    terminalReference:
+      row.terminal_reference === null || row.terminal_reference === undefined
+        ? null
+        : String(row.terminal_reference),
+    externalApproved:
+      row.external_approved === null || row.external_approved === undefined
+        ? null
+        : Boolean(row.external_approved),
+    previousBalanceCents: Number(row.previous_balance_cents),
+    newBalanceCents: Number(row.new_balance_cents),
+    notes:
+      row.notes === null || row.notes === undefined ? null : String(row.notes),
+    createdAt: String(row.created_at),
+  };
+}
+
 function friendlyDatabaseError(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes('product_barcodes.value'))
     return new Error('That barcode is already assigned to a product.');
   if (message.includes('inventory_movements.operation_id'))
     return new Error('This inventory operation was already recorded.');
+  if (message.includes('customers.account_number'))
+    return new Error('That account number is already in use.');
+  if (message.includes('customers.account_barcode'))
+    return new Error('That account barcode is already assigned to a customer.');
+  if (message.includes('account_payments.operation_id'))
+    return new Error('This payment operation was already recorded.');
+  if (message.includes('customer_ledger.operation_id'))
+    return new Error('This ledger operation was already recorded.');
   return error instanceof Error ? error : new Error(message);
 }

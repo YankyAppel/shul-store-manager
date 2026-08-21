@@ -165,6 +165,132 @@ export const migrations: Migration[] = [
       CREATE INDEX print_attempts_sale_idx ON print_attempts(sale_id, attempted_at);
     `,
   },
+  {
+    version: 4,
+    name: 'customer_accounts_and_receivables',
+    sql: `
+      ALTER TABLE store_settings ADD COLUMN customer_accounts_enabled INTEGER NOT NULL DEFAULT 1 CHECK (customer_accounts_enabled IN (0, 1));
+      ALTER TABLE store_settings ADD COLUMN default_credit_limit_cents INTEGER NOT NULL DEFAULT 50000 CHECK (default_credit_limit_cents >= 0);
+      ALTER TABLE store_settings ADD COLUMN allow_customer_credit INTEGER NOT NULL DEFAULT 0 CHECK (allow_customer_credit IN (0, 1));
+      ALTER TABLE store_settings ADD COLUMN statement_footer TEXT NOT NULL DEFAULT '';
+      ALTER TABLE store_settings ADD COLUMN overdue_days INTEGER NOT NULL DEFAULT 30 CHECK (overdue_days >= 0);
+
+      CREATE TABLE customers (
+        id TEXT PRIMARY KEY,
+        account_number TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(trim(account_number)) > 0),
+        account_barcode TEXT COLLATE NOCASE UNIQUE CHECK (account_barcode IS NULL OR length(trim(account_barcode)) > 0),
+        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        secondary_name TEXT,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        notes TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        blocked INTEGER NOT NULL DEFAULT 0 CHECK (blocked IN (0, 1)),
+        credit_limit_cents INTEGER CHECK (credit_limit_cents IS NULL OR credit_limit_cents >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX customers_active_name_idx ON customers(active, name COLLATE NOCASE);
+      CREATE INDEX customers_phone_idx ON customers(phone);
+      CREATE INDEX customers_email_idx ON customers(email COLLATE NOCASE);
+      CREATE INDEX customers_account_number_idx ON customers(account_number COLLATE NOCASE);
+      CREATE INDEX customers_account_barcode_idx ON customers(account_barcode COLLATE NOCASE);
+
+      ALTER TABLE sales ADD COLUMN customer_id TEXT REFERENCES customers(id) ON DELETE RESTRICT;
+      ALTER TABLE sales ADD COLUMN customer_name TEXT;
+      ALTER TABLE sales ADD COLUMN customer_account_number TEXT;
+      ALTER TABLE sales ADD COLUMN customer_balance_before_cents INTEGER;
+      ALTER TABLE sales ADD COLUMN customer_balance_after_cents INTEGER;
+      ALTER TABLE sales ADD COLUMN tender_type TEXT NOT NULL DEFAULT 'immediate_payment' CHECK (tender_type IN ('cash', 'external_terminal', 'account', 'immediate_payment'));
+      CREATE INDEX sales_customer_idx ON sales(customer_id);
+
+      DROP TRIGGER IF EXISTS sales_status_transition;
+      CREATE TRIGGER sales_status_transition BEFORE UPDATE OF status ON sales
+      WHEN NOT ((OLD.status='open' AND NEW.status='awaiting_payment') OR
+                (OLD.status='awaiting_payment' AND NEW.status='paid') OR
+                (OLD.status='awaiting_payment' AND NEW.status='completed') OR
+                (OLD.status='paid' AND NEW.status='completed') OR
+                (OLD.status IN ('open','awaiting_payment') AND NEW.status='voided') OR
+                (OLD.status='completed' AND NEW.status='refunded'))
+      BEGIN SELECT RAISE(ABORT, 'Invalid sale status transition'); END;
+
+      CREATE TABLE account_payments (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL UNIQUE,
+        receipt_number INTEGER NOT NULL UNIQUE,
+        customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        customer_name TEXT NOT NULL,
+        account_number TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        method TEXT NOT NULL CHECK (method IN ('cash', 'external_terminal')),
+        cash_received_cents INTEGER,
+        change_due_cents INTEGER,
+        terminal_reference TEXT,
+        external_approved INTEGER CHECK (external_approved IN (0, 1)),
+        previous_balance_cents INTEGER NOT NULL,
+        new_balance_cents INTEGER NOT NULL,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        CHECK (
+          (method = 'cash' AND cash_received_cents >= amount_cents AND change_due_cents = cash_received_cents - amount_cents AND terminal_reference IS NULL AND external_approved IS NULL)
+          OR (method = 'external_terminal' AND cash_received_cents IS NULL AND change_due_cents IS NULL AND external_approved = 1)
+        )
+      );
+      CREATE INDEX account_payments_customer_idx ON account_payments(customer_id, created_at DESC);
+
+      CREATE TRIGGER account_payments_no_update
+      BEFORE UPDATE ON account_payments BEGIN
+        SELECT RAISE(ABORT, 'Account payments are immutable');
+      END;
+
+      CREATE TRIGGER account_payments_no_delete
+      BEFORE DELETE ON account_payments BEGIN
+        SELECT RAISE(ABORT, 'Account payments are immutable');
+      END;
+
+      CREATE TABLE customer_ledger (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL UNIQUE,
+        customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_cents INTEGER NOT NULL CHECK (amount_cents <> 0),
+        entry_type TEXT NOT NULL CHECK (entry_type IN ('sale_charge', 'payment', 'manual_debit_adjustment', 'manual_credit_adjustment')),
+        occurred_at TEXT NOT NULL,
+        related_sale_id TEXT REFERENCES sales(id) ON DELETE RESTRICT,
+        related_account_payment_id TEXT REFERENCES account_payments(id) ON DELETE RESTRICT,
+        device_id TEXT,
+        notes TEXT NOT NULL CHECK (length(trim(notes)) > 0),
+        sequence INTEGER,
+        CHECK (
+          (entry_type IN ('sale_charge', 'manual_debit_adjustment') AND amount_cents > 0)
+          OR (entry_type IN ('payment', 'manual_credit_adjustment') AND amount_cents < 0)
+        )
+      );
+      CREATE UNIQUE INDEX customer_ledger_sequence_idx ON customer_ledger(sequence);
+      CREATE INDEX customer_ledger_customer_time_idx ON customer_ledger(customer_id, occurred_at, sequence);
+      CREATE INDEX customer_ledger_sale_idx ON customer_ledger(related_sale_id);
+      CREATE INDEX customer_ledger_payment_idx ON customer_ledger(related_account_payment_id);
+
+      CREATE TRIGGER customer_ledger_no_update
+      BEFORE UPDATE ON customer_ledger BEGIN
+        SELECT RAISE(ABORT, 'Customer ledger entries are append-only');
+      END;
+
+      CREATE TRIGGER customer_ledger_no_delete
+      BEFORE DELETE ON customer_ledger BEGIN
+        SELECT RAISE(ABORT, 'Customer ledger entries are append-only');
+      END;
+
+      CREATE TABLE account_payment_print_attempts (
+        id TEXT PRIMARY KEY,
+        account_payment_id TEXT NOT NULL REFERENCES account_payments(id) ON DELETE RESTRICT,
+        attempted_at TEXT NOT NULL,
+        success INTEGER NOT NULL CHECK (success IN (0, 1)),
+        error_message TEXT
+      );
+      CREATE INDEX account_payment_print_attempts_payment_idx ON account_payment_print_attempts(account_payment_id, attempted_at);
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

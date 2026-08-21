@@ -3,12 +3,16 @@ import {
   calculateCart,
   calculateCashChange,
   parseUsdToCents,
+  type Customer,
   type Product,
   type Sale,
   type StoreSettings,
 } from '@shul-store/shared';
+import { CustomerEditorModal } from './customers/CustomerEditorModal';
+import { formatMoney } from '../utils/formatters';
 
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+
 function safeCash(value: string): number | null {
   try {
     return parseUsdToCents(value);
@@ -16,6 +20,7 @@ function safeCash(value: string): number | null {
     return null;
   }
 }
+
 type CartLine = {
   product: Product;
   quantity: number;
@@ -33,22 +38,45 @@ export function CheckoutScreen({
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
-  const [payment, setPayment] = useState<'cash' | 'external_terminal' | null>(
-    null,
-  );
+  const [payment, setPayment] = useState<
+    'cash' | 'external_terminal' | 'account' | null
+  >(null);
   const [cash, setCash] = useState('');
   const [approved, setApproved] = useState(false);
   const [reference, setReference] = useState('');
+
+  // Account checkout states
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(
+    null,
+  );
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [customerMatches, setCustomerMatches] = useState<Customer[]>([]);
+  const [accountConfirmed, setAccountConfirmed] = useState(false);
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+
   const [sale, setSale] = useState<Sale>();
   const [printError, setPrintError] = useState('');
   const completionKey = useRef(crypto.randomUUID());
+
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
   }, []);
+
   async function scan(value: string) {
     const clean = value.trim();
     if (!clean) return;
     setError('');
+
+    // If currently on account checkout screen and looking for customer, check if it matches a customer barcode/account
+    if (payment === 'account' && !selectedCustomer) {
+      const customer = await window.storeApi.customers.lookupBarcode(clean);
+      if (customer) {
+        setSelectedCustomer(customer);
+        setCustomerQuery('');
+        return;
+      }
+    }
+
     const product = await window.storeApi.checkout.lookupBarcode(clean);
     if (!product) {
       setError(`Unknown or inactive barcode: ${clean}`);
@@ -57,6 +85,7 @@ export function CheckoutScreen({
     add(product, clean);
     setQuery('');
   }
+
   function add(product: Product, barcodeUsed: string | null = null) {
     if (!product.active) {
       setError('Inactive products cannot be sold.');
@@ -74,6 +103,7 @@ export function CheckoutScreen({
       return [...lines, { product, quantity: 1, barcodeUsed }];
     });
   }
+
   function quantity(index: number, change: number) {
     setCart((lines) =>
       lines.flatMap((line, position) =>
@@ -85,7 +115,9 @@ export function CheckoutScreen({
       ),
     );
   }
+
   useScannerCapture(scan);
+
   const insufficient = cart.some(
     (line) => line.quantity > line.product.stockQuantity,
   );
@@ -94,10 +126,71 @@ export function CheckoutScreen({
     () => (settings ? calculateCart(cart, settings) : null),
     [cart, settings],
   );
+
+  // Customer search when typing in account query
+  useEffect(() => {
+    if (payment === 'account' && customerQuery.trim().length >= 1) {
+      void window.storeApi.customers
+        .search(customerQuery, false)
+        .then(setCustomerMatches);
+    } else {
+      setCustomerMatches([]);
+    }
+  }, [payment, customerQuery]);
+
+  // Check account limits & warnings
+  const saleTotalCents = totals?.totalCents ?? 0;
+  const projectedBalanceCents = selectedCustomer
+    ? selectedCustomer.currentBalanceCents + saleTotalCents
+    : 0;
+
+  const isOverCreditLimit = selectedCustomer
+    ? projectedBalanceCents > selectedCustomer.effectiveCreditLimitCents
+    : false;
+
+  const accountBlockedReason = selectedCustomer
+    ? !selectedCustomer.active
+      ? 'Customer account is inactive and cannot place new charges.'
+      : selectedCustomer.blocked
+        ? 'Customer is blocked from placing new charges on account.'
+        : !settings?.customerAccountsEnabled
+          ? 'Customer accounts are currently disabled in store settings.'
+          : isOverCreditLimit
+            ? `Purchase exceeds customer credit limit (${formatMoney(selectedCustomer.effectiveCreditLimitCents)}). Projected balance: ${formatMoney(projectedBalanceCents)}.`
+            : null
+    : null;
+
   async function complete() {
     if (!totals) return;
     setError('');
     try {
+      let paymentInput: import('@shul-store/shared').CompleteSaleInput['payment'];
+
+      if (payment === 'cash') {
+        paymentInput = {
+          method: 'cash',
+          cashReceivedCents: cashReceivedCents ?? -1,
+        };
+      } else if (payment === 'external_terminal') {
+        paymentInput = {
+          method: 'external_terminal',
+          approved: true,
+          terminalReference: reference.trim() || null,
+        };
+      } else if (payment === 'account') {
+        if (!selectedCustomer) {
+          setError('Please select a customer.');
+          return;
+        }
+        paymentInput = {
+          method: 'account',
+          customerId: selectedCustomer.id,
+          confirmed: true,
+        };
+      } else {
+        return;
+      }
+
       const input = {
         completionKey: completionKey.current,
         lines: cart.map((line) => ({
@@ -105,18 +198,9 @@ export function CheckoutScreen({
           quantity: line.quantity,
           barcodeUsed: line.barcodeUsed,
         })),
-        payment:
-          payment === 'cash'
-            ? {
-                method: 'cash' as const,
-                cashReceivedCents: cashReceivedCents ?? -1,
-              }
-            : {
-                method: 'external_terminal' as const,
-                approved: true as const,
-                terminalReference: reference.trim() || null,
-              },
+        payment: paymentInput,
       };
+
       const completed = await window.storeApi.checkout.complete(input);
       setSale(completed);
       await onInventoryChanged();
@@ -124,11 +208,13 @@ export function CheckoutScreen({
       setError(reason instanceof Error ? reason.message : 'Sale failed');
     }
   }
+
   async function print() {
     if (!sale) return;
     const result = await window.storeApi.sales.print(sale.id);
     setPrintError(result.success ? '' : (result.error ?? 'Print failed'));
   }
+
   if (sale)
     return (
       <Receipt
@@ -142,10 +228,14 @@ export function CheckoutScreen({
           setCash('');
           setApproved(false);
           setReference('');
+          setSelectedCustomer(null);
+          setCustomerQuery('');
+          setAccountConfirmed(false);
           completionKey.current = crypto.randomUUID();
         }}
       />
     );
+
   const matches =
     query.length > 1
       ? products
@@ -156,6 +246,7 @@ export function CheckoutScreen({
           )
           .slice(0, 8)
       : [];
+
   return (
     <div className="checkout-layout">
       <section className="checkout-products">
@@ -239,8 +330,9 @@ export function CheckoutScreen({
           <span>Total</span>
           <b>{money(totals?.totalCents ?? 0)}</b>
         </p>
+
         {!payment ? (
-          <>
+          <div style={{ display: 'grid', gap: '8px' }}>
             <button
               className="primary"
               disabled={!cart.length || insufficient}
@@ -254,7 +346,13 @@ export function CheckoutScreen({
             >
               External card terminal
             </button>
-          </>
+            <button
+              disabled={!cart.length || insufficient}
+              onClick={() => setPayment('account')}
+            >
+              Put on account
+            </button>
+          </div>
         ) : payment === 'cash' ? (
           <div className="pay-box">
             <h4>Cash payment</h4>
@@ -297,7 +395,7 @@ export function CheckoutScreen({
             </button>
             <button onClick={() => setPayment(null)}>Back</button>
           </div>
-        ) : (
+        ) : payment === 'external_terminal' ? (
           <div className="pay-box">
             <h4>External terminal</h4>
             <p>
@@ -328,8 +426,221 @@ export function CheckoutScreen({
             </button>
             <button onClick={() => setPayment(null)}>Back</button>
           </div>
+        ) : (
+          <div className="pay-box">
+            <h4>Put on account</h4>
+
+            {!selectedCustomer ? (
+              <div>
+                <label>
+                  Select customer
+                  <input
+                    placeholder="Search by name, account #, or scan barcode…"
+                    value={customerQuery}
+                    onChange={(e) => setCustomerQuery(e.target.value)}
+                  />
+                </label>
+
+                {customerMatches.length > 0 && (
+                  <div
+                    className="search-results"
+                    style={{
+                      gridTemplateColumns: '1fr',
+                      maxHeight: '180px',
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {customerMatches.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => setSelectedCustomer(c)}
+                        style={{ padding: '8px', textAlign: 'left' }}
+                      >
+                        <strong>{c.name}</strong>
+                        <span style={{ fontSize: '12px' }}>
+                          Acct #{c.accountNumber} ·{' '}
+                          {c.currentBalanceCents > 0
+                            ? `Owed: ${formatMoney(c.currentBalanceCents)}`
+                            : c.currentBalanceCents < 0
+                              ? `Credit: ${formatMoney(Math.abs(c.currentBalanceCents))}`
+                              : '$0.00'}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  style={{ marginTop: '10px' }}
+                  onClick={() => setCreatingCustomer(true)}
+                >
+                  + New customer
+                </button>
+              </div>
+            ) : (
+              <div style={{ marginTop: '10px' }}>
+                <div
+                  style={{
+                    background: '#f8f9fa',
+                    border: '1px solid #e0e5e2',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    marginBottom: '10px',
+                  }}
+                >
+                  <div
+                    style={{ display: 'flex', justifyContent: 'space-between' }}
+                  >
+                    <strong>{selectedCustomer.name}</strong>
+                    <button
+                      type="button"
+                      style={{
+                        border: 0,
+                        background: 'transparent',
+                        padding: 0,
+                        color: '#277052',
+                        fontSize: '12px',
+                      }}
+                      onClick={() => {
+                        setSelectedCustomer(null);
+                        setAccountConfirmed(false);
+                      }}
+                    >
+                      Change
+                    </button>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: '12px',
+                      color: '#666',
+                      marginTop: '2px',
+                    }}
+                  >
+                    Account #{selectedCustomer.accountNumber}
+                  </div>
+                  <hr
+                    style={{
+                      border: 'none',
+                      borderTop: '1px solid #eee',
+                      margin: '8px 0',
+                    }}
+                  />
+                  <div style={{ fontSize: '13px', lineHeight: '1.5' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span>Current balance:</span>
+                      <b>
+                        {selectedCustomer.currentBalanceCents > 0
+                          ? `Owed: ${formatMoney(selectedCustomer.currentBalanceCents)}`
+                          : selectedCustomer.currentBalanceCents < 0
+                            ? `Credit: ${formatMoney(Math.abs(selectedCustomer.currentBalanceCents))}`
+                            : '$0.00'}
+                      </b>
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span>Credit limit:</span>
+                      <span>
+                        {formatMoney(
+                          selectedCustomer.effectiveCreditLimitCents,
+                        )}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <span>Available credit:</span>
+                      <b>
+                        {formatMoney(selectedCustomer.availableCreditCents)}
+                      </b>
+                    </div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        borderTop: '1px dotted #ccc',
+                        paddingTop: '6px',
+                        marginTop: '6px',
+                        fontWeight: 'bold',
+                      }}
+                    >
+                      <span>Projected balance:</span>
+                      <span
+                        style={{
+                          color:
+                            projectedBalanceCents > 0 ? '#87352a' : '#1e684a',
+                        }}
+                      >
+                        {projectedBalanceCents > 0
+                          ? `Owed: ${formatMoney(projectedBalanceCents)}`
+                          : projectedBalanceCents < 0
+                            ? `Credit: ${formatMoney(Math.abs(projectedBalanceCents))}`
+                            : '$0.00'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {accountBlockedReason ? (
+                  <div className="alert" style={{ margin: '8px 0' }}>
+                    {accountBlockedReason}
+                  </div>
+                ) : (
+                  <label className="toggle" style={{ margin: '10px 0' }}>
+                    <input
+                      type="checkbox"
+                      checked={accountConfirmed}
+                      onChange={(e) => setAccountConfirmed(e.target.checked)}
+                    />{' '}
+                    Charge {formatMoney(saleTotalCents)} to{' '}
+                    {selectedCustomer.name}&apos;s account
+                  </label>
+                )}
+
+                <button
+                  className="primary"
+                  disabled={!accountConfirmed || Boolean(accountBlockedReason)}
+                  onClick={() => void complete()}
+                >
+                  Complete account sale
+                </button>
+              </div>
+            )}
+
+            <button
+              style={{ marginTop: '8px' }}
+              onClick={() => setPayment(null)}
+            >
+              Back
+            </button>
+          </div>
         )}
       </section>
+
+      {creatingCustomer && (
+        <CustomerEditorModal
+          customer={null}
+          onClose={() => setCreatingCustomer(false)}
+          onSaved={async (saved) => {
+            setCreatingCustomer(false);
+            setSelectedCustomer(saved);
+          }}
+          setError={setError}
+        />
+      )}
     </div>
   );
 }
@@ -374,6 +685,8 @@ function Receipt({
   onPrint(): void;
   onNew(): void;
 }) {
+  const isAccount = sale.payment.method === 'account';
+
   return (
     <div className="receipt-screen">
       <div className="success">
@@ -387,6 +700,25 @@ function Receipt({
       <div className="receipt">
         <h2>Receipt #{sale.receiptNumber}</h2>
         <p>{new Date(sale.completedAt ?? sale.createdAt).toLocaleString()}</p>
+
+        {isAccount && (
+          <div
+            style={{
+              background: '#f8f9fa',
+              padding: '8px 12px',
+              borderRadius: '6px',
+              marginBottom: '12px',
+            }}
+          >
+            <div>
+              <strong>Customer:</strong> {sale.payment.customerName}
+            </div>
+            <div>
+              <strong>Account #:</strong> {sale.payment.accountNumber}
+            </div>
+          </div>
+        )}
+
         {sale.items.map((item) => (
           <p key={item.id}>
             <span>
@@ -408,11 +740,64 @@ function Receipt({
           <span>Total</span>
           <b>{money(sale.totalCents)}</b>
         </p>
-        <p>
-          {sale.payment.method === 'cash'
-            ? `Cash ${money(sale.payment.cashReceivedCents ?? 0)} · Change ${money(sale.payment.changeDueCents ?? 0)}`
-            : `External terminal${sale.payment.terminalReference ? ` · ${sale.payment.terminalReference}` : ''}`}
-        </p>
+
+        <div
+          style={{
+            borderTop: '1px dashed #ccc',
+            paddingTop: '10px',
+            marginTop: '10px',
+          }}
+        >
+          {sale.payment.method === 'cash' ? (
+            <p>
+              <span>Cash</span>
+              <b>
+                {money(sale.payment.cashReceivedCents ?? 0)} · Change{' '}
+                {money(sale.payment.changeDueCents ?? 0)}
+              </b>
+            </p>
+          ) : sale.payment.method === 'external_terminal' ? (
+            <p>
+              <span>External terminal</span>
+              <b>
+                {sale.payment.terminalReference
+                  ? `Ref ${sale.payment.terminalReference}`
+                  : 'Approved'}
+              </b>
+            </p>
+          ) : (
+            <div>
+              <p
+                style={{
+                  fontWeight: 'bold',
+                  color: '#1e684a',
+                  margin: '4px 0',
+                }}
+              >
+                <span>Payment tender</span>
+                <span>Charged to Account</span>
+              </p>
+              <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                <span>Previous balance</span>
+                <span>{money(sale.payment.previousBalanceCents ?? 0)}</span>
+              </p>
+              <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                <span>This purchase</span>
+                <span>+{money(sale.totalCents)}</span>
+              </p>
+              <p style={{ margin: '4px 0', fontWeight: 'bold' }}>
+                <span>New balance</span>
+                <span>
+                  {money(
+                    sale.payment.newBalanceCents ??
+                      (sale.payment.previousBalanceCents ?? 0) +
+                        sale.totalCents,
+                  )}
+                </span>
+              </p>
+            </div>
+          )}
+        </div>
       </div>
       <button className="primary" onClick={onPrint}>
         {printError ? 'Retry printing' : 'Print receipt'}

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
-export const paymentMethodSchema = z.enum(['cash', 'external_terminal']);
+export const paymentMethodSchema = z.enum([
+  'cash',
+  'external_terminal',
+  'account',
+]);
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
+
 export const storeSettingsSchema = z.object({
   storeName: z.string().trim().min(1).max(200),
   contactLines: z.array(z.string().trim().min(1).max(200)).max(4),
@@ -9,6 +14,16 @@ export const storeSettingsSchema = z.object({
   taxRateBps: z.number().int().min(0).max(10000),
   pricesIncludeTax: z.boolean(),
   receiptFooter: z.string().trim().max(1000),
+  customerAccountsEnabled: z.boolean().default(true),
+  defaultCreditLimitCents: z
+    .number()
+    .int()
+    .min(0)
+    .max(100_000_000)
+    .default(50_000),
+  allowCustomerCredit: z.boolean().default(false),
+  statementFooter: z.string().trim().max(1000).default(''),
+  overdueDays: z.number().int().min(0).max(365).default(30),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 
@@ -18,6 +33,7 @@ export const checkoutLineSchema = z.object({
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
 });
 export type CheckoutLine = z.infer<typeof checkoutLineSchema>;
+
 export const completeSaleInputSchema = z.object({
   completionKey: z.string().uuid(),
   lines: z.array(checkoutLineSchema).min(1).max(500),
@@ -30,6 +46,11 @@ export const completeSaleInputSchema = z.object({
       method: z.literal('external_terminal'),
       approved: z.literal(true),
       terminalReference: z.string().trim().max(100).nullable(),
+    }),
+    z.object({
+      method: z.literal('account'),
+      customerId: z.string().uuid(),
+      confirmed: z.literal(true),
     }),
   ]),
 });
@@ -149,6 +170,21 @@ export function calculateCashChange(
   return safeNumber(received - due, 'Cash change');
 }
 
+export function formatMoneyCents(cents: number): string {
+  const isNegative = cents < 0;
+  const absoluteCents = Math.abs(cents);
+  const dollars = Math.floor(absoluteCents / 100);
+  const remainingCents = absoluteCents % 100;
+  const formatted = `$${dollars.toLocaleString('en-US')}.${remainingCents.toString().padStart(2, '0')}`;
+  return isNegative ? `-${formatted}` : formatted;
+}
+
+export function formatCustomerBalance(cents: number): string {
+  if (cents > 0) return `Amount owed: ${formatMoneyCents(cents)}`;
+  if (cents < 0) return `Customer credit: ${formatMoneyCents(Math.abs(cents))}`;
+  return 'Settled ($0.00)';
+}
+
 export interface SaleItem {
   id: string;
   productId: string;
@@ -163,6 +199,15 @@ export interface SaleItem {
   lineSubtotalCents: number;
   lineTotalCents: number;
 }
+
+export interface SaleCustomerSnapshot {
+  id: string;
+  name: string;
+  accountNumber: string;
+  previousBalanceCents: number;
+  newBalanceCents: number;
+}
+
 export interface SalePayment {
   method: PaymentMethod;
   amountCents: number;
@@ -170,7 +215,13 @@ export interface SalePayment {
   changeDueCents: number | null;
   terminalReference: string | null;
   externalApproved: boolean | null;
+  customerId?: string | null;
+  customerName?: string | null;
+  accountNumber?: string | null;
+  previousBalanceCents?: number | null;
+  newBalanceCents?: number | null;
 }
+
 export interface Sale {
   id: string;
   receiptNumber: number;
@@ -183,7 +234,9 @@ export interface Sale {
   completedAt: string | null;
   items: SaleItem[];
   payment: SalePayment;
+  customer: SaleCustomerSnapshot | null;
 }
+
 export interface ReceiptData {
   sale: Sale;
   settings: StoreSettings;

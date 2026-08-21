@@ -52,7 +52,7 @@ describe('migrations', () => {
     db.exec('PRAGMA user_version=1');
     db.close();
     const upgraded = new StoreDatabase(filename);
-    expect(upgraded.schemaVersion()).toBe(3);
+    expect(upgraded.schemaVersion()).toBe(migrations.at(-1)?.version);
     expect(
       upgraded.connection
         .prepare("SELECT name FROM sqlite_master WHERE name='sales'")

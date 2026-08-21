@@ -39,6 +39,38 @@ const api: StoreApi = {
     receipt: (id) => ipcRenderer.invoke('sales:receipt', id),
     print: (id) => ipcRenderer.invoke('sales:print', id),
   },
+  customers: {
+    list: (includeInactive) =>
+      ipcRenderer.invoke('customers:list', includeInactive),
+    get: (id) => ipcRenderer.invoke('customers:get', id),
+    search: (query, includeInactive) =>
+      ipcRenderer.invoke('customers:search', query, includeInactive),
+    create: (input) => ipcRenderer.invoke('customers:create', input),
+    update: (id, input) => ipcRenderer.invoke('customers:update', id, input),
+    setActive: (id, active) =>
+      ipcRenderer.invoke('customers:setActive', id, active),
+    setBlocked: (id, blocked) =>
+      ipcRenderer.invoke('customers:setBlocked', id, blocked),
+    generateAccountNumber: () =>
+      ipcRenderer.invoke('customers:generateAccountNumber'),
+    generateBarcode: () => ipcRenderer.invoke('customers:generateBarcode'),
+    lookupBarcode: (barcodeOrAccount) =>
+      ipcRenderer.invoke('customers:lookupBarcode', barcodeOrAccount),
+    getLedger: (customerId) =>
+      ipcRenderer.invoke('customers:getLedger', customerId),
+    getStatement: (customerId, options) =>
+      ipcRenderer.invoke('customers:getStatement', customerId, options),
+    printStatement: (customerId, options) =>
+      ipcRenderer.invoke('customers:printStatement', customerId, options),
+  },
+  accountPayments: {
+    record: (input) => ipcRenderer.invoke('accountPayments:record', input),
+    list: (customerId) =>
+      ipcRenderer.invoke('accountPayments:list', customerId),
+    get: (id) => ipcRenderer.invoke('accountPayments:get', id),
+    receipt: (id) => ipcRenderer.invoke('accountPayments:receipt', id),
+    print: (id) => ipcRenderer.invoke('accountPayments:print', id),
+  },
   images: {
     choose: () => ipcRenderer.invoke('images:choose'),
     discard: (id) => ipcRenderer.invoke('images:discard', id),
