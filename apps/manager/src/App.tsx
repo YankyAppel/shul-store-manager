@@ -6,8 +6,12 @@ import {
   type FormEvent,
 } from 'react';
 import type { Category, Product, StoredImage } from '@shul-store/shared';
+import { CheckoutScreen } from './features/CheckoutScreen';
+import { SalesHistory } from './features/SalesHistory';
+import { SettingsScreen } from './features/SettingsScreen';
 
-type View = 'products' | 'categories' | 'inventory';
+type View =
+  'checkout' | 'products' | 'categories' | 'inventory' | 'sales' | 'settings';
 const imageUrl = (id: string | null) =>
   id ? `store-image://local/${id}` : undefined;
 const money = (cents: number) =>
@@ -96,6 +100,12 @@ export function App() {
         </div>
         <nav>
           <button
+            className={view === 'checkout' ? 'active' : ''}
+            onClick={() => setView('checkout')}
+          >
+            ▣ <span>Checkout</span>
+          </button>
+          <button
             className={view === 'products' ? 'active' : ''}
             onClick={() => setView('products')}
           >
@@ -113,6 +123,18 @@ export function App() {
           >
             ↕ <span>Inventory</span>
           </button>
+          <button
+            className={view === 'sales' ? 'active' : ''}
+            onClick={() => setView('sales')}
+          >
+            ▤ <span>Sales history</span>
+          </button>
+          <button
+            className={view === 'settings' ? 'active' : ''}
+            onClick={() => setView('settings')}
+          >
+            ⚙ <span>Settings</span>
+          </button>
         </nav>
         <div className="offline">
           <i /> Local database
@@ -124,34 +146,41 @@ export function App() {
         <header>
           <div>
             <h1>
-              {view === 'products'
-                ? 'Products'
-                : view === 'categories'
-                  ? 'Categories'
-                  : 'Inventory'}
+              {
+                {
+                  checkout: 'Checkout',
+                  products: 'Products',
+                  categories: 'Categories',
+                  inventory: 'Inventory',
+                  sales: 'Sales history',
+                  settings: 'Store settings',
+                }[view]
+              }
             </h1>
             <p>
-              {view === 'inventory'
-                ? 'Receive stock and record append-only adjustments.'
-                : `Manage your store ${view}.`}
+              {view === 'checkout'
+                ? 'Fast local sales by barcode or search.'
+                : view === 'sales'
+                  ? 'Completed local sales and receipt reprinting.'
+                  : view === 'settings'
+                    ? 'Local checkout, tax, and receipt configuration.'
+                    : view === 'inventory'
+                      ? 'Receive stock and record append-only adjustments.'
+                      : `Manage your store ${view}.`}
             </p>
           </div>
-          <button
-            className="primary"
-            onClick={() =>
-              view === 'categories'
-                ? setCategoryEditor(null)
-                : view === 'products'
-                  ? setProductEditor(null)
-                  : undefined
-            }
-          >
-            {view === 'categories'
-              ? '+ New category'
-              : view === 'products'
-                ? '+ New product'
-                : ''}
-          </button>
+          {(view === 'products' || view === 'categories') && (
+            <button
+              className="primary"
+              onClick={() =>
+                view === 'categories'
+                  ? setCategoryEditor(null)
+                  : setProductEditor(null)
+              }
+            >
+              {view === 'categories' ? '+ New category' : '+ New product'}
+            </button>
+          )}
         </header>
         {error && (
           <div className="alert">
@@ -159,25 +188,32 @@ export function App() {
             <button onClick={() => setError('')}>×</button>
           </div>
         )}
-        <section className="toolbar">
-          <label className="search">
-            ⌕
-            <input
-              placeholder="Search by name or barcode…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={showInactive}
-              onChange={(e) => setShowInactive(e.target.checked)}
-            />{' '}
-            Show inactive
-          </label>
-        </section>
+        {(['products', 'categories', 'inventory'] as View[]).includes(view) && (
+          <section className="toolbar">
+            <label className="search">
+              ⌕
+              <input
+                placeholder="Search by name or barcode…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+              />{' '}
+              Show inactive
+            </label>
+          </section>
+        )}
 
+        {view === 'checkout' && (
+          <CheckoutScreen products={products} onInventoryChanged={refresh} />
+        )}
+        {view === 'sales' && <SalesHistory />}
+        {view === 'settings' && <SettingsScreen />}
         {view === 'categories' && (
           <div className="category-grid">
             {visibleCategories.map((category) => (
@@ -391,26 +427,58 @@ function Modal({
 function ImagePicker({
   imageId,
   onChange,
+  onRemove,
 }: {
   imageId: string | null;
   onChange(image: StoredImage): void;
+  onRemove(): void;
 }) {
   return (
-    <button
-      type="button"
-      className="image-picker"
-      onClick={async () => {
-        const image = await window.storeApi.images.choose();
-        if (image) onChange(image);
-      }}
-    >
-      {imageId ? <img src={imageUrl(imageId)} /> : <span>＋</span>}
-      <div>
-        <b>{imageId ? 'Change image' : 'Add image'}</b>
-        <small>JPG, PNG, WebP or GIF · max 10 MB</small>
-      </div>
-    </button>
+    <div className="image-controls">
+      <button
+        type="button"
+        className="image-picker"
+        onClick={async () => {
+          const image = await window.storeApi.images.choose();
+          if (image) onChange(image);
+        }}
+      >
+        {imageId ? <img src={imageUrl(imageId)} /> : <span>＋</span>}
+        <div>
+          <b>{imageId ? 'Change image' : 'Add image'}</b>
+          <small>JPG, PNG, WebP or GIF · max 10 MB</small>
+        </div>
+      </button>
+      {imageId && (
+        <button type="button" onClick={onRemove}>
+          Remove image
+        </button>
+      )}
+    </div>
   );
+}
+
+function useImageLifecycle(initial: string | null) {
+  const [imageId, setImageId] = useState<string | null>(initial);
+  async function change(image: StoredImage) {
+    if (imageId && imageId !== initial)
+      await window.storeApi.images.discard(imageId);
+    setImageId(image.id);
+  }
+  async function cancel() {
+    if (imageId && imageId !== initial)
+      await window.storeApi.images.discard(imageId);
+  }
+  async function remove() {
+    if (imageId && imageId !== initial)
+      await window.storeApi.images.discard(imageId);
+    setImageId(null);
+  }
+  async function saved() {
+    if (initial && initial !== imageId)
+      await window.storeApi.images.discard(initial);
+  }
+  return { imageId, change, remove, cancel, saved };
 }
 
 function CategoryModal({
@@ -428,17 +496,24 @@ function CategoryModal({
   const [secondaryName, setSecondaryName] = useState(
     category?.secondaryName ?? '',
   );
-  const [imageId, setImageId] = useState<string | null>(
-    category?.imageId ?? null,
-  );
+  const images = useImageLifecycle(category?.imageId ?? null);
   const [saving, setSaving] = useState(false);
+  async function close() {
+    await images.cancel();
+    onClose();
+  }
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
     try {
-      const input = { name, secondaryName: secondaryName || null, imageId };
+      const input = {
+        name,
+        secondaryName: secondaryName || null,
+        imageId: images.imageId,
+      };
       if (category) await window.storeApi.categories.update(category.id, input);
       else await window.storeApi.categories.create(input);
+      await images.saved();
       await onSaved();
     } catch (e) {
       setError(messageFrom(e));
@@ -448,12 +523,13 @@ function CategoryModal({
   return (
     <Modal
       title={category ? 'Edit category' : 'New category'}
-      onClose={onClose}
+      onClose={() => void close()}
     >
       <form onSubmit={submit}>
         <ImagePicker
-          imageId={imageId}
-          onChange={(image) => setImageId(image.id)}
+          imageId={images.imageId}
+          onChange={(image) => void images.change(image)}
+          onRemove={() => void images.remove()}
         />
         <label>
           Name
@@ -474,7 +550,7 @@ function CategoryModal({
           />
         </label>
         <footer>
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={() => void close()}>
             Cancel
           </button>
           <button className="primary" disabled={saving}>
@@ -516,9 +592,7 @@ function ProductModal({
     String(product?.lowStockThreshold ?? 0),
   );
   const [taxable, setTaxable] = useState(product?.taxable ?? false);
-  const [imageId, setImageId] = useState<string | null>(
-    product?.imageId ?? null,
-  );
+  const images = useImageLifecycle(product?.imageId ?? null);
   const [barcodes, setBarcodes] = useState(
     product?.barcodes.map((b) => b.value) ?? [],
   );
@@ -529,6 +603,10 @@ function ProductModal({
     if (clean && !barcodes.includes(clean)) setBarcodes([...barcodes, clean]);
     setBarcode('');
   }
+  async function close() {
+    await images.cancel();
+    onClose();
+  }
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
@@ -537,7 +615,7 @@ function ProductModal({
         categoryId,
         name,
         secondaryName: secondaryName || null,
-        imageId,
+        imageId: images.imageId,
         purchaseCostCents: Math.round(Number(cost) * 100),
         sellingPriceCents: Math.round(Number(price) * 100),
         taxable,
@@ -546,6 +624,7 @@ function ProductModal({
       };
       if (product) await window.storeApi.products.update(product.id, input);
       else await window.storeApi.products.create(input);
+      await images.saved();
       await onSaved();
     } catch (e) {
       setError(messageFrom(e));
@@ -553,11 +632,15 @@ function ProductModal({
     }
   }
   return (
-    <Modal title={product ? 'Edit product' : 'New product'} onClose={onClose}>
+    <Modal
+      title={product ? 'Edit product' : 'New product'}
+      onClose={() => void close()}
+    >
       <form onSubmit={submit}>
         <ImagePicker
-          imageId={imageId}
-          onChange={(image) => setImageId(image.id)}
+          imageId={images.imageId}
+          onChange={(image) => void images.change(image)}
+          onRemove={() => void images.remove()}
         />
         <div className="form-grid">
           <label>
@@ -679,7 +762,7 @@ function ProductModal({
           </div>
         </div>
         <footer>
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={() => void close()}>
             Cancel
           </button>
           <button className="primary" disabled={saving || !categoryId}>
@@ -691,6 +774,15 @@ function ProductModal({
   );
 }
 
+const reasonLabels: Record<string, string> = {
+  stock_received: 'Stock received',
+  damaged: 'Damaged',
+  customer_return: 'Customer return',
+  manual_increase: 'Manual increase',
+  manual_decrease: 'Manual reduction',
+  stock_count_correction: 'Stock count correction',
+  sale: 'Sale',
+};
 function InventoryModal({
   product,
   onClose,
@@ -704,17 +796,32 @@ function InventoryModal({
 }) {
   const [reason, setReason] = useState('stock_received');
   const [quantity, setQuantity] = useState('');
+  const [counted, setCounted] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [history, setHistory] = useState<
+    import('@shul-store/shared').InventoryMovement[]
+  >([]);
+  useEffect(() => {
+    void window.storeApi.inventory
+      .list(product.id)
+      .then(setHistory)
+      .catch((e) => setError(messageFrom(e)));
+  }, [product.id, setError]);
+  const correction = Number(counted) - product.stockQuantity;
+  const isCount = reason === 'stock_count_correction';
   const negative = reason === 'damaged' || reason === 'manual_decrease';
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const quantityChange = isCount
+      ? correction
+      : Math.abs(Number(quantity)) * (negative ? -1 : 1);
+    if (quantityChange === 0) return;
     setSaving(true);
     try {
-      const amount = Math.abs(Number(quantity)) * (negative ? -1 : 1);
       await window.storeApi.inventory.addMovement({
         productId: product.id,
-        quantityChange: amount,
+        quantityChange,
         reason: reason as any,
         notes,
       });
@@ -725,7 +832,7 @@ function InventoryModal({
     }
   }
   return (
-    <Modal title="Record inventory movement" onClose={onClose}>
+    <Modal title="Inventory & movement history" onClose={onClose}>
       <form onSubmit={submit}>
         <div className="stock-summary">
           <div>
@@ -733,35 +840,63 @@ function InventoryModal({
             <b>{product.name}</b>
           </div>
           <div>
-            <small>Current stock</small>
+            <small>Current calculated stock</small>
             <b>{product.stockQuantity}</b>
           </div>
         </div>
         <label>
-          Reason
+          Operation
           <select value={reason} onChange={(e) => setReason(e.target.value)}>
-            <option value="stock_received">Stock received (+)</option>
-            <option value="manual_increase">Manual increase (+)</option>
-            <option value="customer_return">Customer return (+)</option>
-            <option value="manual_decrease">Manual reduction (−)</option>
-            <option value="damaged">Damaged inventory (−)</option>
-            <option value="stock_count_correction">
-              Stock count correction (+)
-            </option>
+            <option value="stock_received">Receive stock</option>
+            <option value="manual_increase">Manual increase</option>
+            <option value="customer_return">Customer return</option>
+            <option value="manual_decrease">Manual reduction</option>
+            <option value="damaged">Damaged inventory</option>
+            <option value="stock_count_correction">Physical stock count</option>
           </select>
         </label>
-        <label>
-          Quantity
-          <input
-            autoFocus
-            type="number"
-            min="1"
-            step="1"
-            required
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-          />
-        </label>
+        {isCount ? (
+          <>
+            <label>
+              Actual physical quantity counted
+              <input
+                autoFocus
+                type="number"
+                min="0"
+                step="1"
+                required
+                value={counted}
+                onChange={(e) => setCounted(e.target.value)}
+              />
+            </label>
+            {counted !== '' && (
+              <p className="new-total">
+                Calculated adjustment:{' '}
+                <b>
+                  {correction > 0 ? '+' : ''}
+                  {correction}
+                </b>
+                <br />
+                {correction === 0
+                  ? 'No correction is required; stock already matches the count.'
+                  : `Resulting stock: ${Number(counted)}`}
+              </p>
+            )}
+          </>
+        ) : (
+          <label>
+            Quantity
+            <input
+              autoFocus
+              type="number"
+              min="1"
+              step="1"
+              required
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+            />
+          </label>
+        )}
         <label>
           Reason details <em>Required for the audit history</em>
           <textarea
@@ -772,19 +907,49 @@ function InventoryModal({
             onChange={(e) => setNotes(e.target.value)}
           />
         </label>
-        <p className="new-total">
-          New calculated stock:{' '}
-          <b>
-            {product.stockQuantity +
-              (Number(quantity) || 0) * (negative ? -1 : 1)}
-          </b>
-        </p>
+        <button
+          className="primary"
+          disabled={saving || (isCount && (counted === '' || correction === 0))}
+        >
+          {saving ? 'Recording…' : 'Record movement'}
+        </button>
+        <div className="history">
+          <h3>Movement history</h3>
+          {history.length === 0 ? (
+            <p>No movements yet.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Reason</th>
+                  <th>Change</th>
+                  <th>Result</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((movement) => (
+                  <tr key={movement.id}>
+                    <td>{new Date(movement.occurredAt).toLocaleString()}</td>
+                    <td>{reasonLabels[movement.reason]}</td>
+                    <td
+                      className={movement.quantityChange < 0 ? 'low-text' : ''}
+                    >
+                      {movement.quantityChange > 0 ? '+' : ''}
+                      {movement.quantityChange}
+                    </td>
+                    <td>{movement.resultingStock}</td>
+                    <td>{movement.notes}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
         <footer>
           <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="primary" disabled={saving}>
-            {saving ? 'Recording…' : 'Record movement'}
+            Close
           </button>
         </footer>
       </form>

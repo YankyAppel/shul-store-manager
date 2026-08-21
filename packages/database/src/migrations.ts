@@ -93,6 +93,78 @@ export const migrations: Migration[] = [
       CREATE INDEX audit_events_entity_idx ON audit_events(entity_type, entity_id, occurred_at);
     `,
   },
+  {
+    version: 2,
+    name: 'deterministic_inventory_sequence',
+    sql: `
+      ALTER TABLE inventory_movements ADD COLUMN sequence INTEGER;
+      UPDATE inventory_movements SET sequence = rowid;
+      CREATE UNIQUE INDEX inventory_movements_sequence_idx ON inventory_movements(sequence);
+    `,
+  },
+  {
+    version: 3,
+    name: 'checkout_foundation',
+    sql: `
+      CREATE TABLE store_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        store_name TEXT NOT NULL, contact_lines_json TEXT NOT NULL,
+        currency TEXT NOT NULL CHECK (currency = 'USD'),
+        tax_rate_bps INTEGER NOT NULL CHECK (tax_rate_bps BETWEEN 0 AND 10000),
+        prices_include_tax INTEGER NOT NULL CHECK (prices_include_tax IN (0,1)),
+        receipt_footer TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO store_settings VALUES (1, 'Shul Store', '[]', 'USD', 0, 0, '', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+
+      CREATE TABLE sales (
+        id TEXT PRIMARY KEY, receipt_number INTEGER NOT NULL UNIQUE,
+        completion_key TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('open','awaiting_payment','paid','completed','voided','refunded')),
+        subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+        tax_cents INTEGER NOT NULL CHECK (tax_cents >= 0),
+        total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+        created_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE INDEX sales_completed_idx ON sales(completed_at DESC);
+      CREATE TRIGGER sales_status_transition BEFORE UPDATE OF status ON sales
+      WHEN NOT ((OLD.status='open' AND NEW.status='awaiting_payment') OR
+                (OLD.status='awaiting_payment' AND NEW.status='paid') OR
+                (OLD.status='paid' AND NEW.status='completed') OR
+                (OLD.status IN ('open','awaiting_payment') AND NEW.status='voided') OR
+                (OLD.status='completed' AND NEW.status='refunded'))
+      BEGIN SELECT RAISE(ABORT, 'Invalid sale status transition'); END;
+
+      CREATE TABLE sale_items (
+        id TEXT PRIMARY KEY, sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        product_name TEXT NOT NULL, secondary_name TEXT, barcode_used TEXT,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        unit_selling_price_cents INTEGER NOT NULL CHECK (unit_selling_price_cents >= 0),
+        unit_purchase_cost_cents INTEGER NOT NULL CHECK (unit_purchase_cost_cents >= 0),
+        taxable INTEGER NOT NULL CHECK (taxable IN (0,1)), tax_cents INTEGER NOT NULL CHECK (tax_cents >= 0),
+        line_subtotal_cents INTEGER NOT NULL CHECK (line_subtotal_cents >= 0),
+        line_total_cents INTEGER NOT NULL CHECK (line_total_cents >= 0)
+      );
+      CREATE INDEX sale_items_sale_idx ON sale_items(sale_id);
+      CREATE TRIGGER sale_items_no_update BEFORE UPDATE ON sale_items BEGIN SELECT RAISE(ABORT, 'Sale items are immutable'); END;
+      CREATE TRIGGER sale_items_no_delete BEFORE DELETE ON sale_items BEGIN SELECT RAISE(ABORT, 'Sale items are immutable'); END;
+
+      CREATE TABLE payments (
+        id TEXT PRIMARY KEY, sale_id TEXT NOT NULL UNIQUE REFERENCES sales(id) ON DELETE RESTRICT,
+        method TEXT NOT NULL CHECK (method IN ('cash','external_terminal')),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+        cash_received_cents INTEGER, change_due_cents INTEGER,
+        terminal_reference TEXT, external_approved INTEGER CHECK (external_approved IN (0,1)), created_at TEXT NOT NULL,
+        CHECK ((method='cash' AND cash_received_cents >= amount_cents AND change_due_cents = cash_received_cents - amount_cents AND terminal_reference IS NULL AND external_approved IS NULL)
+          OR (method='external_terminal' AND cash_received_cents IS NULL AND change_due_cents IS NULL AND external_approved=1))
+      );
+      CREATE TABLE print_attempts (
+        id TEXT PRIMARY KEY, sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+        attempted_at TEXT NOT NULL, success INTEGER NOT NULL CHECK(success IN(0,1)), error_message TEXT
+      );
+      CREATE INDEX print_attempts_sale_idx ON print_attempts(sale_id, attempted_at);
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

@@ -24,7 +24,25 @@ const api: StoreApi = {
     addMovement: (input) => ipcRenderer.invoke('inventory:addMovement', input),
     list: (productId) => ipcRenderer.invoke('inventory:list', productId),
   },
-  images: { choose: () => ipcRenderer.invoke('images:choose') },
+  settings: {
+    get: () => ipcRenderer.invoke('settings:get'),
+    update: (input) => ipcRenderer.invoke('settings:update', input),
+  },
+  checkout: {
+    lookupBarcode: (value) =>
+      ipcRenderer.invoke('checkout:lookupBarcode', value),
+    complete: (input) => ipcRenderer.invoke('checkout:complete', input),
+  },
+  sales: {
+    list: () => ipcRenderer.invoke('sales:list'),
+    get: (id) => ipcRenderer.invoke('sales:get', id),
+    receipt: (id) => ipcRenderer.invoke('sales:receipt', id),
+    print: (id) => ipcRenderer.invoke('sales:print', id),
+  },
+  images: {
+    choose: () => ipcRenderer.invoke('images:choose'),
+    discard: (id) => ipcRenderer.invoke('images:discard', id),
+  },
 };
 
 contextBridge.exposeInMainWorld('storeApi', api);

@@ -1,4 +1,11 @@
 import { z } from 'zod';
+import type {
+  CompleteSaleInput,
+  ReceiptData,
+  Sale,
+  StoreSettings,
+} from './checkout.js';
+export * from './checkout.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -49,17 +56,19 @@ export const inventoryMovementInputSchema = z
     operationId: z.string().uuid().optional(),
   })
   .superRefine((value, context) => {
-    if (value.reason === 'stock_received' && value.quantityChange < 1) {
+    const positive = ['stock_received', 'customer_return', 'manual_increase'];
+    const negative = ['damaged', 'manual_decrease', 'sale'];
+    if (positive.includes(value.reason) && value.quantityChange < 1) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Received stock must be positive',
+        message: `${value.reason} must increase inventory`,
         path: ['quantityChange'],
       });
     }
-    if (value.reason === 'damaged' && value.quantityChange > -1) {
+    if (negative.includes(value.reason) && value.quantityChange > -1) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Damaged stock must reduce inventory',
+        message: `${value.reason} must reduce inventory`,
         path: ['quantityChange'],
       });
     }
@@ -103,11 +112,15 @@ export interface Barcode {
 }
 export interface InventoryMovement {
   id: string;
+  operationId: string;
   productId: string;
   quantityChange: number;
   reason: MovementReason;
   notes: string;
   occurredAt: string;
+  deviceId: string | null;
+  relatedSaleId: string | null;
+  resultingStock: number;
 }
 export interface StoredImage {
   id: string;
@@ -134,7 +147,24 @@ export interface StoreApi {
     addMovement(input: InventoryMovementInput): Promise<InventoryMovement>;
     list(productId: string): Promise<InventoryMovement[]>;
   };
-  images: { choose(): Promise<StoredImage | null> };
+  images: {
+    choose(): Promise<StoredImage | null>;
+    discard(id: string): Promise<boolean>;
+  };
+  settings: {
+    get(): Promise<StoreSettings>;
+    update(input: StoreSettings): Promise<StoreSettings>;
+  };
+  checkout: {
+    lookupBarcode(value: string): Promise<Product | null>;
+    complete(input: CompleteSaleInput): Promise<Sale>;
+  };
+  sales: {
+    list(): Promise<Sale[]>;
+    get(id: string): Promise<Sale>;
+    receipt(id: string): Promise<ReceiptData>;
+    print(id: string): Promise<{ success: boolean; error: string | null }>;
+  };
 }
 
 export function errorMessage(error: unknown): string {

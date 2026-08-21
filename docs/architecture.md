@@ -40,10 +40,13 @@ COALESCE(SUM(inventory_movements.quantity_change), 0)
 
 Every movement has a UUID, idempotency/operation UUID, product, signed integer quantity, constrained reason, UTC time, and required notes. Related writes and audit insertion share a transaction. Database triggers reject updates and deletes to the movement table, providing defense beyond the application API. Corrections must be compensating movements.
 
+## Local checkout
+
+Migration 3 adds store settings, sales, immutable sale-item snapshots, payments, and independent print attempts. Cash and staff-confirmed external-terminal sales complete in one idempotent transaction with their negative inventory movements and audit event. See [Checkout foundation](checkout.md) for status transitions, tax rounding, insufficient-stock policy, and printing failure behavior.
+
 ## Future boundaries
 
-- Checkout will record immutable sale-item snapshots so later product edits cannot alter history.
-- Payment providers will be isolated adapters and may use only certified terminals or hosted tokenized flows. Raw card data is outside this application's boundary.
+- Integrated payment providers will be isolated adapters and may use only certified terminals or hosted tokenized flows. Raw card data is outside this application's boundary.
 - Sync will use a transactional local outbox, globally unique events, server acknowledgement, and idempotent consumption—not row-level last-write-wins replication.
 - A kiosk will be a separate Electron application with its own SQLite cache and revocable device identity.
 - Printing will be a retryable operation separate from sale and payment completion.

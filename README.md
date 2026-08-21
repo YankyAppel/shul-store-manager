@@ -15,13 +15,14 @@ This repository currently provides the Store Manager foundation:
 - constrained, validated Electron IPC; the renderer has no Node, filesystem, or SQL access
 - automated migration, catalog, barcode, rollback, and inventory tests
 
-Payment processing, checkout, customer accounts, receipt/label printing, kiosks, cloud sync, and subscriptions are intentionally not part of this milestone.
+The checkout foundation also supports scanner/name product lookup, tax-inclusive or tax-exclusive cart totals, transactional cash and externally approved terminal sales, immutable sale snapshots, inventory deduction, receipt display/printing, and sales history. Integrated payment processing, refunds, customer accounts, label printing, kiosks, cloud sync, and subscriptions remain intentionally deferred.
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22.12 or newer (use the version declared in `.nvmrc`)
 - npm 10 or newer
-- an Electron/Node runtime with the built-in SQLite module (provided by this project’s dependencies)
+
+Electron ships its own compatible Node runtime for the desktop application. Repository commands—tests, migrations, type checking, and builds—run in the host Node.js runtime and require Node 22.12+ because the database package uses `node:sqlite`.
 
 ## Local development
 

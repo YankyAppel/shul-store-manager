@@ -1,5 +1,9 @@
 # Development guide
 
+## Runtime versions
+
+Use the Node.js major declared in `.nvmrc` (Node 22, version 22.12 or newer). Electron bundles its own Node runtime when the desktop application runs, while repository tests and build tools execute with the host Node runtime. Both must support `node:sqlite`. CI reads the same `.nvmrc` declaration.
+
 ## Install and run
 
 From the repository root:
@@ -40,6 +44,7 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm audit --omit=dev --audit-level=high
 ```
 
 Do not add APIs that expose arbitrary SQL or filesystem access to the renderer. Add a narrow IPC method, a shared schema/type, main-process validation, and tests for each new operation.

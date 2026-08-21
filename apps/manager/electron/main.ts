@@ -7,8 +7,11 @@ import { z } from 'zod';
 import { StoreDatabase } from '@shul-store/database';
 import {
   categoryInputSchema,
+  completeSaleInputSchema,
   inventoryMovementInputSchema,
   productInputSchema,
+  storeSettingsSchema,
+  type ReceiptData,
 } from '@shul-store/shared';
 
 protocol.registerSchemesAsPrivileged([
@@ -95,7 +98,107 @@ function registerIpc(): void {
   ipcMain.handle('inventory:list', (_event, productId) =>
     database.listInventoryMovements(idSchema.parse(productId)),
   );
+  ipcMain.handle('settings:get', () => database.getSettings());
+  ipcMain.handle('settings:update', (_event, input) =>
+    database.updateSettings(storeSettingsSchema.parse(input)),
+  );
+  ipcMain.handle('checkout:lookupBarcode', (_event, value) =>
+    database.lookupProductByBarcode(
+      z.string().trim().min(1).max(100).parse(value),
+    ),
+  );
+  ipcMain.handle('checkout:complete', (_event, input) =>
+    database.completeSale(completeSaleInputSchema.parse(input)),
+  );
+  ipcMain.handle('sales:list', () => database.listSales());
+  ipcMain.handle('sales:get', (_event, id) =>
+    database.getSale(idSchema.parse(id)),
+  );
+  ipcMain.handle('sales:receipt', (_event, id) => ({
+    sale: database.getSale(idSchema.parse(id)),
+    settings: database.getSettings(),
+  }));
+  ipcMain.handle('sales:print', (_event, id) =>
+    printReceipt(idSchema.parse(id)),
+  );
   ipcMain.handle('images:choose', chooseImage);
+  ipcMain.handle('images:discard', async (_event, rawId) => {
+    const id = idSchema.parse(rawId);
+    const relativePath = database.removeImageIfUnreferenced(id);
+    if (!relativePath || path.basename(relativePath) !== relativePath)
+      return false;
+    await unlink(
+      path.join(app.getPath('userData'), 'images', relativePath),
+    ).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+    return true;
+  });
+}
+
+async function printReceipt(
+  saleId: string,
+): Promise<{ success: boolean; error: string | null }> {
+  const data: ReceiptData = {
+    sale: database.getSale(saleId),
+    settings: database.getSettings(),
+  };
+  const receiptWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  try {
+    await receiptWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(receiptHtml(data))}`,
+    );
+    const result = await new Promise<{
+      success: boolean;
+      error: string | null;
+    }>((resolve) => {
+      receiptWindow.webContents.print(
+        { silent: false, printBackground: true },
+        (success, failureReason) =>
+          resolve({
+            success,
+            error: success
+              ? null
+              : failureReason || 'Printing was canceled or failed.',
+          }),
+      );
+    });
+    database.recordPrintAttempt(saleId, result.success, result.error);
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Printing failed';
+    database.recordPrintAttempt(saleId, false, message);
+    return { success: false, error: message };
+  } finally {
+    receiptWindow.destroy();
+  }
+}
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+function receiptHtml({ sale, settings }: ReceiptData): string {
+  const rows = sale.items
+    .map(
+      (item) =>
+        `<tr><td>${escapeHtml(item.productName)} × ${item.quantity}</td><td>$${(item.lineTotalCents / 100).toFixed(2)}</td></tr>`,
+    )
+    .join('');
+  const payment =
+    sale.payment.method === 'cash'
+      ? `Cash $${((sale.payment.cashReceivedCents ?? 0) / 100).toFixed(2)} · Change $${((sale.payment.changeDueCents ?? 0) / 100).toFixed(2)}`
+      : `External terminal${sale.payment.terminalReference ? ` · Ref ${escapeHtml(sale.payment.terminalReference)}` : ''}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font:14px system-ui;max-width:360px;margin:auto;padding:20px}h1{text-align:center}table{width:100%}td:last-child{text-align:right}.totals{border-top:1px solid;margin-top:12px;padding-top:8px}.footer{text-align:center;margin-top:20px;white-space:pre-line}</style></head><body><h1>${escapeHtml(settings.storeName)}</h1>${settings.contactLines.map((line) => `<div style="text-align:center">${escapeHtml(line)}</div>`).join('')}<p>Receipt #${sale.receiptNumber}<br>${escapeHtml(new Date(sale.completedAt ?? sale.createdAt).toLocaleString())}</p><table>${rows}</table><div class="totals">Subtotal: $${(sale.subtotalCents / 100).toFixed(2)}<br>Tax: $${(sale.taxCents / 100).toFixed(2)}<br><b>Total: $${(sale.totalCents / 100).toFixed(2)}</b><br>${payment}</div><div class="footer">${escapeHtml(settings.receiptFooter)}</div></body></html>`;
 }
 
 async function chooseImage() {
