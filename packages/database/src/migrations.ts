@@ -367,6 +367,55 @@ export const migrations: Migration[] = [
       ALTER TABLE store_settings ADD COLUMN default_label_template TEXT NOT NULL DEFAULT 'thermal_40x30' CHECK (default_label_template IN ('thermal_40x30', 'thermal_57x32', 'letter_avery_5160'));
     `,
   },
+  {
+    version: 6,
+    name: 'optional_cloud_sync_outbox',
+    sql: `
+      CREATE TABLE sync_outbox (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE,
+        entity_type TEXT NOT NULL CHECK (length(trim(entity_type)) > 0),
+        entity_id TEXT NOT NULL CHECK (length(trim(entity_id)) > 0),
+        operation TEXT NOT NULL CHECK (operation IN ('upsert', 'append')),
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        pushed_at TEXT
+      );
+      CREATE INDEX sync_outbox_pushed_idx ON sync_outbox(pushed_at, sequence);
+      CREATE INDEX sync_outbox_entity_idx ON sync_outbox(entity_type, entity_id);
+
+      CREATE TRIGGER sync_outbox_no_delete
+      BEFORE DELETE ON sync_outbox BEGIN
+        SELECT RAISE(ABORT, 'sync_outbox rows are append-only');
+      END;
+
+      CREATE TRIGGER sync_outbox_no_update_except_pushed_at
+      BEFORE UPDATE ON sync_outbox
+      WHEN NEW.sequence IS NOT OLD.sequence
+        OR NEW.event_id IS NOT OLD.event_id
+        OR NEW.entity_type IS NOT OLD.entity_type
+        OR NEW.entity_id IS NOT OLD.entity_id
+        OR NEW.operation IS NOT OLD.operation
+        OR NEW.payload_json IS NOT OLD.payload_json
+        OR NEW.created_at IS NOT OLD.created_at
+      BEGIN
+        SELECT RAISE(ABORT, 'sync_outbox rows are append-only except for pushed_at');
+      END;
+
+      CREATE TABLE sync_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        store_id TEXT,
+        supabase_url TEXT,
+        api_key_secret TEXT,
+        api_key_encrypted INTEGER NOT NULL DEFAULT 0 CHECK (api_key_encrypted IN (0, 1)),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+        last_sync_at TEXT,
+        last_error TEXT,
+        backfill_completed INTEGER NOT NULL DEFAULT 0 CHECK (backfill_completed IN (0, 1))
+      );
+      INSERT INTO sync_settings (singleton_id) VALUES (1);
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

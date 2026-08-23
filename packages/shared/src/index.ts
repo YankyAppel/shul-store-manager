@@ -17,6 +17,15 @@ import type {
 } from './customers.js';
 import type { LabelPrintRequest } from './labels.js';
 import type { PrinterInfo, PrintResult } from './printing.js';
+import type {
+  ConnectionTestResult,
+  RestoreInput,
+  RestoreResult,
+  SyncConfigInput,
+  SyncConfigView,
+  SyncNowResult,
+  SyncStatus,
+} from './sync.js';
 
 export * from './barcode.js';
 export * from './checkout.js';
@@ -24,6 +33,7 @@ export * from './customers.js';
 export * from './html-templates.js';
 export * from './labels.js';
 export * from './printing.js';
+export * from './sync.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -171,6 +181,17 @@ export interface StoreApi {
     choose(): Promise<StoredImage | null>;
     discard(id: string): Promise<boolean>;
   };
+  sync: {
+    getConfig(): Promise<SyncConfigView>;
+    getStatus(): Promise<SyncStatus>;
+    saveConfig(input: SyncConfigInput): Promise<SyncConfigView>;
+    setEnabled(enabled: boolean): Promise<SyncStatus>;
+    testConnection(input: SyncConfigInput): Promise<ConnectionTestResult>;
+    syncNow(): Promise<SyncNowResult>;
+    restore(input: RestoreInput): Promise<RestoreResult>;
+    isRestoreAvailable(): Promise<boolean>;
+  };
+
   settings: {
     get(): Promise<StoreSettings>;
     update(input: StoreSettings): Promise<StoreSettings>;

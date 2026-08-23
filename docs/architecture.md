@@ -11,10 +11,10 @@ packages/
   database/      SQLite migrations and local business operations
   hardware/      future narrowly scoped hardware adapters
   payments/      future certified/semi-integrated provider adapters
-  sync/          future outbox/event synchronization
+  sync/          optional Supabase cloud backup: outbox, transport, engine, restore
 ```
 
-Only `manager`, `shared`, and `database` contain runtime code in milestones 1–3. The other directories document future boundaries rather than shipping unused abstractions.
+`manager`, `shared`, `database`, and `sync` contain runtime code. The `hardware` and `payments` directories document future boundaries rather than shipping unused abstractions.
 
 ## Security boundary
 
@@ -48,9 +48,12 @@ Migration 4 adds customer accounts, customer credit limits, "Put on Account" che
 
 Migration 5 adds receipt and label printer preferences (nullable device names, 58/80 mm receipt width, default label template). Label HTML and Code 128 SVG rendering live in `@shul-store/shared`. See [Label printing](labels.md).
 
+## Optional cloud backup
+
+Cloud backup (in `@shul-store/sync`) is optional and offline-first: the local SQLite database is always the single source of truth. A transactional append-only outbox (migration 6) captures every write as an ordered event with a globally unique id. A background engine in the Electron main process pushes events in strict sequence order to a user-supplied Supabase project using plain HTTPS/PostgREST with idempotent `event_id` upserts, never blocking or failing user operations. Restore onto a fresh install validates and replays cloud events through guarded paths. Credentials are encrypted with `safeStorage`; the renderer only ever sees a masked hint. Multi-device merge and kiosk LAN sync are deliberately out of scope here. See [Cloud sync](cloud-sync.md).
+
 ## Future boundaries
 
 - Integrated payment providers will be isolated adapters and may use only certified terminals or hosted tokenized flows. Raw card data is outside this application's boundary.
-- Sync will use a transactional local outbox, globally unique events, server acknowledgement, and idempotent consumption—not row-level last-write-wins replication.
 - A kiosk will be a separate Electron application with its own SQLite cache and revocable device identity.
 - Specialized ESC/POS raw commands and cash-drawer pulses remain out of scope; current printing uses a hidden BrowserWindow and the OS print path.

@@ -80,6 +80,16 @@ const api: StoreApi = {
     choose: () => ipcRenderer.invoke('images:choose'),
     discard: (id) => ipcRenderer.invoke('images:discard', id),
   },
+  sync: {
+    getConfig: () => ipcRenderer.invoke('sync:getConfig'),
+    getStatus: () => ipcRenderer.invoke('sync:getStatus'),
+    saveConfig: (input) => ipcRenderer.invoke('sync:saveConfig', input),
+    setEnabled: (enabled) => ipcRenderer.invoke('sync:setEnabled', enabled),
+    testConnection: (input) => ipcRenderer.invoke('sync:testConnection', input),
+    syncNow: () => ipcRenderer.invoke('sync:syncNow'),
+    restore: (input) => ipcRenderer.invoke('sync:restore', input),
+    isRestoreAvailable: () => ipcRenderer.invoke('sync:isRestoreAvailable'),
+  },
 };
 
 contextBridge.exposeInMainWorld('storeApi', api);

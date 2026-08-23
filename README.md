@@ -38,6 +38,17 @@ An offline-first desktop inventory and store-management application for small st
 
 See [Label printing](docs/labels.md) for templates, printer behavior, and the desktop scan checklist.
 
+## Optional cloud backup & sync
+
+- **Optional, offline-first** Supabase cloud backup — the local SQLite database stays the single source of truth and all operations work with sync disabled or offline
+- Transactional **append-only outbox** captures every write (migration 6); events are pushed in strict sequence order with idempotent cloud upserts
+- Encrypted credential storage via Electron `safeStorage`; the renderer only ever sees a masked key hint
+- Background sync engine: pushes on start + every 5 minutes + manual "Sync now", with exponential backoff and single-flight execution
+- **Restore onto a fresh install** from the cloud (refused on a non-empty database), with Zod-validated payloads and integrity verification
+- No new heavy runtime dependencies — plain HTTPS/PostgREST, no `supabase-js` SDK
+
+See [Cloud sync](docs/cloud-sync.md) for architecture, the outbox design, cloud-side DDL + RLS, setup, restore, failure modes, and the desktop test checklist.
+
 ## Requirements
 
 - Node.js 22.12 or newer (use the version declared in `.nvmrc`)
