@@ -48,7 +48,7 @@ async function createWindow(): Promise<void> {
     minHeight: 640,
     title: 'Shul Store Manager',
     webPreferences: {
-      preload: path.join(import.meta.dirname, 'preload.js'),
+      preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
