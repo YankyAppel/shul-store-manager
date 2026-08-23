@@ -342,4 +342,334 @@ describe('put on account checkout & sale idempotency', () => {
       store.connection.prepare('DELETE FROM sales WHERE id = ?').run(sale.id),
     ).toThrow('Cannot delete sale that is linked to customer ledger');
   });
+
+  describe('sale idempotency across catalog and store settings changes', () => {
+    it('returns original sale when product price increases from $5 to $6 (verified reproduction)', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+      expect(first.totalCents).toBe(500);
+
+      // Product price changes to $6
+      store.updateProduct(productId, {
+        categoryId,
+        name: 'Challah',
+        purchaseCostCents: 200,
+        sellingPriceCents: 600,
+        taxable: false,
+        lowStockThreshold: 1,
+        barcodes: ['CHALLAH-1', 'CHALLAH-ALT'],
+      });
+
+      // Exact retry with original completion key
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(retry.totalCents).toBe(500);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when product selling price changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 2, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      store.updateProduct(productId, {
+        categoryId,
+        name: 'Challah',
+        purchaseCostCents: 200,
+        sellingPriceCents: 900,
+        taxable: false,
+        lowStockThreshold: 1,
+        barcodes: ['CHALLAH-1', 'CHALLAH-ALT'],
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 2, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(retry.totalCents).toBe(1000);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(8);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(1000);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when product purchase cost changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      store.updateProduct(productId, {
+        categoryId,
+        name: 'Challah',
+        purchaseCostCents: 450,
+        sellingPriceCents: 500,
+        taxable: false,
+        lowStockThreshold: 1,
+        barcodes: ['CHALLAH-1', 'CHALLAH-ALT'],
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when product name changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      store.updateProduct(productId, {
+        categoryId,
+        name: 'Challah (Water Challah Special)',
+        purchaseCostCents: 200,
+        sellingPriceCents: 500,
+        taxable: false,
+        lowStockThreshold: 1,
+        barcodes: ['CHALLAH-1', 'CHALLAH-ALT'],
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when product taxability changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      store.updateProduct(productId, {
+        categoryId,
+        name: 'Challah',
+        purchaseCostCents: 200,
+        sellingPriceCents: 500,
+        taxable: true,
+        lowStockThreshold: 1,
+        barcodes: ['CHALLAH-1', 'CHALLAH-ALT'],
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(retry.taxCents).toBe(0); // Preserves original non-taxable total
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when store tax rate changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      const settings = store.getSettings();
+      store.updateSettings({
+        ...settings,
+        taxRateBps: 1500, // Change tax rate to 15%
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when store pricesIncludeTax setting changes', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      const settings = store.getSettings();
+      store.updateSettings({
+        ...settings,
+        pricesIncludeTax: !settings.pricesIncludeTax,
+      });
+
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts().find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+
+    it('returns original sale when product is deactivated after the sale', () => {
+      const key = randomUUID();
+      const first = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      // Deactivate product
+      store.setProductActive(productId, false);
+
+      // Exact retry returns the sale idempotently without error
+      const retry = store.completeSale({
+        completionKey: key,
+        lines: [{ productId, quantity: 1, barcodeUsed: 'CHALLAH-1' }],
+        payment: { method: 'account', customerId, confirmed: true },
+      });
+
+      expect(retry.id).toBe(first.id);
+      expect(store.listSales()).toHaveLength(1);
+      expect(
+        store.listProducts(true).find((p) => p.id === productId)?.stockQuantity,
+      ).toBe(9);
+      expect(store.listCustomerLedger(customerId)).toHaveLength(1);
+      expect(store.getCustomerBalance(customerId)).toBe(500);
+
+      const auditCount = (
+        store.connection
+          .prepare(
+            "SELECT COUNT(*) AS count FROM audit_events WHERE event_type = 'sale.completed'",
+          )
+          .get() as { count: number }
+      ).count;
+      expect(auditCount).toBe(1);
+    });
+  });
 });

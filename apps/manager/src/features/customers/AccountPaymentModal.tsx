@@ -40,8 +40,11 @@ export function AccountPaymentModal({
   const [terminalRef, setTerminalRef] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [dispatched, setDispatched] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
 
   const resetIntent = () => {
+    if (dispatched) return;
     operationIdRef.current = crypto.randomUUID();
     frozenIntentRef.current = null;
   };
@@ -119,6 +122,8 @@ export function AccountPaymentModal({
     if (isSubmittingRef.current || !valid || parsedAmountCents === null) return;
     isSubmittingRef.current = true;
     setSaving(true);
+    setDispatchError(null);
+    setDispatched(true);
 
     try {
       if (!frozenIntentRef.current) {
@@ -146,7 +151,9 @@ export function AccountPaymentModal({
       );
       onPaymentCompleted(result);
     } catch (e) {
-      setError(messageFrom(e));
+      const err = messageFrom(e);
+      setDispatchError(err);
+      setError(err);
     } finally {
       isSubmittingRef.current = false;
       setSaving(false);
@@ -191,6 +198,17 @@ export function AccountPaymentModal({
             </div>
           </div>
 
+          {dispatchError && (
+            <div className="alert" style={{ margin: '0 0 12px 0' }}>
+              <strong>Payment attempt error:</strong> {dispatchError}
+              <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                Fields are locked to preserve payment identity. You can retry
+                recording the same payment, or close to check the
+                customer&apos;s ledger.
+              </div>
+            </div>
+          )}
+
           <label>
             Payment method
             <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
@@ -198,6 +216,7 @@ export function AccountPaymentModal({
                 type="button"
                 className={method === 'cash' ? 'primary' : ''}
                 style={{ flex: 1 }}
+                disabled={saving || dispatched}
                 onClick={() => handleMethodChange('cash')}
               >
                 Cash
@@ -206,6 +225,7 @@ export function AccountPaymentModal({
                 type="button"
                 className={method === 'external_terminal' ? 'primary' : ''}
                 style={{ flex: 1 }}
+                disabled={saving || dispatched}
                 onClick={() => handleMethodChange('external_terminal')}
               >
                 External terminal
@@ -221,6 +241,7 @@ export function AccountPaymentModal({
               min="0.01"
               step="0.01"
               required
+              disabled={saving || dispatched}
               value={amountStr}
               onChange={(e) => handleAmountChange(e.target.value)}
             />
@@ -250,6 +271,7 @@ export function AccountPaymentModal({
                   min={parsedAmountCents ? parsedAmountCents / 100 : 0.01}
                   step="0.01"
                   required
+                  disabled={saving || dispatched}
                   value={cashReceivedStr}
                   onChange={(e) => handleCashReceivedChange(e.target.value)}
                 />
@@ -282,6 +304,7 @@ export function AccountPaymentModal({
               <label>
                 Terminal reference <em>Optional</em>
                 <input
+                  disabled={saving || dispatched}
                   value={terminalRef}
                   onChange={(e) => handleTerminalRefChange(e.target.value)}
                   placeholder="e.g. Approval code or receipt ID"
@@ -290,6 +313,7 @@ export function AccountPaymentModal({
               <label className="toggle" style={{ marginTop: '8px' }}>
                 <input
                   type="checkbox"
+                  disabled={saving || dispatched}
                   checked={approved}
                   onChange={(e) => handleApprovedChange(e.target.checked)}
                 />{' '}
@@ -302,6 +326,7 @@ export function AccountPaymentModal({
             Payment notes <em>Optional</em>
             <input
               maxLength={1000}
+              disabled={saving || dispatched}
               value={notes}
               onChange={(e) => handleNotesChange(e.target.value)}
               placeholder="e.g. Paid in office / check details"
@@ -323,10 +348,14 @@ export function AccountPaymentModal({
 
           <footer>
             <button type="button" onClick={onClose}>
-              Cancel
+              {dispatched ? 'Close' : 'Cancel'}
             </button>
             <button className="primary" disabled={saving || !valid}>
-              {saving ? 'Processing…' : 'Record payment'}
+              {saving
+                ? 'Processing…'
+                : dispatched
+                  ? 'Retry payment'
+                  : 'Record payment'}
             </button>
           </footer>
         </form>

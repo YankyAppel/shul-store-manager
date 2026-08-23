@@ -688,7 +688,7 @@ export class StoreDatabase {
       .prepare('SELECT id FROM sales WHERE completion_key = ?')
       .get(value.completionKey) as { id: string } | undefined;
     if (existingPre) {
-      this.validateExistingSaleMatch(existingPre.id, value, settings);
+      this.validateExistingSaleMatch(existingPre.id, value);
       return this.getSale(existingPre.id);
     }
 
@@ -700,7 +700,7 @@ export class StoreDatabase {
           .prepare('SELECT id FROM sales WHERE completion_key = ?')
           .get(value.completionKey) as { id: string } | undefined;
         if (again) {
-          this.validateExistingSaleMatch(again.id, value, settings);
+          this.validateExistingSaleMatch(again.id, value);
           return;
         }
 
@@ -1005,7 +1005,6 @@ export class StoreDatabase {
   private validateExistingSaleMatch(
     existingSaleId: string,
     input: CompleteSaleInput,
-    settings: StoreSettings,
   ): void {
     const sale = this.connection
       .prepare('SELECT * FROM sales WHERE id = ?')
@@ -1129,30 +1128,6 @@ export class StoreDatabase {
           'A sale with this completion key already exists with different details.',
         );
       }
-    }
-
-    // 4. Compare financial totals against persisted sale
-    const snapshots = [...incomingMerged.values()].map((line) => ({
-      product: this.getProduct(line.productId),
-      quantity: line.quantity,
-    }));
-    const totals = calculateCart(snapshots, settings);
-
-    const existingSubtotal = readSafeCents(
-      sale.subtotal_cents,
-      'subtotal_cents',
-    );
-    const existingTax = readSafeCents(sale.tax_cents, 'tax_cents');
-    const existingTotal = readSafeCents(sale.total_cents, 'total_cents');
-
-    if (
-      existingSubtotal !== totals.subtotalCents ||
-      existingTax !== totals.taxCents ||
-      existingTotal !== totals.totalCents
-    ) {
-      throw new Error(
-        'A sale with this completion key already exists with different details.',
-      );
     }
   }
 
