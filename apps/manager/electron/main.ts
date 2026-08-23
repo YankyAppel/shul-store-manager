@@ -2,7 +2,15 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  safeStorage,
+} from 'electron';
 import { z } from 'zod';
 import { StoreDatabase } from '@shul-store/database';
 import {
@@ -27,6 +35,15 @@ import {
   type PrintResult,
   type ReceiptData,
 } from '@shul-store/shared';
+import {
+  maskApiKey,
+  PlaintextSyncSecretStore,
+  restoreFromCloud,
+  SupabaseTransport,
+  SyncEngine,
+  type SyncSecretStore,
+} from '@shul-store/sync';
+import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -36,6 +53,61 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let database: StoreDatabase;
+let engine: SyncEngine | null = null;
+let secretStore: SyncSecretStore = new PlaintextSyncSecretStore();
+
+/**
+ * Electron safeStorage-backed secret store for the Supabase API key. When the OS
+ * keychain is available the key is encrypted at rest; otherwise it is stored as
+ * plaintext base64 and the UI warns that encryption is unavailable. The key is
+ * never sent to the renderer (only a masked hint is).
+ */
+class ElectronSafeStorageSyncSecretStore implements SyncSecretStore {
+  readonly available: boolean;
+  constructor() {
+    this.available = safeStorage.isEncryptionAvailable();
+  }
+  encrypt(plaintext: string): string {
+    if (this.available) {
+      return safeStorage.encryptString(plaintext).toString('base64');
+    }
+    return Buffer.from(plaintext, 'utf8').toString('base64');
+  }
+  decrypt(stored: string): string {
+    const buffer = Buffer.from(stored, 'base64');
+    if (this.available) {
+      try {
+        return safeStorage.decryptString(buffer);
+      } catch {
+        // Not a safeStorage blob (e.g. stored via the plaintext fallback) —
+        // decode it as UTF-8 below.
+      }
+    }
+    return buffer.toString('utf8');
+  }
+}
+
+/** (Re)build the background sync engine from the persisted configuration. */
+function recreateSyncEngine(): void {
+  engine?.stop();
+  engine = null;
+  const config = database.getSyncConfigRecord();
+  if (
+    !config.enabled ||
+    !config.storeId ||
+    !config.supabaseUrl ||
+    !config.apiKeySecret
+  ) {
+    return;
+  }
+  const apiKey = secretStore.decrypt(config.apiKeySecret);
+  const transport = new SupabaseTransport({
+    supabaseUrl: config.supabaseUrl,
+    apiKey,
+  });
+  engine = new SyncEngine(database, transport);
+  engine.start();
+}
 const idSchema = z.string().uuid();
 const imageTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -238,6 +310,110 @@ function registerIpc(): void {
       if (error.code !== 'ENOENT') throw error;
     });
     return true;
+  });
+
+  // Cloud sync (optional Supabase backup). All network activity happens here in
+  // the main process; the renderer only ever sees sanitised status and a masked
+  // key hint — never the API key itself.
+  ipcMain.handle('sync:getConfig', () => {
+    const config = database.getSyncConfigRecord();
+    let hint: string | null = null;
+    if (config.apiKeySecret) {
+      try {
+        hint = maskApiKey(secretStore.decrypt(config.apiKeySecret));
+      } catch {
+        hint = null;
+      }
+    }
+    return database.getSyncConfigView(hint);
+  });
+
+  ipcMain.handle('sync:getStatus', () => database.getSyncStatus());
+
+  ipcMain.handle('sync:isRestoreAvailable', () => database.isRestoreAllowed());
+
+  ipcMain.handle('sync:saveConfig', (_event, input) => {
+    const value = syncConfigInputSchema.parse(input);
+    database.ensureStoreId();
+    const apiKeySecret = secretStore.encrypt(value.apiKey);
+    database.applySyncCredentials({
+      enabled: value.enabled,
+      supabaseUrl: value.supabaseUrl,
+      apiKeySecret,
+      apiKeyEncrypted: secretStore.available,
+    });
+    if (value.enabled && database.needsBackfill()) {
+      database.backfillOutbox();
+    }
+    recreateSyncEngine();
+    return database.getSyncConfigView(maskApiKey(value.apiKey));
+  });
+
+  ipcMain.handle('sync:setEnabled', (_event, enabled) => {
+    database.setSyncEnabled(z.boolean().parse(enabled));
+    recreateSyncEngine();
+    return database.getSyncStatus();
+  });
+
+  ipcMain.handle('sync:testConnection', async (_event, input) => {
+    const value = syncConfigInputSchema.parse(input);
+    const transport = new SupabaseTransport({
+      supabaseUrl: value.supabaseUrl,
+      apiKey: value.apiKey,
+    });
+    return transport.testConnection();
+  });
+
+  ipcMain.handle('sync:syncNow', async () => {
+    if (!engine) {
+      return {
+        pushed: 0,
+        remaining: database.pendingSyncEventCount(),
+        error: 'Cloud backup is not enabled.',
+        skipped: false,
+      };
+    }
+    const result = await engine.syncNow();
+    return {
+      pushed: result.pushed,
+      remaining: result.remaining,
+      error: result.error,
+      skipped: result.skipped,
+    };
+  });
+
+  ipcMain.handle('sync:restore', async (_event, input) => {
+    const value = restoreInputSchema.parse(input);
+    if (!database.isRestoreAllowed()) {
+      return {
+        ok: false,
+        message:
+          'Restore from cloud is only available on a fresh installation with no local business data.',
+        summary: null,
+      };
+    }
+    const transport = new SupabaseTransport({
+      supabaseUrl: value.supabaseUrl,
+      apiKey: value.apiKey,
+    });
+    const result = await restoreFromCloud(database, transport, value.storeId);
+    if (result.ok) {
+      // The restored device adopts the source store id and credentials so it
+      // resumes pushing new changes from the restored sequence.
+      const apiKeySecret = secretStore.encrypt(value.apiKey);
+      database.applySyncCredentials({
+        enabled: true,
+        supabaseUrl: value.supabaseUrl,
+        apiKeySecret,
+        apiKeyEncrypted: secretStore.available,
+      });
+      database.connection
+        .prepare('UPDATE sync_settings SET store_id = ? WHERE singleton_id = 1')
+        .run(value.storeId);
+      database.markBackfillCompleted();
+      recreateSyncEngine();
+    }
+    return result;
   });
 }
 
@@ -477,6 +653,9 @@ app.whenReady().then(async () => {
   await mkdir(dataDirectory, { recursive: true });
   database = new StoreDatabase(path.join(dataDirectory, 'shul-store.sqlite'));
   registerIpc();
+  secretStore = new ElectronSafeStorageSyncSecretStore();
+  // Start the background sync loop immediately if cloud backup is enabled.
+  recreateSyncEngine();
   protocol.handle('store-image', (request) => {
     const imageId = idSchema.safeParse(new URL(request.url).pathname.slice(1));
     if (!imageId.success) return new Response('Not found', { status: 404 });
@@ -498,4 +677,7 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
-app.on('before-quit', () => database?.close());
+app.on('before-quit', () => {
+  engine?.stop();
+  database?.close();
+});

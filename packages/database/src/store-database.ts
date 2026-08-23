@@ -11,26 +11,56 @@ import {
   recordAccountPaymentInputSchema,
   statementOptionsSchema,
   storeSettingsSchema,
+  syncOperationFor,
   type AccountPayment,
+  type AccountPaymentPayload,
+  type AuditEventPayload,
   type Barcode,
   type Category,
   type CategoryInput,
+  type CategoryPayload,
   type CompleteSaleInput,
   type Customer,
   type CustomerInput,
   type CustomerLedgerEntry,
+  type CustomerPayload,
   type CustomerStatementData,
   type InventoryMovement,
   type InventoryMovementInput,
+  type InventoryMovementPayload,
+  type LedgerEntryPayload,
   type Product,
   type ProductInput,
+  type ProductPayload,
   type RecordAccountPaymentInput,
   type Sale,
+  type SaleItemPayload,
+  type SalePayload,
+  type SalePaymentPayload,
+  type SettingsPayload,
   type StatementEntry,
   type StatementOptions,
   type StoreSettings,
+  type SyncConfigView,
+  type SyncEntityType,
+  type SyncStatus,
 } from '@shul-store/shared';
 import { runMigrations } from './migrations.js';
+import {
+  enqueueOutboxEvent,
+  listAllOutboxEvents,
+  listPendingOutboxEvents,
+  markOutboxPushed,
+  maxOutboxSequence,
+  pendingOutboxCount,
+  type OutboxEvent,
+} from './sync-outbox.js';
+import {
+  isBusinessDataEmpty,
+  restoreFromEvents,
+  type RestoreOutcome,
+  type ValidatedRestoreEvent,
+} from './sync-restore.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
@@ -79,6 +109,18 @@ export function readNullableSafeCents(
 ): number | null {
   if (value === null || value === undefined) return null;
   return readSafeCents(value, label);
+}
+
+/** Raw cloud-sync configuration as stored locally (key secret is opaque). */
+export interface SyncConfigRecord {
+  storeId: string | null;
+  supabaseUrl: string | null;
+  apiKeySecret: string | null;
+  apiKeyEncrypted: boolean;
+  enabled: boolean;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  backfillCompleted: boolean;
 }
 
 export class StoreDatabase {
@@ -157,45 +199,48 @@ export class StoreDatabase {
 
   updateSettings(input: StoreSettings): StoreSettings {
     const value = storeSettingsSchema.parse(input);
-    this.connection
-      .prepare(
-        `UPDATE store_settings SET
-          store_name=?,
-          contact_lines_json=?,
-          currency=?,
-          tax_rate_bps=?,
-          prices_include_tax=?,
-          receipt_footer=?,
-          customer_accounts_enabled=?,
-          default_credit_limit_cents=?,
-          allow_customer_credit=?,
-          statement_footer=?,
-          overdue_days=?,
-          receipt_printer_name=?,
-          receipt_paper_width_mm=?,
-          label_printer_name=?,
-          default_label_template=?,
-          updated_at=?
-        WHERE singleton_id=1`,
-      )
-      .run(
-        value.storeName,
-        JSON.stringify(value.contactLines),
-        value.currency,
-        value.taxRateBps,
-        value.pricesIncludeTax ? 1 : 0,
-        value.receiptFooter,
-        value.customerAccountsEnabled ? 1 : 0,
-        value.defaultCreditLimitCents,
-        value.allowCustomerCredit ? 1 : 0,
-        value.statementFooter,
-        value.overdueDays,
-        value.receiptPrinterName,
-        value.receiptPaperWidthMm,
-        value.labelPrinterName,
-        value.defaultLabelTemplate,
-        now(),
-      );
+    this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          `UPDATE store_settings SET
+            store_name=?,
+            contact_lines_json=?,
+            currency=?,
+            tax_rate_bps=?,
+            prices_include_tax=?,
+            receipt_footer=?,
+            customer_accounts_enabled=?,
+            default_credit_limit_cents=?,
+            allow_customer_credit=?,
+            statement_footer=?,
+            overdue_days=?,
+            receipt_printer_name=?,
+            receipt_paper_width_mm=?,
+            label_printer_name=?,
+            default_label_template=?,
+            updated_at=?
+          WHERE singleton_id=1`,
+        )
+        .run(
+          value.storeName,
+          JSON.stringify(value.contactLines),
+          value.currency,
+          value.taxRateBps,
+          value.pricesIncludeTax ? 1 : 0,
+          value.receiptFooter,
+          value.customerAccountsEnabled ? 1 : 0,
+          value.defaultCreditLimitCents,
+          value.allowCustomerCredit ? 1 : 0,
+          value.statementFooter,
+          value.overdueDays,
+          value.receiptPrinterName,
+          value.receiptPaperWidthMm,
+          value.labelPrinterName,
+          value.defaultLabelTemplate,
+          now(),
+        );
+      this.enqueueEntity('settings', 'settings');
+    })();
     return this.getSettings();
   }
 
@@ -214,43 +259,54 @@ export class StoreDatabase {
     const value = categoryInputSchema.parse(input);
     const id = randomUUID();
     const timestamp = now();
-    this.connection
-      .prepare(
-        `INSERT INTO categories (id, name, secondary_name, image_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        value.name,
-        value.secondaryName ?? null,
-        value.imageId ?? null,
-        timestamp,
-        timestamp,
-      );
+    this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          `INSERT INTO categories (id, name, secondary_name, image_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          value.name,
+          value.secondaryName ?? null,
+          value.imageId ?? null,
+          timestamp,
+          timestamp,
+        );
+      this.enqueueEntity('category', id);
+    })();
     return this.getCategory(id);
   }
 
   updateCategory(id: string, input: CategoryInput): Category {
     const value = categoryInputSchema.parse(input);
-    const result = this.connection
-      .prepare(
-        `UPDATE categories SET name = ?, secondary_name = ?, image_id = ?, updated_at = ? WHERE id = ?`,
-      )
-      .run(
-        value.name,
-        value.secondaryName ?? null,
-        value.imageId ?? null,
-        now(),
-        id,
-      );
-    if (result.changes === 0) throw new Error('Category not found');
+    this.connection.transaction(() => {
+      const result = this.connection
+        .prepare(
+          `UPDATE categories SET name = ?, secondary_name = ?, image_id = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(
+          value.name,
+          value.secondaryName ?? null,
+          value.imageId ?? null,
+          now(),
+          id,
+        );
+      if (result.changes === 0) throw new Error('Category not found');
+      this.enqueueEntity('category', id);
+    })();
     return this.getCategory(id);
   }
 
   setCategoryActive(id: string, active: boolean): void {
-    const result = this.connection
-      .prepare('UPDATE categories SET active = ?, updated_at = ? WHERE id = ?')
-      .run(active ? 1 : 0, now(), id);
-    if (result.changes === 0) throw new Error('Category not found');
+    this.connection.transaction(() => {
+      const result = this.connection
+        .prepare(
+          'UPDATE categories SET active = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(active ? 1 : 0, now(), id);
+      if (result.changes === 0) throw new Error('Category not found');
+      this.enqueueEntity('category', id);
+    })();
   }
 
   private getCategory(id: string): Category {
@@ -307,6 +363,7 @@ export class StoreDatabase {
             timestamp,
           );
         this.insertBarcodes(id, value.barcodes, timestamp);
+        this.enqueueEntity('product', id);
         this.addAudit('product.created', 'product', id, { name: value.name });
       })();
     } catch (error) {
@@ -341,6 +398,7 @@ export class StoreDatabase {
           .prepare('DELETE FROM product_barcodes WHERE product_id = ?')
           .run(id);
         this.insertBarcodes(id, value.barcodes, now());
+        this.enqueueEntity('product', id);
         this.addAudit('product.updated', 'product', id, { name: value.name });
       })();
     } catch (error) {
@@ -355,6 +413,7 @@ export class StoreDatabase {
         .prepare('UPDATE products SET active = ?, updated_at = ? WHERE id = ?')
         .run(active ? 1 : 0, now(), id);
       if (result.changes === 0) throw new Error('Product not found');
+      this.enqueueEntity('product', id);
       this.addAudit(
         active ? 'product.activated' : 'product.deactivated',
         'product',
@@ -398,6 +457,7 @@ export class StoreDatabase {
             value.relatedSaleId ?? null,
             value.notes,
           );
+        this.enqueueEntity('inventory_movement', id);
         this.addAudit('inventory.movement_added', 'product', value.productId, {
           movementId: id,
           quantityChange: value.quantityChange,
@@ -541,6 +601,7 @@ export class StoreDatabase {
             timestamp,
             timestamp,
           );
+        this.enqueueEntity('customer', id);
         this.addAudit('customer.created', 'customer', id, {
           name: value.name,
           accountNumber: value.accountNumber,
@@ -586,6 +647,7 @@ export class StoreDatabase {
             id,
           );
         if (result.changes === 0) throw new Error('Customer not found');
+        this.enqueueEntity('customer', id);
         this.addAudit('customer.updated', 'customer', id, {
           name: value.name,
           accountNumber: value.accountNumber,
@@ -603,6 +665,7 @@ export class StoreDatabase {
         .prepare('UPDATE customers SET active = ?, updated_at = ? WHERE id = ?')
         .run(active ? 1 : 0, now(), id);
       if (result.changes === 0) throw new Error('Customer not found');
+      this.enqueueEntity('customer', id);
       this.addAudit(
         active ? 'customer.activated' : 'customer.deactivated',
         'customer',
@@ -620,6 +683,7 @@ export class StoreDatabase {
         )
         .run(blocked ? 1 : 0, now(), id);
       if (result.changes === 0) throw new Error('Customer not found');
+      this.enqueueEntity('customer', id);
       this.addAudit(
         blocked ? 'customer.blocked' : 'customer.unblocked',
         'customer',
@@ -1008,6 +1072,7 @@ export class StoreDatabase {
           )
           .run(timestamp, saleId);
 
+        this.enqueueEntity('sale', saleId);
         this.addAudit('sale.completed', 'sale', saleId, {
           receiptNumber: receipt,
           totalCents: totals.totalCents,
@@ -1428,6 +1493,7 @@ export class StoreDatabase {
             value.notes?.trim() || `Payment #${receiptNumber}`,
           );
 
+        this.enqueueEntity('account_payment', paymentId);
         this.addAudit(
           'customer.payment_recorded',
           'account_payment',
@@ -1745,6 +1811,270 @@ export class StoreDatabase {
     };
   }
 
+  // --- CLOUD SYNC ---
+
+  /** Raw cloud-sync configuration including the opaque (encrypted or plaintext)
+   *  API key secret. The main process decrypts the key; it is never exposed to
+   *  the renderer in plaintext. */
+  getSyncConfigRecord(): SyncConfigRecord {
+    const row = this.connection
+      .prepare('SELECT * FROM sync_settings WHERE singleton_id = 1')
+      .get() as Row | undefined;
+    if (!row) {
+      return {
+        storeId: null,
+        supabaseUrl: null,
+        apiKeySecret: null,
+        apiKeyEncrypted: false,
+        enabled: false,
+        lastSyncAt: null,
+        lastError: null,
+        backfillCompleted: false,
+      };
+    }
+    return {
+      storeId: row.store_id === null ? null : String(row.store_id),
+      supabaseUrl:
+        row.supabase_url === null || row.supabase_url === undefined
+          ? null
+          : String(row.supabase_url),
+      apiKeySecret:
+        row.api_key_secret === null || row.api_key_secret === undefined
+          ? null
+          : String(row.api_key_secret),
+      apiKeyEncrypted: Boolean(row.api_key_encrypted),
+      enabled: Boolean(row.enabled),
+      lastSyncAt:
+        row.last_sync_at === null || row.last_sync_at === undefined
+          ? null
+          : String(row.last_sync_at),
+      lastError:
+        row.last_error === null || row.last_error === undefined
+          ? null
+          : String(row.last_error),
+      backfillCompleted: Boolean(row.backfill_completed),
+    };
+  }
+
+  /** Returns the existing store id, generating and persisting one on first call. */
+  ensureStoreId(): string {
+    const existing = this.getSyncConfigRecord().storeId;
+    if (existing) return existing;
+    const id = randomUUID();
+    this.connection
+      .prepare('UPDATE sync_settings SET store_id = ? WHERE singleton_id = 1')
+      .run(id);
+    return id;
+  }
+
+  /** Persist cloud credentials and the enabled flag. The key is already
+   *  encrypted by the main process via Electron safeStorage (or a documented
+   *  plaintext fallback). */
+  applySyncCredentials(input: {
+    enabled: boolean;
+    supabaseUrl: string;
+    apiKeySecret: string;
+    apiKeyEncrypted: boolean;
+  }): void {
+    this.connection
+      .prepare(
+        `UPDATE sync_settings SET
+          supabase_url = ?, api_key_secret = ?, api_key_encrypted = ?, enabled = ?
+        WHERE singleton_id = 1`,
+      )
+      .run(
+        input.supabaseUrl,
+        input.apiKeySecret,
+        input.apiKeyEncrypted ? 1 : 0,
+        input.enabled ? 1 : 0,
+      );
+  }
+
+  setSyncEnabled(enabled: boolean): void {
+    this.connection
+      .prepare('UPDATE sync_settings SET enabled = ? WHERE singleton_id = 1')
+      .run(enabled ? 1 : 0);
+  }
+
+  recordSyncResult(success: boolean, error: string | null): void {
+    if (success) {
+      this.connection
+        .prepare(
+          'UPDATE sync_settings SET last_sync_at = ?, last_error = NULL WHERE singleton_id = 1',
+        )
+        .run(now());
+    } else {
+      this.connection
+        .prepare(
+          'UPDATE sync_settings SET last_error = ? WHERE singleton_id = 1',
+        )
+        .run(error);
+    }
+  }
+
+  markBackfillCompleted(): void {
+    this.connection
+      .prepare(
+        'UPDATE sync_settings SET backfill_completed = 1 WHERE singleton_id = 1',
+      )
+      .run();
+  }
+
+  /** Sanitised status for the renderer: no secrets, just counts and hints. */
+  getSyncStatus(): SyncStatus {
+    const record = this.getSyncConfigRecord();
+    return {
+      enabled: record.enabled,
+      configured: record.supabaseUrl !== null && record.apiKeySecret !== null,
+      lastSyncAt: record.lastSyncAt,
+      pendingEventCount: pendingOutboxCount(this.connection),
+      lastError: record.lastError,
+      backfillCompleted: record.backfillCompleted,
+    };
+  }
+
+  /** Sanitised configuration view for the renderer, including a masked key hint
+   *  computed from the decrypted key (provided by the main process). */
+  getSyncConfigView(apiKeyHint: string | null): SyncConfigView {
+    const record = this.getSyncConfigRecord();
+    return {
+      enabled: record.enabled,
+      configured: record.supabaseUrl !== null && record.apiKeySecret !== null,
+      supabaseUrl: record.supabaseUrl,
+      storeId: record.storeId,
+      apiKeyHint,
+      apiKeyEncryptionAvailable: record.apiKeyEncrypted,
+      backfillCompleted: record.backfillCompleted,
+    };
+  }
+
+  pendingSyncEventCount(): number {
+    return pendingOutboxCount(this.connection);
+  }
+
+  pendingSyncEvents(limit: number): OutboxEvent[] {
+    return listPendingOutboxEvents(this.connection, limit);
+  }
+
+  markSyncEventsPushed(eventIds: string[]): void {
+    markOutboxPushed(this.connection, eventIds);
+  }
+
+  syncOutboxMaxSequence(): number {
+    return maxOutboxSequence(this.connection);
+  }
+
+  /** Every outbox event in sequence order (used by tests to seed a fake cloud). */
+  exportOutboxSnapshot(): OutboxEvent[] {
+    return listAllOutboxEvents(this.connection);
+  }
+
+  /** A restore is only permitted when the local database has no business rows. */
+  isRestoreAllowed(): boolean {
+    return isBusinessDataEmpty(this.connection);
+  }
+
+  needsBackfill(): boolean {
+    return !this.getSyncConfigRecord().backfillCompleted;
+  }
+
+  /**
+   * Enqueue a one-time snapshot of all existing data so historical records reach
+   * the cloud. Idempotent: rows already present in the outbox (captured by
+   * enqueue-on-write after this migration) are skipped, so backfill covers every
+   * pre-existing row exactly once regardless of when it ran relative to writes.
+   * Runs in a single transaction with the backfill-completed flag so a crash
+   * cannot partially backfill.
+   */
+  backfillOutbox(): number {
+    if (this.getSyncConfigRecord().backfillCompleted) return 0;
+    let enqueued = 0;
+    this.connection.transaction(() => {
+      enqueued += this.backfillEntityType('settings', 'SELECT 1 AS id', () =>
+        this.buildSettingsPayload(),
+      );
+      enqueued += this.backfillRows(
+        'category',
+        'SELECT id FROM categories ORDER BY created_at, name',
+      );
+      enqueued += this.backfillRows(
+        'product',
+        'SELECT id FROM products ORDER BY created_at, name',
+      );
+      enqueued += this.backfillRows(
+        'customer',
+        'SELECT id FROM customers ORDER BY created_at, name',
+      );
+      enqueued += this.backfillRows(
+        'inventory_movement',
+        'SELECT id FROM inventory_movements ORDER BY sequence',
+      );
+      enqueued += this.backfillRows(
+        'sale',
+        'SELECT id FROM sales ORDER BY receipt_number',
+      );
+      enqueued += this.backfillRows(
+        'account_payment',
+        'SELECT id FROM account_payments ORDER BY receipt_number',
+      );
+      enqueued += this.backfillRows(
+        'audit_event',
+        'SELECT id FROM audit_events ORDER BY occurred_at, rowid',
+      );
+      this.markBackfillCompleted();
+    })();
+    return enqueued;
+  }
+
+  private backfillRows(entityType: SyncEntityType, sql: string): number {
+    const rows = this.connection.prepare(sql).all() as Array<{ id: unknown }>;
+    let count = 0;
+    for (const row of rows) {
+      const entityId = String(row.id);
+      if (this.outboxHasEntity(entityType, entityId)) continue;
+      this.enqueueEntity(entityType, entityId);
+      count += 1;
+    }
+    return count;
+  }
+
+  private backfillEntityType(
+    entityType: 'settings',
+    _sql: string,
+    build: () => SettingsPayload,
+  ): number {
+    if (this.outboxHasEntity('settings', 'settings')) return 0;
+    enqueueOutboxEvent(this.connection, {
+      entityType,
+      entityId: 'settings',
+      operation: 'upsert',
+      payload: build(),
+    });
+    return 1;
+  }
+
+  private outboxHasEntity(entityType: string, entityId: string): boolean {
+    const row = this.connection
+      .prepare(
+        'SELECT 1 AS hit FROM sync_outbox WHERE entity_type = ? AND entity_id = ? LIMIT 1',
+      )
+      .get(entityType, entityId) as { hit: number } | undefined;
+    return Boolean(row);
+  }
+
+  /**
+   * Replay already-validated cloud events into this database. The caller (sync
+   * layer) is responsible for Zod-validating every payload first; this method
+   * applies them in one all-or-nothing transaction, seeds the local outbox so
+   * the device resumes pushing from the restored sequence, and verifies
+   * financial integrity. Throws and rolls back on any failure.
+   */
+  replayValidatedEvents(events: ValidatedRestoreEvent[]): RestoreOutcome {
+    return this.connection.transaction(() =>
+      restoreFromEvents(this.connection, events),
+    )();
+  }
+
   // --- PRIVATE HELPERS ---
 
   private getProduct(id: string): Product {
@@ -1866,20 +2196,319 @@ export class StoreDatabase {
     eventType: string,
     entityType: string,
     entityId: string,
-    payload: object,
+    payload: Record<string, unknown>,
   ): void {
+    const id = randomUUID();
+    const occurredAt = now();
     this.connection
       .prepare(
         'INSERT INTO audit_events (id, event_type, entity_type, entity_id, payload_json, occurred_at) VALUES (?, ?, ?, ?, ?, ?)',
       )
       .run(
-        randomUUID(),
+        id,
         eventType,
         entityType,
         entityId,
         JSON.stringify(payload),
-        now(),
+        occurredAt,
       );
+    enqueueOutboxEvent(this.connection, {
+      entityType: 'audit_event',
+      entityId: id,
+      operation: 'append',
+      payload: {
+        id,
+        eventType,
+        entityType,
+        entityId,
+        payload,
+        occurredAt,
+      } satisfies AuditEventPayload,
+    });
+  }
+
+  private enqueueEntity(entityType: SyncEntityType, entityId: string): void {
+    const payload = this.buildPayload(entityType, entityId);
+    if (payload === null) return;
+    enqueueOutboxEvent(this.connection, {
+      entityType,
+      entityId,
+      operation: syncOperationFor(entityType),
+      payload,
+    });
+  }
+
+  private buildPayload(
+    entityType: SyncEntityType,
+    entityId: string,
+  ):
+    | SettingsPayload
+    | CategoryPayload
+    | ProductPayload
+    | CustomerPayload
+    | InventoryMovementPayload
+    | SalePayload
+    | AccountPaymentPayload
+    | null {
+    switch (entityType) {
+      case 'settings':
+        return this.buildSettingsPayload();
+      case 'category':
+        return this.buildCategoryPayload(entityId);
+      case 'product':
+        return this.buildProductPayload(entityId);
+      case 'customer':
+        return this.buildCustomerPayload(entityId);
+      case 'inventory_movement':
+        return this.buildInventoryMovementPayload(entityId);
+      case 'sale':
+        return this.buildSalePayload(entityId);
+      case 'account_payment':
+        return this.buildAccountPaymentPayload(entityId);
+      default:
+        return null;
+    }
+  }
+
+  private buildSettingsPayload(): SettingsPayload {
+    return this.getSettings();
+  }
+
+  private buildCategoryPayload(id: string): CategoryPayload {
+    return this.getCategory(id);
+  }
+
+  private buildProductPayload(productId: string): ProductPayload {
+    const row = this.connection
+      .prepare('SELECT * FROM products WHERE id = ?')
+      .get(productId) as Row | undefined;
+    if (!row) throw new Error('Product not found');
+    const barcodes = this.connection
+      .prepare(
+        'SELECT id, value, kind, position FROM product_barcodes WHERE product_id = ? ORDER BY position',
+      )
+      .all(productId) as Row[];
+    return {
+      id: String(row.id),
+      categoryId: String(row.category_id),
+      name: String(row.name),
+      secondaryName:
+        row.secondary_name === null ? null : String(row.secondary_name),
+      imageId: row.image_id === null ? null : String(row.image_id),
+      purchaseCostCents: readSafeCents(
+        row.purchase_cost_cents,
+        'purchaseCostCents',
+      ),
+      sellingPriceCents: readSafeCents(
+        row.selling_price_cents,
+        'sellingPriceCents',
+      ),
+      taxable: Boolean(row.taxable),
+      lowStockThreshold: readSafeCents(
+        row.low_stock_threshold,
+        'lowStockThreshold',
+      ),
+      active: Boolean(row.active),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      barcodes: barcodes.map((barcode) => ({
+        id: String(barcode.id),
+        value: String(barcode.value),
+        kind: String(barcode.kind) as 'EXTERNAL' | 'CODE128_INTERNAL',
+        position: Number(barcode.position),
+      })),
+    };
+  }
+
+  private buildCustomerPayload(customerId: string): CustomerPayload {
+    const row = this.connection
+      .prepare('SELECT * FROM customers WHERE id = ?')
+      .get(customerId) as Row | undefined;
+    if (!row) throw new Error('Customer not found');
+    return {
+      id: String(row.id),
+      accountNumber: String(row.account_number),
+      accountBarcode:
+        row.account_barcode === null ? null : String(row.account_barcode),
+      name: String(row.name),
+      secondaryName:
+        row.secondary_name === null ? null : String(row.secondary_name),
+      phone: row.phone === null ? null : String(row.phone),
+      email: row.email === null ? null : String(row.email),
+      address: row.address === null ? null : String(row.address),
+      notes: row.notes === null ? null : String(row.notes),
+      active: Boolean(row.active),
+      blocked: Boolean(row.blocked),
+      creditLimitCents: readNullableSafeCents(
+        row.credit_limit_cents,
+        'credit_limit_cents',
+      ),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private buildInventoryMovementPayload(
+    movementId: string,
+  ): InventoryMovementPayload {
+    const row = this.connection
+      .prepare('SELECT * FROM inventory_movements WHERE id = ?')
+      .get(movementId) as Row | undefined;
+    if (!row) throw new Error('Inventory movement not found');
+    return mapMovementPayload(row);
+  }
+
+  private buildSalePayload(saleId: string): SalePayload {
+    const sale = this.connection
+      .prepare('SELECT * FROM sales WHERE id = ?')
+      .get(saleId) as Row | undefined;
+    if (!sale) throw new Error('Sale not found');
+    const items = this.connection
+      .prepare('SELECT * FROM sale_items WHERE sale_id = ? ORDER BY rowid')
+      .all(saleId) as Row[];
+    const paymentRow = this.connection
+      .prepare('SELECT * FROM payments WHERE sale_id = ?')
+      .get(saleId) as Row | undefined;
+    const movements = this.connection
+      .prepare(
+        'SELECT * FROM inventory_movements WHERE related_sale_id = ? ORDER BY sequence',
+      )
+      .all(saleId) as Row[];
+    const ledgerRow = this.connection
+      .prepare('SELECT * FROM customer_ledger WHERE related_sale_id = ?')
+      .get(saleId) as Row | undefined;
+
+    let payment: SalePaymentPayload = null;
+    if (paymentRow) {
+      payment = {
+        method: String(paymentRow.method) as 'cash' | 'external_terminal',
+        amountCents: readSafeCents(paymentRow.amount_cents, 'amount_cents'),
+        cashReceivedCents: readNullableSafeCents(
+          paymentRow.cash_received_cents,
+          'cash_received_cents',
+        ),
+        changeDueCents: readNullableSafeCents(
+          paymentRow.change_due_cents,
+          'change_due_cents',
+        ),
+        terminalReference:
+          paymentRow.terminal_reference === null
+            ? null
+            : String(paymentRow.terminal_reference),
+        externalApproved:
+          paymentRow.external_approved === null
+            ? null
+            : Boolean(paymentRow.external_approved),
+      };
+    }
+
+    return {
+      id: String(sale.id),
+      receiptNumber: Number(sale.receipt_number),
+      completionKey: String(sale.completion_key),
+      status: String(sale.status) as SalePayload['status'],
+      subtotalCents: readSafeCents(sale.subtotal_cents, 'subtotal_cents'),
+      taxCents: readSafeCents(sale.tax_cents, 'tax_cents'),
+      totalCents: readSafeCents(sale.total_cents, 'total_cents'),
+      createdAt: String(sale.created_at),
+      completedAt:
+        sale.completed_at === null ? null : String(sale.completed_at),
+      customerId: sale.customer_id === null ? null : String(sale.customer_id),
+      customerName:
+        sale.customer_name === null ? null : String(sale.customer_name),
+      customerAccountNumber:
+        sale.customer_account_number === null
+          ? null
+          : String(sale.customer_account_number),
+      customerBalanceBeforeCents: readNullableSafeCents(
+        sale.customer_balance_before_cents,
+        'customer_balance_before_cents',
+      ),
+      customerBalanceAfterCents: readNullableSafeCents(
+        sale.customer_balance_after_cents,
+        'customer_balance_after_cents',
+      ),
+      tenderType: String(sale.tender_type) as SalePayload['tenderType'],
+      items: items.map((item): SaleItemPayload => ({
+        id: String(item.id),
+        productId: String(item.product_id),
+        productName: String(item.product_name),
+        secondaryName:
+          item.secondary_name === null ? null : String(item.secondary_name),
+        barcodeUsed:
+          item.barcode_used === null ? null : String(item.barcode_used),
+        quantity: Number(item.quantity),
+        unitSellingPriceCents: readSafeCents(
+          item.unit_selling_price_cents,
+          'unit_selling_price_cents',
+        ),
+        unitPurchaseCostCents: readSafeCents(
+          item.unit_purchase_cost_cents,
+          'unit_purchase_cost_cents',
+        ),
+        taxable: Boolean(item.taxable),
+        taxCents: readSafeCents(item.tax_cents, 'tax_cents'),
+        lineSubtotalCents: readSafeCents(
+          item.line_subtotal_cents,
+          'line_subtotal_cents',
+        ),
+        lineTotalCents: readSafeCents(
+          item.line_total_cents,
+          'line_total_cents',
+        ),
+      })),
+      payment,
+      inventoryMovements: movements.map(mapMovementPayload),
+      ledgerEntry: ledgerRow ? mapLedgerPayload(ledgerRow) : null,
+    };
+  }
+
+  private buildAccountPaymentPayload(paymentId: string): AccountPaymentPayload {
+    const row = this.connection
+      .prepare('SELECT * FROM account_payments WHERE id = ?')
+      .get(paymentId) as Row | undefined;
+    if (!row) throw new Error('Account payment not found');
+    const ledgerRow = this.connection
+      .prepare(
+        'SELECT * FROM customer_ledger WHERE related_account_payment_id = ?',
+      )
+      .get(paymentId) as Row | undefined;
+    if (!ledgerRow) {
+      throw new Error('Account payment ledger entry not found');
+    }
+    return {
+      id: String(row.id),
+      operationId: String(row.operation_id),
+      receiptNumber: Number(row.receipt_number),
+      customerId: String(row.customer_id),
+      customerName: String(row.customer_name),
+      accountNumber: String(row.account_number),
+      amountCents: readSafeCents(row.amount_cents, 'amount_cents'),
+      method: String(row.method) as 'cash' | 'external_terminal',
+      cashReceivedCents: readNullableSafeCents(
+        row.cash_received_cents,
+        'cash_received_cents',
+      ),
+      changeDueCents: readNullableSafeCents(
+        row.change_due_cents,
+        'change_due_cents',
+      ),
+      terminalReference:
+        row.terminal_reference === null ? null : String(row.terminal_reference),
+      externalApproved:
+        row.external_approved === null ? null : Boolean(row.external_approved),
+      previousBalanceCents: readSafeCents(
+        row.previous_balance_cents,
+        'previous_balance_cents',
+      ),
+      newBalanceCents: readSafeCents(
+        row.new_balance_cents,
+        'new_balance_cents',
+      ),
+      notes: row.notes === null ? null : String(row.notes),
+      createdAt: String(row.created_at),
+      ledgerEntry: mapLedgerPayload(ledgerRow),
+    };
   }
 
   private getMovement(id: string): InventoryMovement {
@@ -1936,6 +2565,42 @@ function mapMovement(row: Row): InventoryMovement {
     relatedSaleId:
       row.related_sale_id === null ? null : String(row.related_sale_id),
     resultingStock: Number(row.resulting_stock),
+  };
+}
+
+function mapMovementPayload(row: Row): InventoryMovementPayload {
+  return {
+    id: String(row.id),
+    operationId: String(row.operation_id),
+    productId: String(row.product_id),
+    quantityChange: Number(row.quantity_change),
+    reason: String(row.reason) as InventoryMovementPayload['reason'],
+    occurredAt: String(row.occurred_at),
+    deviceId: row.device_id === null ? null : String(row.device_id),
+    relatedSaleId:
+      row.related_sale_id === null ? null : String(row.related_sale_id),
+    notes: String(row.notes),
+    sequence: Number(row.sequence),
+  };
+}
+
+function mapLedgerPayload(row: Row): LedgerEntryPayload {
+  return {
+    id: String(row.id),
+    operationId: String(row.operation_id),
+    customerId: String(row.customer_id),
+    amountCents: readSafeCents(row.amount_cents, 'ledger amount_cents'),
+    entryType: String(row.entry_type) as LedgerEntryPayload['entryType'],
+    occurredAt: String(row.occurred_at),
+    relatedSaleId:
+      row.related_sale_id === null ? null : String(row.related_sale_id),
+    relatedAccountPaymentId:
+      row.related_account_payment_id === null
+        ? null
+        : String(row.related_account_payment_id),
+    deviceId: row.device_id === null ? null : String(row.device_id),
+    notes: String(row.notes),
+    sequence: Number(row.sequence),
   };
 }
 

@@ -17,7 +17,7 @@ afterEach(() => store.close());
 
 describe('printer settings', () => {
   it('migrates a new database with safe printer defaults', () => {
-    expect(store.schemaVersion()).toBe(5);
+    expect(store.schemaVersion()).toBe(migrations.at(-1)?.version);
     expect(store.getSettings()).toMatchObject({
       receiptPrinterName: null,
       receiptPaperWidthMm: 80,
@@ -175,7 +175,7 @@ describe('printer settings', () => {
     rawDb.close();
 
     const upgraded = new StoreDatabase(filename);
-    expect(upgraded.schemaVersion()).toBe(5);
+    expect(upgraded.schemaVersion()).toBe(migrations.at(-1)?.version);
     expect(upgraded.getSettings()).toMatchObject({
       receiptPrinterName: null,
       receiptPaperWidthMm: 80,
