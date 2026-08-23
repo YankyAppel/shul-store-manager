@@ -1,0 +1,365 @@
+import { useRef, useState, type FormEvent } from 'react';
+import type {
+  AccountPayment,
+  Customer,
+  RecordAccountPaymentInput,
+  StoreSettings,
+} from '@shul-store/shared';
+import { calculateCashChange, parseUsdToCents } from '@shul-store/shared';
+import { formatMoney, messageFrom } from '../../utils/formatters';
+
+export function AccountPaymentModal({
+  customer,
+  settings,
+  onClose,
+  onPaymentCompleted,
+  setError,
+}: {
+  customer: Customer;
+  settings: StoreSettings;
+  onClose(): void;
+  onPaymentCompleted(payment: AccountPayment): void;
+  setError(value: string): void;
+}) {
+  const operationIdRef = useRef<string>(crypto.randomUUID());
+  const isSubmittingRef = useRef<boolean>(false);
+  const frozenIntentRef = useRef<RecordAccountPaymentInput | null>(null);
+
+  const [method, setMethod] = useState<'cash' | 'external_terminal'>('cash');
+  const [amountStr, setAmountStr] = useState(
+    customer.currentBalanceCents > 0
+      ? (customer.currentBalanceCents / 100).toFixed(2)
+      : '0.00',
+  );
+  const [cashReceivedStr, setCashReceivedStr] = useState(
+    customer.currentBalanceCents > 0
+      ? (customer.currentBalanceCents / 100).toFixed(2)
+      : '0.00',
+  );
+  const [approved, setApproved] = useState(false);
+  const [terminalRef, setTerminalRef] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [dispatched, setDispatched] = useState(false);
+  const [dispatchError, setDispatchError] = useState<string | null>(null);
+
+  const resetIntent = () => {
+    if (dispatched) return;
+    operationIdRef.current = crypto.randomUUID();
+    frozenIntentRef.current = null;
+  };
+
+  const handleAmountChange = (val: string) => {
+    resetIntent();
+    setAmountStr(val);
+  };
+
+  const handleCashReceivedChange = (val: string) => {
+    resetIntent();
+    setCashReceivedStr(val);
+  };
+
+  const handleMethodChange = (newMethod: 'cash' | 'external_terminal') => {
+    if (newMethod !== method) {
+      resetIntent();
+      setMethod(newMethod);
+    }
+  };
+
+  const handleTerminalRefChange = (val: string) => {
+    resetIntent();
+    setTerminalRef(val);
+  };
+
+  const handleApprovedChange = (checked: boolean) => {
+    resetIntent();
+    setApproved(checked);
+  };
+
+  const handleNotesChange = (val: string) => {
+    resetIntent();
+    setNotes(val);
+  };
+
+  let parsedAmountCents: number | null = null;
+  let parsedCashReceivedCents: number | null = null;
+  try {
+    parsedAmountCents = parseUsdToCents(amountStr);
+  } catch {
+    parsedAmountCents = null;
+  }
+  try {
+    parsedCashReceivedCents = parseUsdToCents(cashReceivedStr);
+  } catch {
+    parsedCashReceivedCents = null;
+  }
+
+  const changeDueCents =
+    parsedAmountCents !== null &&
+    parsedCashReceivedCents !== null &&
+    parsedCashReceivedCents >= parsedAmountCents
+      ? calculateCashChange(parsedAmountCents, parsedCashReceivedCents)
+      : 0;
+
+  const willResultInCredit =
+    parsedAmountCents !== null &&
+    parsedAmountCents > customer.currentBalanceCents;
+
+  const overpaymentBlocked =
+    willResultInCredit && !settings.allowCustomerCredit;
+
+  const valid =
+    parsedAmountCents !== null &&
+    parsedAmountCents > 0 &&
+    !overpaymentBlocked &&
+    (method === 'cash'
+      ? parsedCashReceivedCents !== null &&
+        parsedCashReceivedCents >= parsedAmountCents
+      : approved);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (isSubmittingRef.current || !valid || parsedAmountCents === null) return;
+    isSubmittingRef.current = true;
+    setSaving(true);
+    setDispatchError(null);
+    setDispatched(true);
+
+    try {
+      if (!frozenIntentRef.current) {
+        frozenIntentRef.current = {
+          operationId: operationIdRef.current,
+          customerId: customer.id,
+          amountCents: parsedAmountCents,
+          payment:
+            method === 'cash'
+              ? {
+                  method: 'cash' as const,
+                  cashReceivedCents: parsedCashReceivedCents!,
+                }
+              : {
+                  method: 'external_terminal' as const,
+                  approved: true as const,
+                  terminalReference: terminalRef.trim() || null,
+                },
+          notes: notes.trim() || null,
+        };
+      }
+
+      const result = await window.storeApi.accountPayments.record(
+        frozenIntentRef.current,
+      );
+      onPaymentCompleted(result);
+    } catch (e) {
+      const err = messageFrom(e);
+      setDispatchError(err);
+      setError(err);
+    } finally {
+      isSubmittingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="modal">
+        <div className="modal-title">
+          <h2>Record account payment</h2>
+          <button type="button" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="stock-summary">
+            <div>
+              <small>Customer</small>
+              <b>{customer.name}</b>
+              <span style={{ fontSize: '12px', color: '#666' }}>
+                Account #{customer.accountNumber}
+              </span>
+            </div>
+            <div>
+              <small>Current amount owed</small>
+              <b
+                style={{
+                  color:
+                    customer.currentBalanceCents > 0 ? '#87352a' : '#1e684a',
+                }}
+              >
+                {customer.currentBalanceCents > 0
+                  ? formatMoney(customer.currentBalanceCents)
+                  : customer.currentBalanceCents < 0
+                    ? `Credit: ${formatMoney(Math.abs(customer.currentBalanceCents))}`
+                    : '$0.00'}
+              </b>
+            </div>
+          </div>
+
+          {dispatchError && (
+            <div className="alert" style={{ margin: '0 0 12px 0' }}>
+              <strong>Payment attempt error:</strong> {dispatchError}
+              <div style={{ marginTop: '6px', fontSize: '13px' }}>
+                Fields are locked to preserve payment identity. You can retry
+                recording the same payment, or close to check the
+                customer&apos;s ledger.
+              </div>
+            </div>
+          )}
+
+          <label>
+            Payment method
+            <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+              <button
+                type="button"
+                className={method === 'cash' ? 'primary' : ''}
+                style={{ flex: 1 }}
+                disabled={saving || dispatched}
+                onClick={() => handleMethodChange('cash')}
+              >
+                Cash
+              </button>
+              <button
+                type="button"
+                className={method === 'external_terminal' ? 'primary' : ''}
+                style={{ flex: 1 }}
+                disabled={saving || dispatched}
+                onClick={() => handleMethodChange('external_terminal')}
+              >
+                External terminal
+              </button>
+            </div>
+          </label>
+
+          <label>
+            Payment amount ($)
+            <input
+              autoFocus
+              type="number"
+              min="0.01"
+              step="0.01"
+              required
+              disabled={saving || dispatched}
+              value={amountStr}
+              onChange={(e) => handleAmountChange(e.target.value)}
+            />
+          </label>
+
+          {overpaymentBlocked && (
+            <div className="alert" style={{ margin: '0' }}>
+              Payment exceeds current amount owed, and customer credit is
+              disabled in settings.
+            </div>
+          )}
+
+          {method === 'cash' ? (
+            <div
+              className="pay-box"
+              style={{
+                margin: 0,
+                padding: '12px',
+                background: '#fafafa',
+                borderRadius: '8px',
+              }}
+            >
+              <label>
+                Cash received ($)
+                <input
+                  type="number"
+                  min={parsedAmountCents ? parsedAmountCents / 100 : 0.01}
+                  step="0.01"
+                  required
+                  disabled={saving || dispatched}
+                  value={cashReceivedStr}
+                  onChange={(e) => handleCashReceivedChange(e.target.value)}
+                />
+              </label>
+              <p
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  margin: '8px 0 0 0',
+                }}
+              >
+                <span>Change due:</span>
+                <b>{formatMoney(changeDueCents)}</b>
+              </p>
+            </div>
+          ) : (
+            <div
+              className="pay-box"
+              style={{
+                margin: 0,
+                padding: '12px',
+                background: '#fafafa',
+                borderRadius: '8px',
+              }}
+            >
+              <p style={{ margin: '0 0 10px 0', fontSize: '13px' }}>
+                Process exactly <b>{formatMoney(parsedAmountCents ?? 0)}</b> on
+                the separate card terminal.
+              </p>
+              <label>
+                Terminal reference <em>Optional</em>
+                <input
+                  disabled={saving || dispatched}
+                  value={terminalRef}
+                  onChange={(e) => handleTerminalRefChange(e.target.value)}
+                  placeholder="e.g. Approval code or receipt ID"
+                />
+              </label>
+              <label className="toggle" style={{ marginTop: '8px' }}>
+                <input
+                  type="checkbox"
+                  disabled={saving || dispatched}
+                  checked={approved}
+                  onChange={(e) => handleApprovedChange(e.target.checked)}
+                />{' '}
+                I confirm the terminal approved this payment
+              </label>
+            </div>
+          )}
+
+          <label>
+            Payment notes <em>Optional</em>
+            <input
+              maxLength={1000}
+              disabled={saving || dispatched}
+              value={notes}
+              onChange={(e) => handleNotesChange(e.target.value)}
+              placeholder="e.g. Paid in office / check details"
+            />
+          </label>
+
+          {parsedAmountCents !== null && (
+            <div className="new-total">
+              Resulting balance after payment:{' '}
+              <b>
+                {customer.currentBalanceCents - parsedAmountCents > 0
+                  ? `Amount owed: ${formatMoney(customer.currentBalanceCents - parsedAmountCents)}`
+                  : customer.currentBalanceCents - parsedAmountCents < 0
+                    ? `Customer credit: ${formatMoney(Math.abs(customer.currentBalanceCents - parsedAmountCents))}`
+                    : 'Settled ($0.00)'}
+              </b>
+            </div>
+          )}
+
+          <footer>
+            <button type="button" onClick={onClose}>
+              {dispatched ? 'Close' : 'Cancel'}
+            </button>
+            <button className="primary" disabled={saving || !valid}>
+              {saving
+                ? 'Processing…'
+                : dispatched
+                  ? 'Retry payment'
+                  : 'Record payment'}
+            </button>
+          </footer>
+        </form>
+      </div>
+    </div>
+  );
+}

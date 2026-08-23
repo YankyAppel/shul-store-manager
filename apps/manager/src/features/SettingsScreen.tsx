@@ -1,19 +1,26 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { StoreSettings } from '@shul-store/shared';
+
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
   const [saved, setSaved] = useState(false);
+
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
   }, []);
+
   if (!settings) return <p>Loading…</p>;
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     await window.storeApi.settings.update(settings!);
     setSaved(true);
+    setTimeout(() => setSaved(false), 3000);
   }
+
   return (
     <form className="settings-form" onSubmit={(e) => void submit(e)}>
+      <h3 style={{ margin: '0 0 4px 0' }}>General Store Settings</h3>
       <label>
         Store name
         <input
@@ -84,8 +91,97 @@ export function SettingsScreen() {
           }
         />
       </label>
-      <button className="primary">Save settings</button>
-      {saved && <span>Settings saved locally.</span>}
+
+      <hr
+        style={{
+          border: 'none',
+          borderTop: '1px solid #e0e5e2',
+          margin: '12px 0',
+        }}
+      />
+      <h3 style={{ margin: '0 0 4px 0' }}>Customer Accounts & Receivables</h3>
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={settings.customerAccountsEnabled}
+          onChange={(e) =>
+            setSettings({
+              ...settings,
+              customerAccountsEnabled: e.target.checked,
+            })
+          }
+        />{' '}
+        Enable customer accounts and &ldquo;Put on Account&rdquo; checkout
+      </label>
+
+      <div className="form-grid">
+        <label>
+          Default customer credit limit ($)
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={(settings.defaultCreditLimitCents / 100).toFixed(2)}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                defaultCreditLimitCents: Math.round(
+                  Number(e.target.value) * 100,
+                ),
+              })
+            }
+          />
+        </label>
+        <label>
+          Days before account is considered overdue
+          <input
+            type="number"
+            min="0"
+            max="365"
+            step="1"
+            value={settings.overdueDays}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                overdueDays: Math.max(0, parseInt(e.target.value, 10) || 0),
+              })
+            }
+          />
+        </label>
+      </div>
+
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={settings.allowCustomerCredit}
+          onChange={(e) =>
+            setSettings({ ...settings, allowCustomerCredit: e.target.checked })
+          }
+        />{' '}
+        Allow customer credit balances (negative balance / overpayment)
+      </label>
+
+      <label>
+        Statement footer
+        <textarea
+          rows={3}
+          value={settings.statementFooter}
+          onChange={(e) =>
+            setSettings({ ...settings, statementFooter: e.target.value })
+          }
+          placeholder="e.g. Please settle outstanding balances within 30 days. For questions, contact the shames."
+        />
+      </label>
+
+      <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+        <button className="primary">Save settings</button>
+        {saved && (
+          <span style={{ color: '#1c6448', fontWeight: 'bold' }}>
+            Settings saved locally.
+          </span>
+        )}
+      </div>
     </form>
   );
 }

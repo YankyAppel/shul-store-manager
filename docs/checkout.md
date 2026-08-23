@@ -4,11 +4,12 @@
 
 Allowed status transitions are enforced by a SQLite trigger:
 
-- `open → awaiting_payment → paid → completed`
+- `open → awaiting_payment → paid → completed` (for immediate cash and external-terminal payments)
+- `open → awaiting_payment → completed` (for account charges)
 - `open` or `awaiting_payment → voided` (reserved for safely abandoning an unfinished sale)
 - `completed → refunded` (schema support only; refund behavior is not implemented)
 
-Completion runs as one `BEGIN IMMEDIATE` transaction. It validates active products and available stock, calculates totals, inserts immutable item snapshots, inserts one payment, creates negative append-only inventory movements referencing the sale, advances status, and writes an audit event. A renderer-generated UUID completion key has a unique constraint. A retry returns the existing sale, so it cannot duplicate payment or inventory writes.
+Completion runs as one `BEGIN IMMEDIATE` transaction. It validates active products and available stock, calculates totals, inserts immutable item snapshots, inserts either an immediate payment or customer ledger charge, creates negative append-only inventory movements referencing the sale, advances status, and writes an audit event. A renderer-generated UUID completion key has a unique constraint. A retry returns the existing sale, so it cannot duplicate payment, ledger, or inventory writes.
 
 The current insufficient-stock policy is **block completion**. The UI shows available quantities; the database is authoritative and validates again inside the write transaction.
 
@@ -33,9 +34,11 @@ total = displayed amount
 
 Snapshots retain each line's subtotal, tax, and total, so settings or product changes cannot rewrite history.
 
-## Payments
+## Payments & Account Charging
 
-Cash records amount due, cash received, and change. Underpayment is rejected. External-terminal checkout requires the staff member to affirm approval and optionally stores a terminal reference. It never accepts or stores card number, expiration, security code, PIN, or track data.
+1. **Cash**: Records amount due, cash received, and change. Underpayment is rejected.
+2. **External Card Terminal**: Requires the staff member to affirm approval and optionally stores a terminal reference. It never accepts or stores card number, expiration, security code, PIN, or track data.
+3. **Put on Account**: Validates active customer status, account blocking, store account settings, and credit limits, and records a positive `sale_charge` in the append-only `customer_ledger`. See [Customer accounts & Receivables](receivables.md).
 
 ## Printing
 
@@ -43,4 +46,4 @@ Sale completion and printing are separate. Electron creates a constrained hidden
 
 ## Deferred
 
-Integrated/tokenized payment providers, refunds and returns, customer accounts, cash drawers, specialized thermal commands, label printing, kiosks, cloud synchronization, cash recyclers, and subscription enforcement are not implemented.
+Integrated/tokenized payment providers, refunds and returns, cash drawers, specialized thermal commands, label printing, kiosks, cloud synchronization, cash recyclers, and subscription enforcement are not implemented.

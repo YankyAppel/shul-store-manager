@@ -5,7 +5,20 @@ import type {
   Sale,
   StoreSettings,
 } from './checkout.js';
+import type {
+  AccountPayment,
+  AccountPaymentReceiptData,
+  Customer,
+  CustomerInput,
+  CustomerLedgerEntry,
+  CustomerStatementData,
+  RecordAccountPaymentInput,
+  StatementOptions,
+} from './customers.js';
+
 export * from './checkout.js';
+export * from './customers.js';
+export * from './html-templates.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -110,6 +123,7 @@ export interface Barcode {
   value: string;
   kind: 'EXTERNAL' | 'CODE128_INTERNAL';
 }
+
 export interface InventoryMovement {
   id: string;
   operationId: string;
@@ -122,6 +136,7 @@ export interface InventoryMovement {
   relatedSaleId: string | null;
   resultingStock: number;
 }
+
 export interface StoredImage {
   id: string;
   url: string;
@@ -165,6 +180,39 @@ export interface StoreApi {
     receipt(id: string): Promise<ReceiptData>;
     print(id: string): Promise<{ success: boolean; error: string | null }>;
   };
+  customers: {
+    list(includeInactive?: boolean): Promise<Customer[]>;
+    get(id: string): Promise<Customer>;
+    search(query: string, includeInactive?: boolean): Promise<Customer[]>;
+    create(input: CustomerInput): Promise<Customer>;
+    update(id: string, input: CustomerInput): Promise<Customer>;
+    setActive(id: string, active: boolean): Promise<void>;
+    setBlocked(id: string, blocked: boolean): Promise<void>;
+    generateAccountNumber(): Promise<string>;
+    generateBarcode(): Promise<string>;
+    lookupBarcode(value: string): Promise<Customer | null>;
+    getLedger(customerId: string): Promise<CustomerLedgerEntry[]>;
+    getStatement(
+      customerId: string,
+      options?: StatementOptions,
+    ): Promise<CustomerStatementData>;
+    printStatement(
+      statementData: CustomerStatementData,
+    ): Promise<{ success: boolean; error: string | null }>;
+  };
+  accountPayments: {
+    record(input: RecordAccountPaymentInput): Promise<AccountPayment>;
+    list(customerId?: string): Promise<AccountPayment[]>;
+    get(id: string): Promise<AccountPayment>;
+    receipt(id: string): Promise<AccountPaymentReceiptData>;
+    print(id: string): Promise<{ success: boolean; error: string | null }>;
+  };
+}
+
+declare global {
+  interface Window {
+    storeApi: StoreApi;
+  }
 }
 
 export function errorMessage(error: unknown): string {

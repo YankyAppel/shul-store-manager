@@ -6,11 +6,20 @@ import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
 import { z } from 'zod';
 import { StoreDatabase } from '@shul-store/database';
 import {
+  accountPaymentReceiptHtml,
   categoryInputSchema,
   completeSaleInputSchema,
+  customerInputSchema,
+  customerStatementDataSchema,
   inventoryMovementInputSchema,
   productInputSchema,
+  receiptHtml,
+  recordAccountPaymentInputSchema,
+  statementHtml,
+  statementOptionsSchema,
   storeSettingsSchema,
+  type AccountPaymentReceiptData,
+  type CustomerStatementData,
   type ReceiptData,
 } from '@shul-store/shared';
 
@@ -39,7 +48,7 @@ async function createWindow(): Promise<void> {
     minHeight: 640,
     title: 'Shul Store Manager',
     webPreferences: {
-      preload: path.join(import.meta.dirname, 'preload.js'),
+      preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -60,6 +69,7 @@ async function createWindow(): Promise<void> {
 }
 
 function registerIpc(): void {
+  // Categories
   ipcMain.handle('categories:list', (_event, includeInactive) =>
     database.listCategories(z.boolean().optional().parse(includeInactive)),
   );
@@ -76,6 +86,7 @@ function registerIpc(): void {
     database.setCategoryActive(idSchema.parse(id), z.boolean().parse(active)),
   );
 
+  // Products
   ipcMain.handle('products:list', (_event, includeInactive) =>
     database.listProducts(z.boolean().optional().parse(includeInactive)),
   );
@@ -92,16 +103,21 @@ function registerIpc(): void {
     database.generateInternalBarcode(),
   );
 
+  // Inventory
   ipcMain.handle('inventory:addMovement', (_event, input) =>
     database.addInventoryMovement(inventoryMovementInputSchema.parse(input)),
   );
   ipcMain.handle('inventory:list', (_event, productId) =>
     database.listInventoryMovements(idSchema.parse(productId)),
   );
+
+  // Settings
   ipcMain.handle('settings:get', () => database.getSettings());
   ipcMain.handle('settings:update', (_event, input) =>
     database.updateSettings(storeSettingsSchema.parse(input)),
   );
+
+  // Checkout
   ipcMain.handle('checkout:lookupBarcode', (_event, value) =>
     database.lookupProductByBarcode(
       z.string().trim().min(1).max(100).parse(value),
@@ -110,6 +126,8 @@ function registerIpc(): void {
   ipcMain.handle('checkout:complete', (_event, input) =>
     database.completeSale(completeSaleInputSchema.parse(input)),
   );
+
+  // Sales
   ipcMain.handle('sales:list', () => database.listSales());
   ipcMain.handle('sales:get', (_event, id) =>
     database.getSale(idSchema.parse(id)),
@@ -121,6 +139,80 @@ function registerIpc(): void {
   ipcMain.handle('sales:print', (_event, id) =>
     printReceipt(idSchema.parse(id)),
   );
+
+  // Customers
+  ipcMain.handle('customers:list', (_event, includeInactive) =>
+    database.listCustomers(z.boolean().optional().parse(includeInactive)),
+  );
+  ipcMain.handle('customers:get', (_event, id) =>
+    database.getCustomer(idSchema.parse(id)),
+  );
+  ipcMain.handle('customers:search', (_event, query, includeInactive) =>
+    database.searchCustomers(
+      z.string().parse(query),
+      z.boolean().optional().parse(includeInactive),
+    ),
+  );
+  ipcMain.handle('customers:create', (_event, input) =>
+    database.createCustomer(customerInputSchema.parse(input)),
+  );
+  ipcMain.handle('customers:update', (_event, id, input) =>
+    database.updateCustomer(
+      idSchema.parse(id),
+      customerInputSchema.parse(input),
+    ),
+  );
+  ipcMain.handle('customers:setActive', (_event, id, active) =>
+    database.setCustomerActive(idSchema.parse(id), z.boolean().parse(active)),
+  );
+  ipcMain.handle('customers:setBlocked', (_event, id, blocked) =>
+    database.setCustomerBlocked(idSchema.parse(id), z.boolean().parse(blocked)),
+  );
+  ipcMain.handle('customers:generateAccountNumber', () =>
+    database.generateAccountNumber(),
+  );
+  ipcMain.handle('customers:generateBarcode', () =>
+    database.generateCustomerBarcode(),
+  );
+  ipcMain.handle('customers:lookupBarcode', (_event, value) =>
+    database.lookupCustomerByBarcodeOrAccount(
+      z.string().trim().min(1).max(100).parse(value),
+    ),
+  );
+  ipcMain.handle('customers:getLedger', (_event, customerId) =>
+    database.listCustomerLedger(idSchema.parse(customerId)),
+  );
+  ipcMain.handle('customers:getStatement', (_event, customerId, options) =>
+    database.getCustomerStatement(
+      idSchema.parse(customerId),
+      statementOptionsSchema.optional().parse(options),
+    ),
+  );
+  ipcMain.handle('customers:printStatement', (_event, statementData) =>
+    printStatement(customerStatementDataSchema.parse(statementData)),
+  );
+
+  // Account Payments
+  ipcMain.handle('accountPayments:record', (_event, input) =>
+    database.recordAccountPayment(recordAccountPaymentInputSchema.parse(input)),
+  );
+  ipcMain.handle('accountPayments:list', (_event, customerId) =>
+    database.listAccountPayments(
+      idSchema.optional().nullable().parse(customerId) ?? undefined,
+    ),
+  );
+  ipcMain.handle('accountPayments:get', (_event, id) =>
+    database.getAccountPayment(idSchema.parse(id)),
+  );
+  ipcMain.handle('accountPayments:receipt', (_event, id) => ({
+    payment: database.getAccountPayment(idSchema.parse(id)),
+    settings: database.getSettings(),
+  }));
+  ipcMain.handle('accountPayments:print', (_event, id) =>
+    printAccountPayment(idSchema.parse(id)),
+  );
+
+  // Images
   ipcMain.handle('images:choose', chooseImage);
   ipcMain.handle('images:discard', async (_event, rawId) => {
     const id = idSchema.parse(rawId);
@@ -181,24 +273,93 @@ async function printReceipt(
   }
 }
 
-const escapeHtml = (value: string) =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-function receiptHtml({ sale, settings }: ReceiptData): string {
-  const rows = sale.items
-    .map(
-      (item) =>
-        `<tr><td>${escapeHtml(item.productName)} × ${item.quantity}</td><td>$${(item.lineTotalCents / 100).toFixed(2)}</td></tr>`,
-    )
-    .join('');
-  const payment =
-    sale.payment.method === 'cash'
-      ? `Cash $${((sale.payment.cashReceivedCents ?? 0) / 100).toFixed(2)} · Change $${((sale.payment.changeDueCents ?? 0) / 100).toFixed(2)}`
-      : `External terminal${sale.payment.terminalReference ? ` · Ref ${escapeHtml(sale.payment.terminalReference)}` : ''}`;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>body{font:14px system-ui;max-width:360px;margin:auto;padding:20px}h1{text-align:center}table{width:100%}td:last-child{text-align:right}.totals{border-top:1px solid;margin-top:12px;padding-top:8px}.footer{text-align:center;margin-top:20px;white-space:pre-line}</style></head><body><h1>${escapeHtml(settings.storeName)}</h1>${settings.contactLines.map((line) => `<div style="text-align:center">${escapeHtml(line)}</div>`).join('')}<p>Receipt #${sale.receiptNumber}<br>${escapeHtml(new Date(sale.completedAt ?? sale.createdAt).toLocaleString())}</p><table>${rows}</table><div class="totals">Subtotal: $${(sale.subtotalCents / 100).toFixed(2)}<br>Tax: $${(sale.taxCents / 100).toFixed(2)}<br><b>Total: $${(sale.totalCents / 100).toFixed(2)}</b><br>${payment}</div><div class="footer">${escapeHtml(settings.receiptFooter)}</div></body></html>`;
+async function printAccountPayment(
+  paymentId: string,
+): Promise<{ success: boolean; error: string | null }> {
+  const data: AccountPaymentReceiptData = {
+    payment: database.getAccountPayment(paymentId),
+    settings: database.getSettings(),
+  };
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  try {
+    await printWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(accountPaymentReceiptHtml(data))}`,
+    );
+    const result = await new Promise<{
+      success: boolean;
+      error: string | null;
+    }>((resolve) => {
+      printWindow.webContents.print(
+        { silent: false, printBackground: true },
+        (success, failureReason) =>
+          resolve({
+            success,
+            error: success
+              ? null
+              : failureReason || 'Printing was canceled or failed.',
+          }),
+      );
+    });
+    database.recordAccountPaymentPrintAttempt(
+      paymentId,
+      result.success,
+      result.error,
+    );
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Printing failed';
+    database.recordAccountPaymentPrintAttempt(paymentId, false, message);
+    return { success: false, error: message };
+  } finally {
+    printWindow.destroy();
+  }
+}
+
+async function printStatement(
+  data: CustomerStatementData,
+): Promise<{ success: boolean; error: string | null }> {
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  try {
+    await printWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(statementHtml(data))}`,
+    );
+    const result = await new Promise<{
+      success: boolean;
+      error: string | null;
+    }>((resolve) => {
+      printWindow.webContents.print(
+        { silent: false, printBackground: true },
+        (success, failureReason) =>
+          resolve({
+            success,
+            error: success
+              ? null
+              : failureReason || 'Printing was canceled or failed.',
+          }),
+      );
+    });
+    return result;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Statement printing failed';
+    return { success: false, error: message };
+  } finally {
+    printWindow.destroy();
+  }
 }
 
 async function chooseImage() {

@@ -14,7 +14,7 @@ packages/
   sync/          future outbox/event synchronization
 ```
 
-Only `manager`, `shared`, and `database` contain runtime code in milestone 1. The other directories document future boundaries rather than shipping unused abstractions.
+Only `manager`, `shared`, and `database` contain runtime code in milestones 1 and 2. The other directories document future boundaries rather than shipping unused abstractions.
 
 ## Security boundary
 
@@ -26,9 +26,9 @@ A restrictive content-security policy is defined in `index.html`. New windows ar
 
 ## Local authority and persistence
 
-The manager database is the inventory authority. SQLite runs with foreign keys, a busy timeout, and WAL journaling. Migrations are ordered, versioned, and each migration is atomic. IDs are UUIDs, timestamps are UTC ISO-8601 strings, and money is integer cents.
+The manager database is the inventory and customer ledger authority. SQLite runs with foreign keys, a busy timeout, and WAL journaling. Migrations are ordered, versioned, and each migration is atomic. IDs are UUIDs, timestamps are UTC ISO-8601 strings, and money is integer cents.
 
-Categories and products use soft activation flags, preserving references and history. A product may own many globally unique barcode values. An `SSM-...` internal value is generated offline with time and random components and is classified for Code 128 rendering.
+Categories, products, and customers use soft activation flags, preserving references and history. A product or customer may own globally unique barcode values. An `SSM-...` internal value is generated offline with time and random components and is classified for Code 128 rendering.
 
 ## Inventory
 
@@ -40,9 +40,11 @@ COALESCE(SUM(inventory_movements.quantity_change), 0)
 
 Every movement has a UUID, idempotency/operation UUID, product, signed integer quantity, constrained reason, UTC time, and required notes. Related writes and audit insertion share a transaction. Database triggers reject updates and deletes to the movement table, providing defense beyond the application API. Corrections must be compensating movements.
 
-## Local checkout
+## Local checkout & Customer Receivables
 
 Migration 3 adds store settings, sales, immutable sale-item snapshots, payments, and independent print attempts. Cash and staff-confirmed external-terminal sales complete in one idempotent transaction with their negative inventory movements and audit event. See [Checkout foundation](checkout.md) for status transitions, tax rounding, insufficient-stock policy, and printing failure behavior.
+
+Migration 4 adds customer accounts, customer credit limits, "Put on Account" checkout, append-only customer account ledger with update/delete triggers, account payments, and customer statements. See [Customer accounts & Receivables](receivables.md) for data model details, balance conventions, credit limit enforcement, and payment rules.
 
 ## Future boundaries
 
