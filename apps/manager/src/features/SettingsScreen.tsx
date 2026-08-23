@@ -1,12 +1,23 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { StoreSettings } from '@shul-store/shared';
+import {
+  LABEL_TEMPLATE_OPTIONS,
+  type PrinterInfo,
+  type StoreSettings,
+} from '@shul-store/shared';
+import { messageFrom } from '../utils/formatters';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
   const [saved, setSaved] = useState(false);
+  const [printers, setPrinters] = useState<PrinterInfo[]>([]);
+  const [printerError, setPrinterError] = useState('');
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
+    void window.storeApi.settings
+      .listPrinters()
+      .then(setPrinters)
+      .catch((error) => setPrinterError(messageFrom(error)));
   }, []);
 
   if (!settings) return <p>Loading…</p>;
@@ -173,6 +184,117 @@ export function SettingsScreen() {
           placeholder="e.g. Please settle outstanding balances within 30 days. For questions, contact the shames."
         />
       </label>
+
+      <hr
+        style={{
+          border: 'none',
+          borderTop: '1px solid #e0e5e2',
+          margin: '12px 0',
+        }}
+      />
+      <h3 style={{ margin: '0 0 4px 0' }}>Printers</h3>
+      <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
+        Leave a printer on System default to show the print dialog. A named
+        printer prints silently; if that device is missing or offline, the
+        dialog opens instead.
+      </p>
+      {printerError && (
+        <div className="alert" style={{ marginBottom: '12px' }}>
+          Could not list printers: {printerError}
+        </div>
+      )}
+      <div className="form-grid">
+        <label>
+          Receipt / statement printer
+          <select
+            value={settings.receiptPrinterName ?? ''}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                receiptPrinterName: e.target.value || null,
+              })
+            }
+          >
+            <option value="">System default (show print dialog)</option>
+            {printers.map((printer) => (
+              <option key={printer.name} value={printer.name}>
+                {printer.displayName || printer.name}
+                {printer.isDefault ? ' (OS default)' : ''}
+              </option>
+            ))}
+            {settings.receiptPrinterName &&
+              !printers.some(
+                (printer) => printer.name === settings.receiptPrinterName,
+              ) && (
+                <option value={settings.receiptPrinterName}>
+                  {settings.receiptPrinterName} (not found)
+                </option>
+              )}
+          </select>
+        </label>
+        <label>
+          Receipt paper width
+          <select
+            value={settings.receiptPaperWidthMm}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                receiptPaperWidthMm: Number(e.target.value) === 58 ? 58 : 80,
+              })
+            }
+          >
+            <option value={80}>80 mm</option>
+            <option value={58}>58 mm</option>
+          </select>
+        </label>
+        <label>
+          Label printer
+          <select
+            value={settings.labelPrinterName ?? ''}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                labelPrinterName: e.target.value || null,
+              })
+            }
+          >
+            <option value="">System default (show print dialog)</option>
+            {printers.map((printer) => (
+              <option key={printer.name} value={printer.name}>
+                {printer.displayName || printer.name}
+                {printer.isDefault ? ' (OS default)' : ''}
+              </option>
+            ))}
+            {settings.labelPrinterName &&
+              !printers.some(
+                (printer) => printer.name === settings.labelPrinterName,
+              ) && (
+                <option value={settings.labelPrinterName}>
+                  {settings.labelPrinterName} (not found)
+                </option>
+              )}
+          </select>
+        </label>
+        <label>
+          Default label template
+          <select
+            value={settings.defaultLabelTemplate}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                defaultLabelTemplate: e.target.value as
+                  'thermal_40x30' | 'thermal_57x32' | 'letter_avery_5160',
+              })
+            }
+          >
+            {LABEL_TEMPLATE_OPTIONS.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
 
       <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
         <button className="primary">Save settings</button>

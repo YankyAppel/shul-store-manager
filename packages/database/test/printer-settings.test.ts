@@ -1,0 +1,190 @@
+import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { receiptHtml, storeSettingsSchema } from '@shul-store/shared';
+import { migrations, StoreDatabase } from '../src/index.js';
+
+let store: StoreDatabase;
+
+beforeEach(() => {
+  store = new StoreDatabase(':memory:');
+});
+
+afterEach(() => store.close());
+
+describe('printer settings', () => {
+  it('migrates a new database with safe printer defaults', () => {
+    expect(store.schemaVersion()).toBe(5);
+    expect(store.getSettings()).toMatchObject({
+      receiptPrinterName: null,
+      receiptPaperWidthMm: 80,
+      labelPrinterName: null,
+      defaultLabelTemplate: 'thermal_40x30',
+    });
+  });
+
+  it('round-trips printer settings through the database', () => {
+    const updated = store.updateSettings({
+      ...store.getSettings(),
+      receiptPrinterName: 'Star TSP143',
+      receiptPaperWidthMm: 58,
+      labelPrinterName: 'Zebra ZD410',
+      defaultLabelTemplate: 'letter_avery_5160',
+    });
+    expect(updated).toMatchObject({
+      receiptPrinterName: 'Star TSP143',
+      receiptPaperWidthMm: 58,
+      labelPrinterName: 'Zebra ZD410',
+      defaultLabelTemplate: 'letter_avery_5160',
+    });
+    expect(store.getSettings()).toEqual(updated);
+
+    const cleared = store.updateSettings({
+      ...updated,
+      receiptPrinterName: '',
+      labelPrinterName: null,
+    });
+    expect(cleared.receiptPrinterName).toBeNull();
+    expect(cleared.labelPrinterName).toBeNull();
+  });
+
+  it('rejects invalid printer settings and leaves stored values unchanged', () => {
+    const before = store.getSettings();
+    expect(() =>
+      store.updateSettings({
+        ...before,
+        receiptPaperWidthMm: 70 as never,
+      }),
+    ).toThrow();
+    expect(() =>
+      store.updateSettings({
+        ...before,
+        defaultLabelTemplate: 'avery-9999' as never,
+      }),
+    ).toThrow();
+    expect(() =>
+      store.updateSettings({
+        ...before,
+        receiptPrinterName: 'x'.repeat(201),
+      }),
+    ).toThrow();
+    expect(store.getSettings()).toEqual(before);
+    expect(
+      storeSettingsSchema.safeParse({
+        ...before,
+        receiptPaperWidthMm: 70,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('changes receipt CSS width from paper settings without altering sale text', () => {
+    const categoryId = store.createCategory({ name: 'Food' }).id;
+    const productId = store.createProduct({
+      categoryId,
+      name: 'Cookie',
+      purchaseCostCents: 100,
+      sellingPriceCents: 250,
+      taxable: false,
+      lowStockThreshold: 0,
+      barcodes: ['CK-1'],
+    }).id;
+    store.addInventoryMovement({
+      productId,
+      quantityChange: 5,
+      reason: 'stock_received',
+      notes: 'Case',
+    });
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: 'CK-1' }],
+      payment: { method: 'cash', cashReceivedCents: 250 },
+    });
+
+    store.updateSettings({
+      ...store.getSettings(),
+      receiptPaperWidthMm: 58,
+    });
+    const narrow = receiptHtml({
+      sale: store.getSale(sale.id),
+      settings: store.getSettings(),
+    });
+    store.updateSettings({
+      ...store.getSettings(),
+      receiptPaperWidthMm: 80,
+    });
+    const wide = receiptHtml({
+      sale: store.getSale(sale.id),
+      settings: store.getSettings(),
+    });
+    expect(narrow).toContain('data-paper-width="58"');
+    expect(wide).toContain('data-paper-width="80"');
+    expect(narrow).toContain('Cookie');
+    expect(wide).toContain('Cookie');
+    expect(narrow).toContain('width:58mm');
+    expect(wide).toContain('width:80mm');
+  });
+
+  it('upgrades a populated v4 database with printer defaults and keeps sales', () => {
+    const filename = path.join(tmpdir(), `shul-mig4-${randomUUID()}.sqlite`);
+    const rawDb = new DatabaseSync(filename);
+    rawDb.exec('PRAGMA foreign_keys = ON');
+    for (const migration of migrations.filter((item) => item.version <= 4)) {
+      rawDb.exec(migration.sql);
+      rawDb.exec(`PRAGMA user_version = ${migration.version}`);
+    }
+    const t = '2026-08-01T12:00:00.000Z';
+    const catId = randomUUID();
+    const prodId = randomUUID();
+    const saleId = randomUUID();
+    rawDb
+      .prepare(
+        'INSERT INTO categories (id, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)',
+      )
+      .run(catId, 'Bakery', t, t);
+    rawDb
+      .prepare(
+        `INSERT INTO products
+        (id, category_id, name, purchase_cost_cents, selling_price_cents, taxable, low_stock_threshold, active, created_at, updated_at)
+        VALUES (?, ?, ?, 150, 300, 0, 2, 1, ?, ?)`,
+      )
+      .run(prodId, catId, 'Rye Bread', t, t);
+    rawDb
+      .prepare(
+        `INSERT INTO sales
+        (id, receipt_number, completion_key, status, subtotal_cents, tax_cents, total_cents, created_at, completed_at)
+        VALUES (?, 1, ?, 'completed', 300, 0, 300, ?, ?)`,
+      )
+      .run(saleId, randomUUID(), t, t);
+    rawDb
+      .prepare(
+        `INSERT INTO sale_items
+        (id, sale_id, product_id, product_name, quantity, unit_selling_price_cents, unit_purchase_cost_cents, taxable, tax_cents, line_subtotal_cents, line_total_cents)
+        VALUES (?, ?, ?, 'Rye Bread', 1, 300, 150, 0, 0, 300, 300)`,
+      )
+      .run(randomUUID(), saleId, prodId);
+    rawDb
+      .prepare(
+        `INSERT INTO payments
+        (id, sale_id, method, amount_cents, cash_received_cents, change_due_cents, created_at)
+        VALUES (?, ?, 'cash', 300, 300, 0, ?)`,
+      )
+      .run(randomUUID(), saleId, t);
+    rawDb.close();
+
+    const upgraded = new StoreDatabase(filename);
+    expect(upgraded.schemaVersion()).toBe(5);
+    expect(upgraded.getSettings()).toMatchObject({
+      receiptPrinterName: null,
+      receiptPaperWidthMm: 80,
+      labelPrinterName: null,
+      defaultLabelTemplate: 'thermal_40x30',
+    });
+    expect(upgraded.listProducts()[0]?.name).toBe('Rye Bread');
+    expect(upgraded.listSales()[0]?.receiptNumber).toBe(1);
+    upgraded.close();
+    rmSync(filename);
+  });
+});

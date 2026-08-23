@@ -27,6 +27,7 @@ const api: StoreApi = {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (input) => ipcRenderer.invoke('settings:update', input),
+    listPrinters: () => ipcRenderer.invoke('settings:listPrinters'),
   },
   checkout: {
     lookupBarcode: (value) =>
@@ -38,6 +39,10 @@ const api: StoreApi = {
     get: (id) => ipcRenderer.invoke('sales:get', id),
     receipt: (id) => ipcRenderer.invoke('sales:receipt', id),
     print: (id) => ipcRenderer.invoke('sales:print', id),
+  },
+  labels: {
+    render: (input) => ipcRenderer.invoke('labels:render', input),
+    print: (input) => ipcRenderer.invoke('labels:print', input),
   },
   customers: {
     list: (includeInactive) =>

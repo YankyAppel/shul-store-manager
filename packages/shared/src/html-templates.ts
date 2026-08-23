@@ -23,6 +23,20 @@ function formatCents(cents: number): string {
   return isNegative ? `-${formatted}` : formatted;
 }
 
+function receiptPaperWidthMm(settings: {
+  receiptPaperWidthMm?: 58 | 80 | undefined;
+}): 58 | 80 {
+  return settings.receiptPaperWidthMm === 58 ? 58 : 80;
+}
+
+function receiptBodyCss(settings: {
+  receiptPaperWidthMm?: 58 | 80 | undefined;
+}): string {
+  const widthMm = receiptPaperWidthMm(settings);
+  return `body{font:14px system-ui,-apple-system,BlinkMacSystemFont,sans-serif;width:${widthMm}mm;max-width:${widthMm}mm;margin:auto;padding:4mm;color:#111;box-sizing:border-box}
+    @page{size:${widthMm}mm auto;margin:0}`;
+}
+
 export function receiptHtml({ sale, settings }: ReceiptData): string {
   const rows = sale.items
     .map(
@@ -53,7 +67,7 @@ export function receiptHtml({ sale, settings }: ReceiptData): string {
   <meta charset="utf-8">
   <title>Receipt #${sale.receiptNumber}</title>
   <style>
-    body{font:14px system-ui,-apple-system,BlinkMacSystemFont,sans-serif;max-width:360px;margin:auto;padding:20px;color:#111}
+    ${receiptBodyCss(settings)}
     h1{text-align:center;margin:0 0 6px 0;font-size:18px}
     table{width:100%;border-collapse:collapse;margin:12px 0}
     td{padding:3px 0}
@@ -62,7 +76,7 @@ export function receiptHtml({ sale, settings }: ReceiptData): string {
     .footer{text-align:center;margin-top:20px;white-space:pre-line;font-size:12px;color:#555}
   </style>
 </head>
-<body>
+<body data-paper-width="${receiptPaperWidthMm(settings)}">
   <h1>${escapeHtml(settings.storeName)}</h1>
   ${settings.contactLines.map((line) => `<div style="text-align:center;font-size:12px">${escapeHtml(line)}</div>`).join('')}
   <p style="margin:10px 0 6px;font-size:12px">Receipt #${sale.receiptNumber}<br>${escapeHtml(new Date(sale.completedAt ?? sale.createdAt).toLocaleString())}</p>
@@ -95,14 +109,14 @@ export function accountPaymentReceiptHtml({
   <meta charset="utf-8">
   <title>Payment Receipt #${payment.receiptNumber}</title>
   <style>
-    body{font:14px system-ui,-apple-system,BlinkMacSystemFont,sans-serif;max-width:360px;margin:auto;padding:20px;color:#111}
+    ${receiptBodyCss(settings)}
     h1{text-align:center;margin:0 0 6px 0;font-size:18px}
     .payment-box{border:1px solid #333;border-radius:4px;padding:12px;margin:12px 0;background:#fafafa}
     .totals{line-height:1.6}
     .footer{text-align:center;margin-top:20px;white-space:pre-line;font-size:12px;color:#555}
   </style>
 </head>
-<body>
+<body data-paper-width="${receiptPaperWidthMm(settings)}">
   <h1>${escapeHtml(settings.storeName)}</h1>
   ${settings.contactLines.map((line) => `<div style="text-align:center;font-size:12px">${escapeHtml(line)}</div>`).join('')}
   <div style="text-align:center;margin:10px 0;font-size:15px"><b>Account Payment Receipt #${payment.receiptNumber}</b></div>

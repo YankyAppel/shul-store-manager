@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type {
-  Customer,
-  CustomerStatementData,
-  StatementDateRange,
-  StatementOptions,
+import {
+  describePrintResult,
+  type Customer,
+  type CustomerStatementData,
+  type StatementDateRange,
+  type StatementOptions,
 } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../../utils/formatters';
 
@@ -123,13 +124,7 @@ export function CustomerStatementModal({
     setPrintMessage('');
     try {
       const result = await window.storeApi.customers.printStatement(statement);
-      if (result.success) {
-        setPrintMessage('Statement sent to printer.');
-      } else {
-        setPrintMessage(
-          `Printing failed: ${result.error ?? 'Unknown printer error'}`,
-        );
-      }
+      setPrintMessage(describePrintResult(result, 'Statement'));
     } catch (e) {
       setPrintMessage(e instanceof Error ? e.message : 'Printing failed');
     } finally {

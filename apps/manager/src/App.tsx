@@ -7,6 +7,7 @@ import {
 } from 'react';
 import type { Category, Product, StoredImage } from '@shul-store/shared';
 import { CheckoutScreen } from './features/CheckoutScreen';
+import { LabelPrintModal } from './features/labels/LabelPrintModal';
 import { SalesHistory } from './features/SalesHistory';
 import { SettingsScreen } from './features/SettingsScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
@@ -45,6 +46,9 @@ export function App() {
   >();
   const [inventoryProduct, setInventoryProduct] = useState<
     Product | undefined
+  >();
+  const [labelProductIds, setLabelProductIds] = useState<
+    string[] | undefined
   >();
   const [error, setError] = useState('');
 
@@ -194,23 +198,30 @@ export function App() {
                   : view === 'customers'
                     ? 'Customer balances, credit limits, account payments, and statements.'
                     : view === 'settings'
-                      ? 'Local checkout, tax, customer credit, and receipt configuration.'
+                      ? 'Local checkout, tax, customer credit, printers, and receipt configuration.'
                       : view === 'inventory'
                         ? 'Receive stock and record append-only adjustments.'
                         : `Manage your store ${view}.`}
             </p>
           </div>
           {(view === 'products' || view === 'categories') && (
-            <button
-              className="primary"
-              onClick={() =>
-                view === 'categories'
-                  ? setCategoryEditor(null)
-                  : setProductEditor(null)
-              }
-            >
-              {view === 'categories' ? '+ New category' : '+ New product'}
-            </button>
+            <div className="header-actions">
+              {view === 'products' && (
+                <button type="button" onClick={() => setLabelProductIds([])}>
+                  Print labels
+                </button>
+              )}
+              <button
+                className="primary"
+                onClick={() =>
+                  view === 'categories'
+                    ? setCategoryEditor(null)
+                    : setProductEditor(null)
+                }
+              >
+                {view === 'categories' ? '+ New category' : '+ New product'}
+              </button>
+            </div>
           )}
         </header>
         {error && (
@@ -355,6 +366,9 @@ export function App() {
                       <button onClick={() => setProductEditor(product)}>
                         Edit
                       </button>
+                      <button onClick={() => setLabelProductIds([product.id])}>
+                        Print labels
+                      </button>
                       <button onClick={() => void toggleProduct(product)}>
                         {product.active ? 'Deactivate' : 'Activate'}
                       </button>
@@ -421,6 +435,19 @@ export function App() {
             setProductEditor(undefined);
             await refresh();
           }}
+          onPrintLabels={(product) => setLabelProductIds([product.id])}
+          setError={setError}
+        />
+      )}
+      {labelProductIds !== undefined && (
+        <LabelPrintModal
+          products={products}
+          categories={categories}
+          initialProductIds={
+            labelProductIds.length > 0 ? labelProductIds : undefined
+          }
+          onClose={() => setLabelProductIds(undefined)}
+          onProductsChanged={refresh}
           setError={setError}
         />
       )}
@@ -607,12 +634,14 @@ function ProductModal({
   categories,
   onClose,
   onSaved,
+  onPrintLabels,
   setError,
 }: {
   product: Product | null;
   categories: Category[];
   onClose(): void;
   onSaved(): Promise<void>;
+  onPrintLabels(product: Product): void;
   setError(value: string): void;
 }) {
   const [categoryId, setCategoryId] = useState(
@@ -805,6 +834,11 @@ function ProductModal({
           <button type="button" onClick={() => void close()}>
             Cancel
           </button>
+          {product && (
+            <button type="button" onClick={() => onPrintLabels(product)}>
+              Print labels
+            </button>
+          )}
           <button className="primary" disabled={saving || !categoryId}>
             {saving ? 'Saving…' : 'Save product'}
           </button>

@@ -15,10 +15,15 @@ import type {
   RecordAccountPaymentInput,
   StatementOptions,
 } from './customers.js';
+import type { LabelPrintRequest } from './labels.js';
+import type { PrinterInfo, PrintResult } from './printing.js';
 
+export * from './barcode.js';
 export * from './checkout.js';
 export * from './customers.js';
 export * from './html-templates.js';
+export * from './labels.js';
+export * from './printing.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -169,6 +174,7 @@ export interface StoreApi {
   settings: {
     get(): Promise<StoreSettings>;
     update(input: StoreSettings): Promise<StoreSettings>;
+    listPrinters(): Promise<PrinterInfo[]>;
   };
   checkout: {
     lookupBarcode(value: string): Promise<Product | null>;
@@ -178,7 +184,11 @@ export interface StoreApi {
     list(): Promise<Sale[]>;
     get(id: string): Promise<Sale>;
     receipt(id: string): Promise<ReceiptData>;
-    print(id: string): Promise<{ success: boolean; error: string | null }>;
+    print(id: string): Promise<PrintResult>;
+  };
+  labels: {
+    render(input: LabelPrintRequest): Promise<string>;
+    print(input: LabelPrintRequest): Promise<PrintResult>;
   };
   customers: {
     list(includeInactive?: boolean): Promise<Customer[]>;
@@ -196,16 +206,14 @@ export interface StoreApi {
       customerId: string,
       options?: StatementOptions,
     ): Promise<CustomerStatementData>;
-    printStatement(
-      statementData: CustomerStatementData,
-    ): Promise<{ success: boolean; error: string | null }>;
+    printStatement(statementData: CustomerStatementData): Promise<PrintResult>;
   };
   accountPayments: {
     record(input: RecordAccountPaymentInput): Promise<AccountPayment>;
     list(customerId?: string): Promise<AccountPayment[]>;
     get(id: string): Promise<AccountPayment>;
     receipt(id: string): Promise<AccountPaymentReceiptData>;
-    print(id: string): Promise<{ success: boolean; error: string | null }>;
+    print(id: string): Promise<PrintResult>;
   };
 }
 

@@ -42,8 +42,8 @@ Snapshots retain each line's subtotal, tax, and total, so settings or product ch
 
 ## Printing
 
-Sale completion and printing are separate. Electron creates a constrained hidden receipt document and invokes the operating-system print UI. Every attempt is recorded independently. A cancellation or printer failure returns an error while the successful sale, payment, and inventory movements remain unchanged. Reprint uses the immutable stored snapshots and cannot create another sale.
+Sale completion and printing are separate. Electron creates a constrained hidden receipt document. When a receipt printer is configured, printing is silent to that device; otherwise the operating-system print dialog is shown. If silent printing fails (missing or offline device), the UI shows a clear error and the dialog is opened. Every attempt is recorded independently. A cancellation or printer failure returns an error while the successful sale, payment, and inventory movements remain unchanged. Reprint uses the immutable stored snapshots and cannot create another sale. Receipt CSS width follows the 58 mm / 80 mm store setting.
 
 ## Deferred
 
-Integrated/tokenized payment providers, refunds and returns, cash drawers, specialized thermal commands, label printing, kiosks, cloud synchronization, cash recyclers, and subscription enforcement are not implemented.
+Integrated/tokenized payment providers, refunds and returns, cash drawers, specialized thermal/ESC-POS commands, kiosks, cloud synchronization, cash recyclers, and subscription enforcement are not implemented. Product label printing is documented in [Label printing](labels.md).
