@@ -34,7 +34,7 @@ Run all current tests:
 npm test
 ```
 
-Tests use isolated in-memory SQLite databases and cover fresh migration, category/product creation, unique and multiple barcodes, receiving, signed adjustments, calculated stock, rollback/idempotency, append-only enforcement, and history retention after deactivation.
+Tests use isolated in-memory SQLite databases and cover fresh migration, category/product creation, unique and multiple barcodes, receiving, signed adjustments, calculated stock, rollback/idempotency, append-only enforcement, history retention after deactivation, Code 128 known-answer encoding, label HTML escaping and sheet layout, and printer-settings migration/round-trip.
 
 ## Before submitting changes
 

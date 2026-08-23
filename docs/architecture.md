@@ -14,7 +14,7 @@ packages/
   sync/          future outbox/event synchronization
 ```
 
-Only `manager`, `shared`, and `database` contain runtime code in milestones 1 and 2. The other directories document future boundaries rather than shipping unused abstractions.
+Only `manager`, `shared`, and `database` contain runtime code in milestones 1–3. The other directories document future boundaries rather than shipping unused abstractions.
 
 ## Security boundary
 
@@ -46,9 +46,11 @@ Migration 3 adds store settings, sales, immutable sale-item snapshots, payments,
 
 Migration 4 adds customer accounts, customer credit limits, "Put on Account" checkout, append-only customer account ledger with update/delete triggers, account payments, and customer statements. See [Customer accounts & Receivables](receivables.md) for data model details, balance conventions, credit limit enforcement, and payment rules.
 
+Migration 5 adds receipt and label printer preferences (nullable device names, 58/80 mm receipt width, default label template). Label HTML and Code 128 SVG rendering live in `@shul-store/shared`. See [Label printing](labels.md).
+
 ## Future boundaries
 
 - Integrated payment providers will be isolated adapters and may use only certified terminals or hosted tokenized flows. Raw card data is outside this application's boundary.
 - Sync will use a transactional local outbox, globally unique events, server acknowledgement, and idempotent consumption—not row-level last-write-wins replication.
 - A kiosk will be a separate Electron application with its own SQLite cache and revocable device identity.
-- Printing will be a retryable operation separate from sale and payment completion.
+- Specialized ESC/POS raw commands and cash-drawer pulses remain out of scope; current printing uses a hidden BrowserWindow and the OS print path.

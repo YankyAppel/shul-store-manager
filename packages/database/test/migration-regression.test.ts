@@ -96,10 +96,16 @@ describe('migration upgrades and regressions', () => {
 
     rawDb.close();
 
-    // Now open with StoreDatabase, which automatically runs Migration 4
+    // Now open with StoreDatabase, which automatically runs later migrations
     const upgraded = new StoreDatabase(filename);
 
-    expect(upgraded.schemaVersion()).toBe(4);
+    expect(upgraded.schemaVersion()).toBe(migrations.at(-1)?.version);
+    expect(upgraded.getSettings()).toMatchObject({
+      receiptPrinterName: null,
+      receiptPaperWidthMm: 80,
+      labelPrinterName: null,
+      defaultLabelTemplate: 'thermal_40x30',
+    });
 
     // 1. Existing product is readable
     const products = upgraded.listProducts();

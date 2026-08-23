@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AccountPayment } from '@shul-store/shared';
+import { describePrintResult, type AccountPayment } from '@shul-store/shared';
 import { formatMoney } from '../../utils/formatters';
 
 export function AccountPaymentReceiptModal({
@@ -17,13 +17,7 @@ export function AccountPaymentReceiptModal({
     setPrintMessage('');
     try {
       const result = await window.storeApi.accountPayments.print(payment.id);
-      if (result.success) {
-        setPrintMessage('Receipt sent to printer.');
-      } else {
-        setPrintMessage(
-          `Printing failed: ${result.error ?? 'Unknown printer error'}`,
-        );
-      }
+      setPrintMessage(describePrintResult(result, 'Receipt'));
     } catch (e) {
       setPrintMessage(e instanceof Error ? e.message : 'Printing failed');
     } finally {

@@ -27,6 +27,17 @@ An offline-first desktop inventory and store-management application for small st
 - Filterable customer statements (last 30 days, 90 days, all activity, custom date range) with opening and closing balances
 - Full idempotency across sales and account payments
 
+## Milestone 3: Barcode label printing & printer settings
+
+- Dependency-free Code 128 (subsets B and C) SVG rendering in `@shul-store/shared`
+- Product labels with name, secondary name, price, barcode bars, and human-readable digits
+- Thermal roll templates (40×30 mm, 57×32 mm) and Avery 5160 Letter sheets (30-up)
+- Single-product and batch label printing with preview, quantities, and barcode choice
+- Offline generation of an internal barcode when a product has none
+- Persisted receipt/label printer preferences, 58/80 mm receipt width, and silent printing with dialog fallback
+
+See [Label printing](docs/labels.md) for templates, printer behavior, and the desktop scan checklist.
+
 ## Requirements
 
 - Node.js 22.12 or newer (use the version declared in `.nvmrc`)
@@ -53,4 +64,4 @@ npm test
 npm run build
 ```
 
-See [Architecture](docs/architecture.md), [Checkout foundation](docs/checkout.md), [Receivables & Customer accounts](docs/receivables.md) for boundaries and data design and [Development](docs/development.md) for workflow details.
+See [Architecture](docs/architecture.md), [Checkout foundation](docs/checkout.md), [Receivables & Customer accounts](docs/receivables.md), and [Label printing](docs/labels.md) for boundaries and data design and [Development](docs/development.md) for workflow details.

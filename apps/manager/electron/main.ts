@@ -12,6 +12,8 @@ import {
   customerInputSchema,
   customerStatementDataSchema,
   inventoryMovementInputSchema,
+  labelPrintRequestSchema,
+  labelsHtml,
   productInputSchema,
   receiptHtml,
   recordAccountPaymentInputSchema,
@@ -20,6 +22,9 @@ import {
   storeSettingsSchema,
   type AccountPaymentReceiptData,
   type CustomerStatementData,
+  type LabelPrintRequest,
+  type PrinterInfo,
+  type PrintResult,
   type ReceiptData,
 } from '@shul-store/shared';
 
@@ -115,6 +120,14 @@ function registerIpc(): void {
   ipcMain.handle('settings:get', () => database.getSettings());
   ipcMain.handle('settings:update', (_event, input) =>
     database.updateSettings(storeSettingsSchema.parse(input)),
+  );
+  ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
+
+  ipcMain.handle('labels:render', (_event, input) =>
+    buildLabelsHtml(labelPrintRequestSchema.parse(input)),
+  );
+  ipcMain.handle('labels:print', (_event, input) =>
+    printLabels(labelPrintRequestSchema.parse(input)),
   );
 
   // Checkout
@@ -228,138 +241,187 @@ function registerIpc(): void {
   });
 }
 
-async function printReceipt(
-  saleId: string,
+function buildLabelsHtml(request: LabelPrintRequest): string {
+  const products = new Map(
+    database.listProducts(true).map((product) => [product.id, product]),
+  );
+  const settings = database.getSettings();
+  const items = request.items.map((item) => {
+    const product = products.get(item.productId);
+    if (!product) {
+      throw new Error('Product not found.');
+    }
+    const barcode = product.barcodes.find(
+      (entry) => entry.value.toLowerCase() === item.barcode.toLowerCase(),
+    );
+    if (!barcode) {
+      throw new Error(
+        `Barcode ${item.barcode} does not belong to ${product.name}.`,
+      );
+    }
+    return {
+      name: product.name,
+      secondaryName: product.secondaryName,
+      sellingPriceCents: product.sellingPriceCents,
+      barcode: barcode.value,
+      quantity: item.quantity,
+    };
+  });
+  return labelsHtml({
+    items,
+    storeName: settings.storeName,
+    template: request.template,
+  });
+}
+
+async function listPrinters(
+  event: Electron.IpcMainInvokeEvent,
+): Promise<PrinterInfo[]> {
+  const contents =
+    BrowserWindow.fromWebContents(event.sender)?.webContents ?? event.sender;
+  const printers = await contents.getPrintersAsync();
+  return printers.map((printer) => {
+    const extra = printer as Electron.PrinterInfo & {
+      status?: number;
+      isDefault?: boolean;
+      options?: Record<string, string>;
+    };
+    return {
+      name: printer.name,
+      displayName: printer.displayName,
+      description: printer.description,
+      status: extra.status ?? 0,
+      isDefault:
+        extra.isDefault ?? extra.options?.['printer-is-default'] === 'true',
+    };
+  });
+}
+
+function invokePrint(
+  contents: Electron.WebContents,
+  options: Electron.WebContentsPrintOptions,
 ): Promise<{ success: boolean; error: string | null }> {
+  return new Promise((resolve) => {
+    contents.print(options, (success, failureReason) =>
+      resolve({
+        success,
+        error: success
+          ? null
+          : failureReason || 'Printing was canceled or failed.',
+      }),
+    );
+  });
+}
+
+async function printHtmlDocument(
+  html: string,
+  deviceName: string | null,
+): Promise<PrintResult> {
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: true,
+    },
+  });
+  try {
+    await printWindow.loadURL(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+    );
+
+    let fallbackReason: string | null = null;
+    if (deviceName) {
+      try {
+        const printers = await printWindow.webContents.getPrintersAsync();
+        const found = printers.some((printer) => printer.name === deviceName);
+        if (!found) {
+          fallbackReason = `Configured printer "${deviceName}" was not found. Opening the system print dialog.`;
+        } else {
+          const silent = await invokePrint(printWindow.webContents, {
+            silent: true,
+            deviceName,
+            printBackground: true,
+          });
+          if (silent.success) {
+            return { success: true, error: null, fallbackReason: null };
+          }
+          fallbackReason = `Silent printing to "${deviceName}" failed${silent.error ? `: ${silent.error}` : ''}. Opening the system print dialog.`;
+        }
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Printer lookup failed';
+        fallbackReason = `Could not use the configured printer "${deviceName}" (${message}). Opening the system print dialog.`;
+      }
+    }
+
+    const dialogResult = await invokePrint(printWindow.webContents, {
+      silent: false,
+      printBackground: true,
+    });
+    if (dialogResult.success) {
+      return { success: true, error: null, fallbackReason };
+    }
+    return {
+      success: false,
+      error: fallbackReason
+        ? `${fallbackReason} ${dialogResult.error ?? ''}`.trim()
+        : dialogResult.error,
+      fallbackReason,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Printing failed';
+    return { success: false, error: message, fallbackReason: null };
+  } finally {
+    printWindow.destroy();
+  }
+}
+
+async function printReceipt(saleId: string): Promise<PrintResult> {
   const data: ReceiptData = {
     sale: database.getSale(saleId),
     settings: database.getSettings(),
   };
-  const receiptWindow = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      sandbox: true,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-  try {
-    await receiptWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(receiptHtml(data))}`,
-    );
-    const result = await new Promise<{
-      success: boolean;
-      error: string | null;
-    }>((resolve) => {
-      receiptWindow.webContents.print(
-        { silent: false, printBackground: true },
-        (success, failureReason) =>
-          resolve({
-            success,
-            error: success
-              ? null
-              : failureReason || 'Printing was canceled or failed.',
-          }),
-      );
-    });
-    database.recordPrintAttempt(saleId, result.success, result.error);
-    return result;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Printing failed';
-    database.recordPrintAttempt(saleId, false, message);
-    return { success: false, error: message };
-  } finally {
-    receiptWindow.destroy();
-  }
+  const result = await printHtmlDocument(
+    receiptHtml(data),
+    data.settings.receiptPrinterName,
+  );
+  database.recordPrintAttempt(saleId, result.success, result.error);
+  return result;
 }
 
-async function printAccountPayment(
-  paymentId: string,
-): Promise<{ success: boolean; error: string | null }> {
+async function printAccountPayment(paymentId: string): Promise<PrintResult> {
   const data: AccountPaymentReceiptData = {
     payment: database.getAccountPayment(paymentId),
     settings: database.getSettings(),
   };
-  const printWindow = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      sandbox: true,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-  try {
-    await printWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(accountPaymentReceiptHtml(data))}`,
-    );
-    const result = await new Promise<{
-      success: boolean;
-      error: string | null;
-    }>((resolve) => {
-      printWindow.webContents.print(
-        { silent: false, printBackground: true },
-        (success, failureReason) =>
-          resolve({
-            success,
-            error: success
-              ? null
-              : failureReason || 'Printing was canceled or failed.',
-          }),
-      );
-    });
-    database.recordAccountPaymentPrintAttempt(
-      paymentId,
-      result.success,
-      result.error,
-    );
-    return result;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Printing failed';
-    database.recordAccountPaymentPrintAttempt(paymentId, false, message);
-    return { success: false, error: message };
-  } finally {
-    printWindow.destroy();
-  }
+  const result = await printHtmlDocument(
+    accountPaymentReceiptHtml(data),
+    data.settings.receiptPrinterName,
+  );
+  database.recordAccountPaymentPrintAttempt(
+    paymentId,
+    result.success,
+    result.error,
+  );
+  return result;
 }
 
 async function printStatement(
   data: CustomerStatementData,
-): Promise<{ success: boolean; error: string | null }> {
-  const printWindow = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      sandbox: true,
-      nodeIntegration: false,
-      contextIsolation: true,
-    },
-  });
-  try {
-    await printWindow.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(statementHtml(data))}`,
-    );
-    const result = await new Promise<{
-      success: boolean;
-      error: string | null;
-    }>((resolve) => {
-      printWindow.webContents.print(
-        { silent: false, printBackground: true },
-        (success, failureReason) =>
-          resolve({
-            success,
-            error: success
-              ? null
-              : failureReason || 'Printing was canceled or failed.',
-          }),
-      );
-    });
-    return result;
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Statement printing failed';
-    return { success: false, error: message };
-  } finally {
-    printWindow.destroy();
-  }
+): Promise<PrintResult> {
+  return printHtmlDocument(
+    statementHtml(data),
+    database.getSettings().receiptPrinterName,
+  );
+}
+
+async function printLabels(request: LabelPrintRequest): Promise<PrintResult> {
+  return printHtmlDocument(
+    buildLabelsHtml(request),
+    database.getSettings().labelPrinterName,
+  );
 }
 
 async function chooseImage() {

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   calculateCart,
   calculateCashChange,
+  describePrintResult,
   parseUsdToCents,
   type Customer,
   type Product,
@@ -235,7 +236,11 @@ export function CheckoutScreen({
   async function print() {
     if (!sale) return;
     const result = await window.storeApi.sales.print(sale.id);
-    setPrintError(result.success ? '' : (result.error ?? 'Print failed'));
+    if (result.success && !result.fallbackReason) {
+      setPrintError('');
+      return;
+    }
+    setPrintError(describePrintResult(result, 'Receipt'));
   }
 
   if (sale)

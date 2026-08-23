@@ -126,6 +126,11 @@ header {
   justify-content: space-between;
   margin-bottom: 27px;
 }
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 h1 {
   font-family: Georgia, serif;
   margin: 0 0 5px;
@@ -590,6 +595,84 @@ code {
 }
 .link-btn:hover {
   color: #144934;
+}
+
+.label-print-modal {
+  width: min(1100px, 96vw);
+}
+.label-print-modal footer {
+  border-top: 1px solid #e5e9e6;
+  padding: 17px 22px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  background: #fafbfa;
+}
+.label-print-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.3fr);
+  gap: 18px;
+  padding: 18px 22px 8px;
+}
+.label-print-layout h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.label-select-row {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+.label-select-row label {
+  flex: 1;
+  min-width: 180px;
+}
+.label-product-list {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #e0e5e2;
+  border-radius: 8px;
+  padding: 6px;
+}
+.label-product-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+}
+.label-product-row small,
+.label-config-row small {
+  display: block;
+  color: #7a8b81;
+  font-weight: normal;
+}
+.label-config-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1.6fr 80px;
+  gap: 10px;
+  align-items: end;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0ee;
+}
+.label-preview-scroll {
+  margin-top: 12px;
+  border: 1px solid #e0e5e2;
+  border-radius: 8px;
+  background: #eef2ef;
+  height: 360px;
+  overflow: auto;
+}
+.label-preview-frame {
+  width: 8.6in;
+  min-height: 11.2in;
+  border: 0;
+  background: white;
+}
+.label-preview-empty {
+  padding: 24px;
+  color: #66766d;
 }
 
 @media (max-width: 1050px) {

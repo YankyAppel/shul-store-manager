@@ -7,6 +7,20 @@ export const paymentMethodSchema = z.enum([
 ]);
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 
+export const receiptPaperWidthMmSchema = z.union([
+  z.literal(58),
+  z.literal(80),
+]);
+export type ReceiptPaperWidthMm = z.infer<typeof receiptPaperWidthMmSchema>;
+
+const optionalPrinterNameSchema = z
+  .string()
+  .trim()
+  .max(200)
+  .nullable()
+  .optional()
+  .transform((value) => (value && value.length > 0 ? value : null));
+
 export const storeSettingsSchema = z.object({
   storeName: z.string().trim().min(1).max(200),
   contactLines: z.array(z.string().trim().min(1).max(200)).max(4),
@@ -24,6 +38,12 @@ export const storeSettingsSchema = z.object({
   allowCustomerCredit: z.boolean().default(false),
   statementFooter: z.string().trim().max(1000).default(''),
   overdueDays: z.number().int().min(0).max(365).default(30),
+  receiptPrinterName: optionalPrinterNameSchema,
+  receiptPaperWidthMm: receiptPaperWidthMmSchema.default(80),
+  labelPrinterName: optionalPrinterNameSchema,
+  defaultLabelTemplate: z
+    .enum(['thermal_40x30', 'thermal_57x32', 'letter_avery_5160'])
+    .default('thermal_40x30'),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 

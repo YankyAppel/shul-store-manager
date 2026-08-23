@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { Sale } from '@shul-store/shared';
+import { describePrintResult, type Sale } from '@shul-store/shared';
 import { formatMoney } from '../utils/formatters';
 
 export function SalesHistory({
@@ -19,7 +19,7 @@ export function SalesHistory({
     const result = await window.storeApi.sales.print(sale.id);
     setMessage(
       result.success
-        ? 'Receipt sent to the printer.'
+        ? describePrintResult(result, 'Receipt')
         : `Printing failed; the sale is unchanged. ${result.error ?? ''}`,
     );
   }

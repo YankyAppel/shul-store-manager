@@ -132,6 +132,26 @@ export class StoreDatabase {
         row.overdue_days === undefined
           ? 30
           : readSafeCents(row.overdue_days, 'overdueDays'),
+      receiptPrinterName:
+        row.receipt_printer_name === undefined ||
+        row.receipt_printer_name === null ||
+        String(row.receipt_printer_name).trim() === ''
+          ? null
+          : String(row.receipt_printer_name),
+      receiptPaperWidthMm:
+        row.receipt_paper_width_mm === undefined
+          ? 80
+          : readSafeCents(row.receipt_paper_width_mm, 'receiptPaperWidthMm') ===
+              58
+            ? 58
+            : 80,
+      labelPrinterName:
+        row.label_printer_name === undefined ||
+        row.label_printer_name === null ||
+        String(row.label_printer_name).trim() === ''
+          ? null
+          : String(row.label_printer_name),
+      defaultLabelTemplate: parseLabelTemplate(row.default_label_template),
     };
   }
 
@@ -151,6 +171,10 @@ export class StoreDatabase {
           allow_customer_credit=?,
           statement_footer=?,
           overdue_days=?,
+          receipt_printer_name=?,
+          receipt_paper_width_mm=?,
+          label_printer_name=?,
+          default_label_template=?,
           updated_at=?
         WHERE singleton_id=1`,
       )
@@ -166,6 +190,10 @@ export class StoreDatabase {
         value.allowCustomerCredit ? 1 : 0,
         value.statementFooter,
         value.overdueDays,
+        value.receiptPrinterName,
+        value.receiptPaperWidthMm,
+        value.labelPrinterName,
+        value.defaultLabelTemplate,
         now(),
       );
     return this.getSettings();
@@ -1867,6 +1895,19 @@ export class StoreDatabase {
     if (!row) throw new Error('Inventory movement not found');
     return mapMovement(row);
   }
+}
+
+function parseLabelTemplate(
+  value: unknown,
+): 'thermal_40x30' | 'thermal_57x32' | 'letter_avery_5160' {
+  if (
+    value === 'thermal_40x30' ||
+    value === 'thermal_57x32' ||
+    value === 'letter_avery_5160'
+  ) {
+    return value;
+  }
+  return 'thermal_40x30';
 }
 
 function mapCategory(row: Row): Category {

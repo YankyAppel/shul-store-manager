@@ -357,6 +357,16 @@ export const migrations: Migration[] = [
       CREATE INDEX account_payment_print_attempts_payment_idx ON account_payment_print_attempts(account_payment_id, attempted_at);
     `,
   },
+  {
+    version: 5,
+    name: 'printer_settings',
+    sql: `
+      ALTER TABLE store_settings ADD COLUMN receipt_printer_name TEXT;
+      ALTER TABLE store_settings ADD COLUMN receipt_paper_width_mm INTEGER NOT NULL DEFAULT 80 CHECK (receipt_paper_width_mm IN (58, 80));
+      ALTER TABLE store_settings ADD COLUMN label_printer_name TEXT;
+      ALTER TABLE store_settings ADD COLUMN default_label_template TEXT NOT NULL DEFAULT 'thermal_40x30' CHECK (default_label_template IN ('thermal_40x30', 'thermal_57x32', 'letter_avery_5160'));
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {
