@@ -503,6 +503,18 @@ export const migrations: Migration[] = [
       INSERT INTO kiosk_server_settings (singleton_id) VALUES (1);
     `,
   },
+  {
+    version: 9,
+    name: 'payment_transaction_kiosk_attribution',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL;
+      CREATE INDEX payment_transactions_kiosk_idx ON payment_transactions(kiosk_id);
+      CREATE TRIGGER payment_transactions_no_update_kiosk
+      BEFORE UPDATE OF kiosk_id ON payment_transactions
+      WHEN NEW.kiosk_id IS NOT OLD.kiosk_id
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction kiosk attribution is immutable'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

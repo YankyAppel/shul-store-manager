@@ -194,6 +194,8 @@ export const salePayloadSchema = z.object({
   customerAccountNumber: z.string().nullable(),
   customerBalanceBeforeCents: cents.nullable(),
   customerBalanceAfterCents: cents.nullable(),
+  channel: z.enum(['manager', 'kiosk']).optional().default('manager'),
+  kioskId: uuidString.nullable().optional(),
   tenderType: z.enum([
     'cash',
     'external_terminal',

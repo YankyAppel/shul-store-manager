@@ -306,8 +306,8 @@ function applySale(connection: SqliteDatabase, payload: SalePayload): void {
       `INSERT INTO sales
         (id, receipt_number, completion_key, status, subtotal_cents, tax_cents, total_cents,
          created_at, completed_at, customer_id, customer_name, customer_account_number,
-         customer_balance_before_cents, customer_balance_after_cents, tender_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         customer_balance_before_cents, customer_balance_after_cents, tender_type, channel, kiosk_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
     )
     .run(
@@ -326,6 +326,8 @@ function applySale(connection: SqliteDatabase, payload: SalePayload): void {
       payload.customerBalanceBeforeCents,
       payload.customerBalanceAfterCents,
       payload.tenderType,
+      payload.channel ?? 'manager',
+      payload.kioskId ?? null,
     );
 
   const insertItem = connection.prepare(

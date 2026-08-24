@@ -877,6 +877,7 @@ export class StoreDatabase {
               },
             },
             snapshot,
+            tx.kiosk_id ? String(tx.kiosk_id) : null,
           );
         } else if (result.status === 'declined' || result.status === 'error') {
           this.updatePaymentTransactionStatus(
@@ -903,6 +904,7 @@ export class StoreDatabase {
     amountCents: number,
     cartSnapshotJson: string,
     idempotencyKey: string,
+    kioskId: string | null = null,
   ): void {
     const timestamp = now();
     this.connection.transaction(() => {
@@ -921,8 +923,8 @@ export class StoreDatabase {
         .prepare(
           `INSERT INTO payment_transactions (
             id, charge_reference, processor_id, amount_cents, status,
-            cart_snapshot_json, idempotency_key, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?)`,
+            cart_snapshot_json, idempotency_key, kiosk_id, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?)`,
         )
         .run(
           randomUUID(),
@@ -931,6 +933,7 @@ export class StoreDatabase {
           amountCents,
           cartSnapshotJson,
           idempotencyKey,
+          kioskId,
           timestamp,
           timestamp,
         );
@@ -1061,6 +1064,12 @@ export class StoreDatabase {
       .run(kioskId, saleId);
   }
 
+  getPaymentTransactionByIdempotencyKey(idempotencyKey: string) {
+    return this.connection
+      .prepare(`SELECT * FROM payment_transactions WHERE idempotency_key = ?`)
+      .get(idempotencyKey) as Row | undefined;
+  }
+
   getPaymentTransaction(chargeReference: string) {
     return this.connection
       .prepare(`SELECT * FROM payment_transactions WHERE charge_reference = ?`)
@@ -1070,6 +1079,7 @@ export class StoreDatabase {
   completeSale(
     input: import('@shul-store/shared').CompleteSaleInput,
     snapshot?: import('@shul-store/shared').CartSnapshot,
+    kioskId: string | null = null,
   ): import('@shul-store/shared').Sale {
     const value = completeSaleInputSchema.parse(input);
     const settings = this.getSettings();
@@ -1280,8 +1290,8 @@ export class StoreDatabase {
             `INSERT INTO sales (
               id, receipt_number, completion_key, status, subtotal_cents, tax_cents, total_cents,
               created_at, customer_id, customer_name, customer_account_number, customer_balance_before_cents,
-              customer_balance_after_cents, tender_type
-            ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              customer_balance_after_cents, tender_type, channel, kiosk_id
+            ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             saleId,
@@ -1299,6 +1309,8 @@ export class StoreDatabase {
             value.payment.method === 'integrated_card'
               ? 'immediate_payment'
               : value.payment.method,
+            kioskId ? 'kiosk' : 'manager',
+            kioskId,
           );
 
         this.connection
@@ -2938,6 +2950,13 @@ export class StoreDatabase {
         sale.customer_balance_after_cents,
         'customer_balance_after_cents',
       ),
+      channel: (sale.channel === 'kiosk'
+        ? 'kiosk'
+        : 'manager') as SalePayload['channel'],
+      kioskId:
+        sale.kiosk_id === null || sale.kiosk_id === undefined
+          ? null
+          : String(sale.kiosk_id),
       tenderType: String(sale.tender_type) as SalePayload['tenderType'],
       items: items.map((item): SaleItemPayload => ({
         id: String(item.id),

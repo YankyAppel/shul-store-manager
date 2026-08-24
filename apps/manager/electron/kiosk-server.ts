@@ -1,5 +1,11 @@
 import http from 'node:http';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import {
+  createHash,
+  randomBytes,
+  randomUUID,
+  randomInt,
+  timingSafeEqual,
+} from 'node:crypto';
 import { StoreDatabase } from '@shul-store/database';
 import { processors } from '@shul-store/payments';
 import {
@@ -36,7 +42,7 @@ export class KioskServer {
   private code: PairCode | null = null;
   constructor(private readonly db: StoreDatabase) {}
   newPairingCode(): string {
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(randomInt(100000, 1000000));
     this.code = {
       code,
       expires: Date.now() + 300000,
@@ -110,7 +116,7 @@ export class KioskServer {
         }
         if (++c.attempts > 5)
           return json(res, 429, { error: 'Too many attempts' });
-        if (input.code !== c.code)
+        if (!timingSafeEqual(Buffer.from(input.code), Buffer.from(c.code)))
           return json(res, 400, { error: 'Invalid pairing code' });
         this.code = null;
         const token = randomBytes(32).toString('base64url');
@@ -147,6 +153,13 @@ export class KioskServer {
         const input = kioskChargeRequestSchema.parse(await body(req));
         const old = this.db.getPaymentTransaction(input.chargeReference);
         if (old) return json(res, 200, this.status(input.chargeReference));
+        const keyed = this.db.getPaymentTransactionByIdempotencyKey(
+          input.idempotencyKey,
+        );
+        if (keyed)
+          return json(res, 409, {
+            error: 'Idempotency key is already bound to another charge',
+          });
         const priced = this.price(input.lines);
         const settings = this.db.getSettings();
         if (!settings.cardProcessingEnabled || !settings.cardProcessorId)
@@ -181,6 +194,7 @@ export class KioskServer {
           priced.totalCents,
           JSON.stringify(snapshot),
           input.idempotencyKey,
+          kiosk.id,
         );
         const processor = processors.find(
           (p) => p.id === settings.cardProcessorId,
@@ -207,7 +221,7 @@ export class KioskServer {
           result.cardLast4,
         );
         if (result.status === 'approved') {
-          const sale = this.db.completeSale(
+          this.db.completeSale(
             {
               completionKey: input.idempotencyKey,
               lines: input.lines,
@@ -217,8 +231,8 @@ export class KioskServer {
               },
             },
             snapshot,
+            kiosk.id,
           );
-          this.db.attributeKioskSale(sale.id, kiosk.id);
         }
         return json(res, 200, {
           ...result,
@@ -239,6 +253,9 @@ export class KioskServer {
     }
   }
   private async status(reference: string) {
+    const initial = this.db.getPaymentTransaction(reference);
+    if (initial && ['initiated', 'unknown'].includes(String(initial.status)))
+      await this.db.runStartupReconciliation();
     const tx = this.db.getPaymentTransaction(reference);
     if (!tx) return { status: 'error', errorMessage: 'Charge not found' };
     return {
