@@ -199,7 +199,9 @@ export class StoreDatabase {
       cardProcessorId: row.card_processor_id
         ? String(row.card_processor_id)
         : null,
-      cardProcessorConfigJson: row.card_processor_config_json ? String(row.card_processor_config_json) : null,
+      cardProcessorConfigJson: row.card_processor_config_json
+        ? String(row.card_processor_config_json)
+        : null,
     };
   }
 
