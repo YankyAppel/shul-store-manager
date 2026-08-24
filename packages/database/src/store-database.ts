@@ -230,6 +230,7 @@ export class StoreDatabase {
             default_label_template=?,
             card_processing_enabled=?,
             card_processor_id=?,
+            card_processor_config_json=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -251,6 +252,7 @@ export class StoreDatabase {
           value.defaultLabelTemplate,
           value.cardProcessingEnabled ? 1 : 0,
           value.cardProcessorId,
+          value.cardProcessorConfigJson,
           now(),
         );
       this.enqueueEntity('settings', 'settings');
@@ -390,6 +392,23 @@ export class StoreDatabase {
     const value = productInputSchema.parse(input);
     try {
       this.connection.transaction(() => {
+        const held = this.connection
+          .prepare(
+            "SELECT 1 FROM payment_inventory_reservations WHERE product_id=? AND status='held' LIMIT 1",
+          )
+          .get(id);
+        if (held) {
+          const currentBarcodes = this.getProduct(id)
+            .barcodes.map((b) => b.value.toLowerCase())
+            .sort();
+          const nextBarcodes = value.barcodes
+            .map((b) => b.toLowerCase())
+            .sort();
+          if (JSON.stringify(currentBarcodes) !== JSON.stringify(nextBarcodes))
+            throw new Error(
+              'Product barcode cannot change while card payment is pending',
+            );
+        }
         this.assertCategoryExists(value.categoryId);
         const result = this.connection
           .prepare(

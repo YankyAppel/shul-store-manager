@@ -559,6 +559,24 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Invalid reservation status transition'); END;
     `,
   },
+  {
+    version: 13,
+    name: 'held_reservation_catalog_protection',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_integer_quantity
+      BEFORE INSERT ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_insert
+      BEFORE INSERT ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=NEW.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_delete
+      BEFORE DELETE ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=OLD.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
