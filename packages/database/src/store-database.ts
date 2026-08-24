@@ -908,6 +908,21 @@ export class StoreDatabase {
     reservations: { productId: string; quantity: number }[] = [],
   ): void {
     const timestamp = now();
+    const normalizedReservations = new Map<string, number>();
+    for (const reservation of reservations) {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          reservation.productId,
+        ) ||
+        !Number.isSafeInteger(reservation.quantity) ||
+        reservation.quantity < 1 ||
+        reservation.quantity > 10000
+      )
+        throw new Error('Invalid inventory reservation');
+      if (normalizedReservations.has(reservation.productId))
+        throw new Error('Duplicate inventory reservation product');
+      normalizedReservations.set(reservation.productId, reservation.quantity);
+    }
     this.connection.transaction(() => {
       // Check finding 6: Nothing blocks re-charging while an 'unknown'/'initiated' transaction exists
       const existingActive = this.connection
@@ -920,16 +935,16 @@ export class StoreDatabase {
           'A payment is already in progress for this cart. Please check its status.',
         );
 
-      for (const reservation of reservations) {
-        const product = this.getProduct(reservation.productId);
+      for (const [productId, quantity] of normalizedReservations) {
+        const product = this.getProduct(productId);
         const held = this.connection
           .prepare(
             "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held'",
           )
-          .get(reservation.productId) as Row;
+          .get(productId) as Row;
         if (
           !product.active ||
-          reservation.quantity > product.stockQuantity - Number(held.quantity)
+          quantity > product.stockQuantity - Number(held.quantity)
         )
           throw new Error('Cart is no longer available');
       }
@@ -958,18 +973,12 @@ export class StoreDatabase {
         )
         .get(chargeReference) as { id: string };
 
-      for (const reservation of reservations) {
+      for (const [productId, quantity] of normalizedReservations) {
         this.connection
           .prepare(
             "INSERT INTO payment_inventory_reservations (id,charge_reference,product_id,quantity,status,created_at) VALUES (?, ?, ?, ?, 'held', ?)",
           )
-          .run(
-            randomUUID(),
-            chargeReference,
-            reservation.productId,
-            reservation.quantity,
-            timestamp,
-          );
+          .run(randomUUID(), chargeReference, productId, quantity, timestamp);
       }
       this.enqueueEntity('payment_transaction', tx.id);
     })();

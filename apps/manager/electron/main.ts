@@ -237,6 +237,17 @@ function registerIpc(): void {
       calculated.totalCents,
       cartSnapshotJson,
       value.idempotencyKey,
+      null,
+      [
+        ...value.lines.reduce(
+          (map, line) =>
+            map.set(
+              line.productId,
+              (map.get(line.productId) ?? 0) + line.quantity,
+            ),
+          new Map<string, number>(),
+        ),
+      ].map(([productId, quantity]) => ({ productId, quantity })),
     );
 
     try {

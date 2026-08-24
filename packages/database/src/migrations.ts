@@ -535,6 +535,10 @@ export const migrations: Migration[] = [
         UNIQUE(charge_reference, product_id)
       );
       CREATE INDEX payment_inventory_reservations_available_idx ON payment_inventory_reservations(product_id, status);
+      CREATE TRIGGER payment_inventory_reservations_integer_quantity
+      BEFORE INSERT ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
     `,
   },
 ];
