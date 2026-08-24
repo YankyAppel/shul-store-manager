@@ -423,6 +423,15 @@ export class StoreDatabase {
 
   setProductActive(id: string, active: boolean): void {
     this.connection.transaction(() => {
+      if (!active) {
+        const held = this.connection
+          .prepare(
+            "SELECT 1 FROM payment_inventory_reservations WHERE product_id=? AND status='held' LIMIT 1",
+          )
+          .get(id);
+        if (held)
+          throw new Error('Product has a pending card-payment reservation');
+      }
       const result = this.connection
         .prepare('UPDATE products SET active = ?, updated_at = ? WHERE id = ?')
         .run(active ? 1 : 0, now(), id);

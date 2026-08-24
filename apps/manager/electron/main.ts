@@ -194,13 +194,20 @@ function registerIpc(): void {
       throw new Error('Card processing is not enabled');
     }
 
-    const calculated = calculateCart(
-      value.lines.map((l) => ({
-        product: database.getProduct(l.productId),
-        quantity: l.quantity,
-      })),
-      settings,
-    );
+    const managerProducts = value.lines.map((l) => {
+      const product = database.getProduct(l.productId);
+      if (!product.active) throw new Error('Product is inactive');
+      if (
+        l.barcodeUsed &&
+        !product.barcodes.some(
+          (barcode) =>
+            barcode.value.toLowerCase() === l.barcodeUsed!.toLowerCase(),
+        )
+      )
+        throw new Error('Barcode does not belong to the selected product');
+      return { product, quantity: l.quantity };
+    });
+    const calculated = calculateCart(managerProducts, settings);
 
     if (calculated.totalCents <= 0)
       throw new Error('Cannot process $0.00 charge');

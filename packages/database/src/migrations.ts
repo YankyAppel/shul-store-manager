@@ -541,6 +541,24 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
     `,
   },
+  {
+    version: 12,
+    name: 'reservation_immutability',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_integer_quantity_update
+      BEFORE UPDATE OF quantity ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_immutable_identity
+      BEFORE UPDATE OF charge_reference, product_id, quantity ON payment_inventory_reservations
+      WHEN NEW.charge_reference IS NOT OLD.charge_reference OR NEW.product_id IS NOT OLD.product_id OR NEW.quantity IS NOT OLD.quantity
+      BEGIN SELECT RAISE(ABORT, 'Reservation identity is immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_state_transition
+      BEFORE UPDATE OF status ON payment_inventory_reservations
+      WHEN OLD.status != NEW.status AND NOT (OLD.status='held' AND NEW.status IN ('consumed','released'))
+      BEGIN SELECT RAISE(ABORT, 'Invalid reservation status transition'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
