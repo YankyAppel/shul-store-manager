@@ -226,6 +226,16 @@ export class KioskServer {
           JSON.stringify(snapshot),
           input.idempotencyKey,
           kiosk.id,
+          [
+            ...input.lines.reduce(
+              (map, line) =>
+                map.set(
+                  line.productId,
+                  (map.get(line.productId) ?? 0) + line.quantity,
+                ),
+              new Map<string, number>(),
+            ),
+          ].map(([productId, quantity]) => ({ productId, quantity })),
         );
         const processor = processors.find(
           (p) => p.id === settings.cardProcessorId,
@@ -276,14 +286,21 @@ export class KioskServer {
         return json(res, 200, await this.status(m[1]!, kiosk.id));
       return json(res, 404, { error: 'Not found' });
     } catch (e) {
+      const message = errorMessage(e);
       const status =
         (e as { name?: string }).name === 'ZodError' || e instanceof SyntaxError
           ? 400
-          : 500;
+          : /Insufficient stock|inactive|Barcode does not belong|Cart is no longer available/.test(
+                message,
+              )
+            ? 409
+            : 500;
       if (status === 500) {
         console.error('Kiosk LAN API error', e);
         json(res, status, { error: 'Unable to process request' });
-      } else json(res, status, { error: errorMessage(e) });
+      } else if (status === 409)
+        json(res, status, { error: 'cart-unavailable' });
+      else json(res, status, { error: message });
     }
   }
   private async status(reference: string, kioskId?: string) {

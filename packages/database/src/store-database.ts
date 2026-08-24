@@ -905,6 +905,7 @@ export class StoreDatabase {
     cartSnapshotJson: string,
     idempotencyKey: string,
     kioskId: string | null = null,
+    reservations: { productId: string; quantity: number }[] = [],
   ): void {
     const timestamp = now();
     this.connection.transaction(() => {
@@ -919,6 +920,19 @@ export class StoreDatabase {
           'A payment is already in progress for this cart. Please check its status.',
         );
 
+      for (const reservation of reservations) {
+        const product = this.getProduct(reservation.productId);
+        const held = this.connection
+          .prepare(
+            "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held'",
+          )
+          .get(reservation.productId) as Row;
+        if (
+          !product.active ||
+          reservation.quantity > product.stockQuantity - Number(held.quantity)
+        )
+          throw new Error('Cart is no longer available');
+      }
       this.connection
         .prepare(
           `INSERT INTO payment_transactions (
@@ -944,6 +958,19 @@ export class StoreDatabase {
         )
         .get(chargeReference) as { id: string };
 
+      for (const reservation of reservations) {
+        this.connection
+          .prepare(
+            "INSERT INTO payment_inventory_reservations (id,charge_reference,product_id,quantity,status,created_at) VALUES (?, ?, ?, ?, 'held', ?)",
+          )
+          .run(
+            randomUUID(),
+            chargeReference,
+            reservation.productId,
+            reservation.quantity,
+            timestamp,
+          );
+      }
       this.enqueueEntity('payment_transaction', tx.id);
     })();
   }
@@ -990,6 +1017,13 @@ export class StoreDatabase {
           chargeReference,
         );
 
+      if (status === 'declined' || status === 'error') {
+        this.connection
+          .prepare(
+            "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
+          )
+          .run(timestamp, chargeReference);
+      }
       this.enqueueEntity('payment_transaction', tx.id);
     })();
   }
@@ -1178,9 +1212,20 @@ export class StoreDatabase {
           if (!product.active) {
             throw new Error(`${product.name} is inactive and cannot be sold.`);
           }
-          if (qty > product.stockQuantity) {
+          const held = this.connection
+            .prepare(
+              "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held' AND charge_reference != ?",
+            )
+            .get(
+              prodId,
+              value.payment.method === 'integrated_card'
+                ? value.payment.chargeReference
+                : '',
+            ) as Row;
+          const available = product.stockQuantity - Number(held.quantity);
+          if (qty > available) {
             throw new Error(
-              `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}.`,
+              `Insufficient stock for ${product.name}. Available: ${available}.`,
             );
           }
         }
@@ -1482,6 +1527,12 @@ export class StoreDatabase {
               `UPDATE payment_transactions SET sale_id = ?, updated_at = ? WHERE id = ?`,
             )
             .run(saleId, timestamp, txRow.id);
+
+          this.connection
+            .prepare(
+              "UPDATE payment_inventory_reservations SET status='consumed', resolved_at=? WHERE charge_reference=? AND status='held'",
+            )
+            .run(timestamp, value.payment.chargeReference);
 
           this.connection
             .prepare("UPDATE sales SET status='paid' WHERE id=?")

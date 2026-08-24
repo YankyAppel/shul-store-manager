@@ -523,6 +523,20 @@ export const migrations: Migration[] = [
       CREATE INDEX kiosks_active_token_idx ON kiosks(token_hash) WHERE revoked_at IS NULL;
     `,
   },
+  {
+    version: 11,
+    name: 'payment_inventory_reservations',
+    sql: `
+      CREATE TABLE payment_inventory_reservations (
+        id TEXT PRIMARY KEY, charge_reference TEXT NOT NULL REFERENCES payment_transactions(charge_reference) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        quantity INTEGER NOT NULL CHECK(quantity > 0), status TEXT NOT NULL CHECK(status IN ('held','consumed','released')),
+        created_at TEXT NOT NULL, resolved_at TEXT,
+        UNIQUE(charge_reference, product_id)
+      );
+      CREATE INDEX payment_inventory_reservations_available_idx ON payment_inventory_reservations(product_id, status);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
