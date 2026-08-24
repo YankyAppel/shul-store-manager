@@ -139,13 +139,124 @@ async function createWindow(): Promise<void> {
       event.preventDefault();
   });
 
+  database.runStartupReconciliation().catch(console.error);
+
   if (process.env.VITE_DEV_SERVER_URL)
     await window.loadURL(process.env.VITE_DEV_SERVER_URL);
   else
     await window.loadFile(path.join(import.meta.dirname, '../dist/index.html'));
 }
 
+import { processors } from '@shul-store/payments';
+import {
+  initiateChargeInputSchema,
+  calculateCart,
+  errorMessage,
+} from '@shul-store/shared';
+
 function registerIpc(): void {
+  // Payments
+  ipcMain.handle('payments:initiateCharge', async (_event, input) => {
+    const value = initiateChargeInputSchema.parse(input);
+    const settings = database.getSettings();
+    if (!settings.cardProcessingEnabled || !settings.cardProcessorId) {
+      throw new Error('Card processing is not enabled');
+    }
+
+    const calculated = calculateCart(
+      value.lines.map((l) => ({
+        product: database.getProduct(l.productId),
+        quantity: l.quantity,
+      })),
+      settings,
+    );
+
+    if (calculated.totalCents <= 0)
+      throw new Error('Cannot process $0.00 charge');
+
+    const cartSnapshotJson = JSON.stringify({
+      lines: value.lines,
+      totals: calculated,
+    });
+
+    database.createPaymentTransaction(
+      value.chargeReference,
+      settings.cardProcessorId,
+      calculated.totalCents,
+      cartSnapshotJson,
+      value.idempotencyKey,
+    );
+
+    try {
+      const processor = processors.find(
+        (p) => p.id === settings.cardProcessorId,
+      );
+      if (!processor) throw new Error('Processor not found');
+
+      const config = {}; // for simulated processor, no real config needed right now
+      const result = await processor.createCharge(
+        {
+          chargeReference: value.chargeReference,
+          amountCents: calculated.totalCents,
+        },
+        config,
+        database.getProcessorStorage(),
+      );
+
+      database.updatePaymentTransactionStatus(
+        value.chargeReference,
+        result.status === 'pending' ? 'unknown' : result.status,
+        result.processorTransactionId,
+        result.cardBrand,
+        result.cardLast4,
+      );
+
+      return result;
+    } catch (e: unknown) {
+      database.updatePaymentTransactionStatus(value.chargeReference, 'unknown');
+      return { status: 'unknown', errorMessage: errorMessage(e) };
+    }
+  });
+
+  ipcMain.handle(
+    'payments:getChargeStatus',
+    async (_event, chargeReference) => {
+      const id = z.string().uuid().parse(chargeReference);
+      const settings = database.getSettings();
+      const processor = processors.find(
+        (p) => p.id === settings.cardProcessorId,
+      );
+      if (!processor) throw new Error('Processor not found');
+
+      try {
+        const config = {};
+        const result = await processor.getChargeStatus(
+          id,
+          config,
+          database.getProcessorStorage(),
+        );
+        database.updatePaymentTransactionStatus(
+          id,
+          result.status === 'pending' ? 'unknown' : result.status,
+          result.processorTransactionId,
+          result.cardBrand,
+          result.cardLast4,
+        );
+        return result;
+      } catch (e: unknown) {
+        return { status: 'error', errorMessage: errorMessage(e) };
+      }
+    },
+  );
+
+  ipcMain.handle('payments:getPendingTransactions', () => {
+    return database.getPendingPaymentTransactions();
+  });
+
+  ipcMain.handle('payments:reconcileTransactions', async () => {
+    await database.runStartupReconciliation();
+  });
+
   // Categories
   ipcMain.handle('categories:list', (_event, includeInactive) =>
     database.listCategories(z.boolean().optional().parse(includeInactive)),

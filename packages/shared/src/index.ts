@@ -160,6 +160,29 @@ export interface StoredImage {
 }
 
 export interface StoreApi {
+  payments: {
+    initiateCharge(
+      input: import('./checkout.js').InitiateChargeInput,
+    ): Promise<{
+      status: string;
+      processorTransactionId?: string;
+      cardBrand?: string;
+      cardLast4?: string;
+      errorMessage?: string;
+      declineReason?: string;
+    }>;
+    getChargeStatus(chargeReference: string): Promise<{
+      status: string;
+      processorTransactionId?: string;
+      cardBrand?: string;
+      cardLast4?: string;
+      errorMessage?: string;
+      declineReason?: string;
+    }>;
+    getPendingTransactions(): Promise<any[]>;
+    reconcileTransactions(): Promise<void>;
+  };
+
   categories: {
     list(includeInactive?: boolean): Promise<Category[]>;
     create(input: CategoryInput): Promise<Category>;

@@ -76,3 +76,12 @@ npm run build
 ```
 
 See [Architecture](docs/architecture.md), [Checkout foundation](docs/checkout.md), [Receivables & Customer accounts](docs/receivables.md), and [Label printing](docs/labels.md) for boundaries and data design and [Development](docs/development.md) for workflow details.
+
+## Milestone 4: "Pay now" Tender — Processor-Agnostic Payment Framework with Simulated Processor
+
+- A crash-safe, write-ahead-logging (WAL) inspired charge lifecycle that guarantees no money is lost and no customer is double-charged.
+- Support for "Pay now" integrated card tender in checkout and sales history.
+- Integrated processor-agnostic `PaymentProcessor` adapter boundary that enforces PCI isolation.
+- Simulated card processor implementation with deterministic responses (.01 decline, .02 error, .03 pending) for training and integration testing.
+- Automatic recovery/reconciliation mechanism for unknown/pending charges via stored idempotency keys and cart snapshots.
+- Dedicated `payment_transactions` tracking table fully integrated into the sync layer.

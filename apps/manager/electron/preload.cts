@@ -2,6 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { StoreApi } from '@shul-store/shared';
 
 const api: StoreApi = {
+  payments: {
+    initiateCharge: (input) =>
+      ipcRenderer.invoke('payments:initiateCharge', input),
+    getChargeStatus: (chargeReference) =>
+      ipcRenderer.invoke('payments:getChargeStatus', chargeReference),
+    getPendingTransactions: () =>
+      ipcRenderer.invoke('payments:getPendingTransactions'),
+    reconcileTransactions: () =>
+      ipcRenderer.invoke('payments:reconcileTransactions'),
+  },
+
   categories: {
     list: (includeInactive) =>
       ipcRenderer.invoke('categories:list', includeInactive),

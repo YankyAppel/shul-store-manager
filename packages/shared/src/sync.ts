@@ -25,6 +25,7 @@ export const syncEntityTypeSchema = z.enum([
   'customer',
   'sale',
   'account_payment',
+  'payment_transaction',
   'audit_event',
 ]);
 export type SyncEntityType = z.infer<typeof syncEntityTypeSchema>;
@@ -226,6 +227,32 @@ export const accountPaymentPayloadSchema = z.object({
 });
 export type AccountPaymentPayload = z.infer<typeof accountPaymentPayloadSchema>;
 
+export const paymentTransactionPayloadSchema = z.object({
+  id: uuidString,
+  chargeReference: z.string().min(1),
+  processorId: z.string().min(1),
+  amountCents: z.number().int().positive(),
+  status: z.enum([
+    'initiated',
+    'approved',
+    'declined',
+    'error',
+    'unknown',
+    'reconciled',
+  ]),
+  processorTransactionId: z.string().nullable(),
+  cardBrand: z.string().nullable(),
+  cardLast4: z.string().nullable(),
+  saleId: uuidString.nullable(),
+  cartSnapshotJson: z.string().nullable(),
+  idempotencyKey: z.string().nullable(),
+  createdAt: isoString,
+  updatedAt: isoString,
+});
+export type PaymentTransactionPayload = z.infer<
+  typeof paymentTransactionPayloadSchema
+>;
+
 export const auditEventPayloadSchema = z.object({
   id: uuidString,
   eventType: z.string().min(1).max(100),
@@ -275,6 +302,11 @@ export const cloudPayloadSchema = z.discriminatedUnion('entityType', [
     entityType: z.literal('account_payment'),
     entityId: uuidString,
     payload: accountPaymentPayloadSchema,
+  }),
+  z.object({
+    entityType: z.literal('payment_transaction'),
+    entityId: uuidString,
+    payload: paymentTransactionPayloadSchema,
   }),
   z.object({
     entityType: z.literal('audit_event'),

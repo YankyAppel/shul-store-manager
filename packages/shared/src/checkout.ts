@@ -4,6 +4,7 @@ export const paymentMethodSchema = z.enum([
   'cash',
   'external_terminal',
   'account',
+  'integrated_card',
 ]);
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 
@@ -44,6 +45,8 @@ export const storeSettingsSchema = z.object({
   defaultLabelTemplate: z
     .enum(['thermal_40x30', 'thermal_57x32', 'letter_avery_5160'])
     .default('thermal_40x30'),
+  cardProcessingEnabled: z.boolean().default(false),
+  cardProcessorId: z.string().nullable().default(null),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 
@@ -53,6 +56,15 @@ export const checkoutLineSchema = z.object({
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
 });
 export type CheckoutLine = z.infer<typeof checkoutLineSchema>;
+
+export const initiateChargeInputSchema = z.object({
+  chargeReference: z.string().uuid(),
+  idempotencyKey: z.string().uuid(),
+  lines: z.array(checkoutLineSchema).min(1).max(500),
+});
+export type InitiateChargeInput = z.infer<typeof initiateChargeInputSchema>;
+
+export const getChargeStatusInputSchema = z.string().uuid();
 
 export const completeSaleInputSchema = z.object({
   completionKey: z.string().uuid(),
@@ -71,6 +83,10 @@ export const completeSaleInputSchema = z.object({
       method: z.literal('account'),
       customerId: z.string().uuid(),
       confirmed: z.literal(true),
+    }),
+    z.object({
+      method: z.literal('integrated_card'),
+      chargeReference: z.string().uuid(),
     }),
   ]),
 });
@@ -240,6 +256,10 @@ export interface SalePayment {
   accountNumber?: string | null;
   previousBalanceCents?: number | null;
   newBalanceCents?: number | null;
+  chargeReference?: string | null;
+  processorTransactionId?: string | null;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
 }
 
 export interface Sale {

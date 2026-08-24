@@ -7,6 +7,7 @@ import type {
   CustomerPayload,
   InventoryMovementPayload,
   LedgerEntryPayload,
+  PaymentTransactionPayload,
   ProductPayload,
   SalePayload,
   SettingsPayload,
@@ -22,6 +23,7 @@ export interface RestoreCounts {
   customers: number;
   sales: number;
   accountPayments: number;
+  paymentTransactions: number;
   inventoryMovements: number;
   ledgerEntries: number;
   auditEvents: number;
@@ -425,6 +427,43 @@ function applyAccountPayment(
   applyLedgerEntry(connection, payload.ledgerEntry);
 }
 
+function applyPaymentTransaction(
+  connection: SqliteDatabase,
+  payload: PaymentTransactionPayload,
+): void {
+  connection
+    .prepare(
+      `INSERT INTO payment_transactions (
+        id, charge_reference, processor_id, amount_cents, status,
+        processor_transaction_id, card_brand, card_last4,
+        sale_id, cart_snapshot_json, idempotency_key,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        processor_transaction_id = excluded.processor_transaction_id,
+        card_brand = excluded.card_brand,
+        card_last4 = excluded.card_last4,
+        sale_id = excluded.sale_id,
+        updated_at = excluded.updated_at`,
+    )
+    .run(
+      payload.id,
+      payload.chargeReference,
+      payload.processorId,
+      payload.amountCents,
+      payload.status,
+      payload.processorTransactionId,
+      payload.cardBrand,
+      payload.cardLast4,
+      payload.saleId,
+      payload.cartSnapshotJson,
+      payload.idempotencyKey,
+      payload.createdAt,
+      payload.updatedAt,
+    );
+}
+
 function applyAuditEvent(
   connection: SqliteDatabase,
   payload: AuditEventPayload,
@@ -483,6 +522,13 @@ function applyOne(
       applyAccountPayment(connection, event.payload as AccountPaymentPayload);
       counts.accountPayments += 1;
       break;
+    case 'payment_transaction':
+      applyPaymentTransaction(
+        connection,
+        event.payload as PaymentTransactionPayload,
+      );
+      counts.paymentTransactions += 1;
+      break;
     case 'audit_event':
       applyAuditEvent(connection, event.payload as AuditEventPayload);
       counts.auditEvents += 1;
@@ -508,6 +554,7 @@ export function restoreFromEvents(
     customers: 0,
     sales: 0,
     accountPayments: 0,
+    paymentTransactions: 0,
     inventoryMovements: 0,
     ledgerEntries: 0,
     auditEvents: 0,

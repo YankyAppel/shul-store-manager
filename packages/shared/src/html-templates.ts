@@ -54,6 +54,8 @@ export function receiptHtml({ sale, settings }: ReceiptData): string {
     const prev = sale.payment.previousBalanceCents ?? 0;
     const next = sale.payment.newBalanceCents ?? prev + sale.totalCents;
     paymentDetails = `<b>Charged to Account</b><br>Customer: ${escapeHtml(sale.payment.customerName ?? '')} (${escapeHtml(sale.payment.accountNumber ?? '')})<br>Previous balance: ${formatCents(prev)}<br>This purchase: ${formatCents(sale.totalCents)}<br><b>New balance: ${formatCents(next)}</b>`;
+  } else if (sale.payment.method === 'integrated_card') {
+    paymentDetails = `Card ending in ${escapeHtml(sale.payment.cardLast4 ?? '')}<br>Brand: ${escapeHtml(sale.payment.cardBrand ?? 'Unknown')}<br>Processor Ref: ${escapeHtml(sale.payment.processorTransactionId ?? '')}`;
   }
 
   const customerHeader =
