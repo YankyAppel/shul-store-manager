@@ -461,7 +461,7 @@ describe('payment transactions & integration', () => {
     expect(store.listSales().length).toBe(0);
   });
 
-  test('processor exception yields unknown state', async () => {
+  test('reconciliation marks transaction needs-attention if cart snapshot is invalid', async () => {
     const file = `${process.cwd()}/test-db-${randomUUID()}.sqlite`;
     const store = new StoreDatabase(file);
     store.updateSettings({
@@ -478,16 +478,19 @@ describe('payment transactions & integration', () => {
       chargeReference,
       'simulated',
       100,
-      '{}',
+      '{}', // Invalid cart snapshot JSON
       idempotencyKey,
     );
+    store.updatePaymentTransactionStatus(chargeReference, 'unknown');
+
     const storage = store.getProcessorStorage();
-    await storage.set(chargeReference, { status: 'unknown' });
+    // Simulate that the charge eventually succeeded but we lost our cart snapshot
+    await storage.set(chargeReference, { status: 'approved' });
 
     await store.runStartupReconciliation();
     const tx = store.getPaymentTransaction(chargeReference);
 
-    expect(tx?.status).toBe('unknown');
+    expect(tx?.status).toBe('needs-attention');
 
     store.close();
     fs.unlinkSync(file);

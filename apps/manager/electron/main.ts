@@ -214,7 +214,17 @@ function registerIpc(): void {
       );
       if (!processor) throw new Error('Processor not found');
 
-      const config = {}; // for simulated processor, no real config needed right now
+      let config = {};
+      if (settings.cardProcessorConfigJson && processor.configSchema) {
+        try {
+          config = processor.configSchema.parse(
+            JSON.parse(settings.cardProcessorConfigJson),
+          );
+        } catch {
+          throw new Error('Invalid processor configuration');
+        }
+      }
+
       const result = await processor.createCharge(
         {
           chargeReference: value.chargeReference,
@@ -250,7 +260,17 @@ function registerIpc(): void {
       if (!processor) throw new Error('Processor not found');
 
       try {
-        const config = {};
+        let config = {};
+        if (settings.cardProcessorConfigJson && processor.configSchema) {
+          try {
+            config = processor.configSchema.parse(
+              JSON.parse(settings.cardProcessorConfigJson),
+            );
+          } catch {
+            throw new Error('Invalid processor configuration');
+          }
+        }
+
         const result = await processor.getChargeStatus(
           id,
           config,
@@ -275,8 +295,8 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('payments:reconcileTransactions', async () => {
-    const { processors } = await import('@shul-store/payments');
-    await database.runStartupReconciliation(processors);
+    
+    await database.runStartupReconciliation();
   });
 
   // Categories

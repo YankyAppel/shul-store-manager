@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
+import { processors } from '@shul-store/payments';
 import {
   calculateCart,
   calculateCashChange,
+  cartSnapshotSchema,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
@@ -809,21 +811,24 @@ export class StoreDatabase {
     };
   }
 
-  async runStartupReconciliation(processors?: any[]) {
+  async runStartupReconciliation() {
     const pending = this.getPendingPaymentTransactions();
     const settings = this.getSettings();
-    if (!processors) {
-      const pm = await import('@shul-store/payments');
-      processors = pm.processors;
-    }
     const processor = processors.find((p) => p.id === settings.cardProcessorId);
     if (!processor) return;
 
     for (const tx of pending) {
       try {
-        const config = settings.cardProcessorConfigJson
-          ? JSON.parse(settings.cardProcessorConfigJson)
-          : {};
+        let config = {};
+        if (settings.cardProcessorConfigJson && processor.configSchema) {
+          try {
+            config = processor.configSchema.parse(
+              JSON.parse(settings.cardProcessorConfigJson),
+            );
+          } catch {
+            console.error('Invalid processor configuration in reconciliation');
+          }
+        }
         const result = await processor.getChargeStatus(
           String(tx.charge_reference),
           config,
@@ -844,7 +849,23 @@ export class StoreDatabase {
             result.cardLast4,
           );
 
-          const snapshot = JSON.parse(String(tx.cart_snapshot_json));
+          const parsed = cartSnapshotSchema.safeParse(
+            JSON.parse(String(tx.cart_snapshot_json)),
+          );
+          if (!parsed.success) {
+            console.error(
+              'Invalid cart snapshot for transaction, marking needs-attention',
+              tx.charge_reference,
+              parsed.error,
+            );
+            this.updatePaymentTransactionStatus(
+              String(tx.charge_reference),
+              'needs-attention',
+            );
+            continue;
+          }
+          const snapshot = parsed.data;
+
           // Provide pre-calculated lines to avoid catalog changes blocking reconciliation
           this.completeSale(
             {
@@ -857,11 +878,7 @@ export class StoreDatabase {
             },
             snapshot,
           );
-        } else if (
-          result.status === 'declined' ||
-          result.status === 'error' ||
-          result.status === 'unknown'
-        ) {
+        } else if (result.status === 'declined' || result.status === 'error') {
           this.updatePaymentTransactionStatus(
             String(tx.charge_reference),
             result.status,
@@ -930,7 +947,13 @@ export class StoreDatabase {
 
   updatePaymentTransactionStatus(
     chargeReference: string,
-    status: 'approved' | 'declined' | 'error' | 'unknown' | 'reconciled',
+    status:
+      | 'approved'
+      | 'declined'
+      | 'error'
+      | 'unknown'
+      | 'reconciled'
+      | 'needs-attention',
     processorTransactionId?: string | null,
     cardBrand?: string | null,
     cardLast4?: string | null,
@@ -1234,12 +1257,12 @@ export class StoreDatabase {
               randomUUID(),
               saleId,
               line.productId,
-              line.productName ?? 'Unknown',
-              line.secondaryName ?? null,
-              line.barcodeUsed ?? null,
+              line.productName,
+              line.secondaryName,
+              line.barcodeUsed,
               line.quantity,
-              line.unitSellingPriceCents ?? 100,
-              line.unitPurchaseCostCents ?? 50,
+              line.unitSellingPriceCents,
+              line.unitPurchaseCostCents,
               line.taxable ? 1 : 0,
               line.taxCents,
               line.subtotalCents,

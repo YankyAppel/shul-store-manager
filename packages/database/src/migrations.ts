@@ -430,7 +430,7 @@ export const migrations: Migration[] = [
         charge_reference TEXT NOT NULL UNIQUE,
         processor_id TEXT NOT NULL,
         amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-        status TEXT NOT NULL CHECK (status IN ('initiated','approved','declined','error','unknown','reconciled')),
+        status TEXT NOT NULL CHECK (status IN ('initiated','approved','declined','error','unknown','reconciled','needs-attention')),
         processor_transaction_id TEXT,
         card_brand TEXT,
         card_last4 TEXT,
@@ -465,7 +465,8 @@ export const migrations: Migration[] = [
       BEFORE UPDATE OF status ON payment_transactions
       WHEN OLD.status != NEW.status AND NOT (
         (OLD.status = 'initiated' AND NEW.status IN ('approved','declined','error','unknown')) OR
-        (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error'))
+        (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error')) OR
+        (OLD.status = 'approved' AND NEW.status = 'needs-attention')
       )
       BEGIN
         SELECT RAISE(ABORT, 'Invalid payment transaction status transition');
