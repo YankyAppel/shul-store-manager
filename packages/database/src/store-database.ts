@@ -1035,7 +1035,9 @@ export class StoreDatabase {
     tokenHash: string,
   ): { id: string; name: string; last_seen_at: string | null } | undefined {
     return this.connection
-      .prepare('SELECT id,name,last_seen_at FROM kiosks WHERE token_hash=?')
+      .prepare(
+        'SELECT id,name,last_seen_at FROM kiosks WHERE token_hash=? AND revoked_at IS NULL',
+      )
       .get(tokenHash) as
       { id: string; name: string; last_seen_at: string | null } | undefined;
   }
@@ -1056,7 +1058,13 @@ export class StoreDatabase {
       .run(now(), id);
   }
   revokeKiosk(id: string): void {
-    this.connection.prepare('DELETE FROM kiosks WHERE id=?').run(id);
+    const result = this.connection
+      .prepare(
+        'UPDATE kiosks SET revoked_at=? WHERE id=? AND revoked_at IS NULL',
+      )
+      .run(now(), id);
+    if (result.changes === 0)
+      throw new Error('Kiosk not found or already revoked');
   }
   attributeKioskSale(saleId: string, kioskId: string): void {
     this.connection

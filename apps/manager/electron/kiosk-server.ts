@@ -152,7 +152,16 @@ export class KioskServer {
       if (req.method === 'POST' && url.pathname === '/api/charges') {
         const input = kioskChargeRequestSchema.parse(await body(req));
         const old = this.db.getPaymentTransaction(input.chargeReference);
-        if (old) return json(res, 200, this.status(input.chargeReference));
+        if (old) {
+          if (
+            String(old.idempotency_key) !== input.idempotencyKey ||
+            String(old.kiosk_id) !== kiosk.id
+          )
+            return json(res, 409, {
+              error: 'Charge reference is already bound to another request',
+            });
+          return json(res, 200, await this.status(input.chargeReference));
+        }
         const keyed = this.db.getPaymentTransactionByIdempotencyKey(
           input.idempotencyKey,
         );
@@ -249,7 +258,10 @@ export class KioskServer {
         (e as { name?: string }).name === 'ZodError' || e instanceof SyntaxError
           ? 400
           : 500;
-      json(res, status, { error: errorMessage(e) });
+      if (status === 500) {
+        console.error('Kiosk LAN API error', e);
+        json(res, status, { error: 'Unable to process request' });
+      } else json(res, status, { error: errorMessage(e) });
     }
   }
   private async status(reference: string) {

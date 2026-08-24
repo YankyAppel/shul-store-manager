@@ -515,6 +515,14 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Payment transaction kiosk attribution is immutable'); END;
     `,
   },
+  {
+    version: 10,
+    name: 'logical_kiosk_revocation',
+    sql: `
+      ALTER TABLE kiosks ADD COLUMN revoked_at TEXT;
+      CREATE INDEX kiosks_active_token_idx ON kiosks(token_hash) WHERE revoked_at IS NULL;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
