@@ -74,6 +74,7 @@ export class KioskServer {
     lines: {
       productId?: string | undefined;
       barcode?: string | undefined;
+      barcodeUsed?: string | null | undefined;
       quantity: number;
     }[],
   ) {
@@ -82,8 +83,29 @@ export class KioskServer {
         ? this.db.getProduct(l.productId)
         : this.db.lookupProductByBarcode(l.barcode!),
       quantity: l.quantity,
+      barcode: l.barcode ?? l.barcodeUsed ?? undefined,
     }));
     if (resolved.some((x) => !x.product)) throw new Error('Product not found');
+    const demand = new Map<string, number>();
+    for (const line of resolved) {
+      const product = line.product!;
+      if (!product.active) throw new Error('Product is inactive');
+      if (
+        line.barcode &&
+        !product.barcodes.some(
+          (b) => b.value.toLowerCase() === line.barcode!.toLowerCase(),
+        )
+      )
+        throw new Error('Barcode does not belong to the selected product');
+      demand.set(product.id, (demand.get(product.id) ?? 0) + line.quantity);
+    }
+    for (const [id, quantity] of demand) {
+      const product = this.db.getProduct(id);
+      if (quantity > product.stockQuantity)
+        throw new Error(
+          `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}.`,
+        );
+    }
     const calc = calculateCart(
       resolved as {
         product: ReturnType<StoreDatabase['getProduct']>;
@@ -251,7 +273,7 @@ export class KioskServer {
       }
       const m = url.pathname.match(/^\/api\/charges\/([0-9a-f-]+)$/);
       if (req.method === 'GET' && m)
-        return json(res, 200, await this.status(m[1]!));
+        return json(res, 200, await this.status(m[1]!, kiosk.id));
       return json(res, 404, { error: 'Not found' });
     } catch (e) {
       const status =
@@ -264,8 +286,10 @@ export class KioskServer {
       } else json(res, status, { error: errorMessage(e) });
     }
   }
-  private async status(reference: string) {
+  private async status(reference: string, kioskId?: string) {
     const initial = this.db.getPaymentTransaction(reference);
+    if (initial && kioskId && String(initial.kiosk_id) !== kioskId)
+      return { status: 'error', errorMessage: 'Charge not found' };
     if (initial && ['initiated', 'unknown'].includes(String(initial.status)))
       await this.db.runStartupReconciliation();
     const tx = this.db.getPaymentTransaction(reference);
