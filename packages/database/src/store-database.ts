@@ -392,23 +392,21 @@ export class StoreDatabase {
     const value = productInputSchema.parse(input);
     try {
       this.connection.transaction(() => {
+        const currentBarcodes = this.getProduct(id)
+          .barcodes.map((b) => b.value.toLowerCase())
+          .sort();
+        const nextBarcodes = value.barcodes.map((b) => b.toLowerCase()).sort();
+        const barcodeSetChanged =
+          JSON.stringify(currentBarcodes) !== JSON.stringify(nextBarcodes);
         const held = this.connection
           .prepare(
             "SELECT 1 FROM payment_inventory_reservations WHERE product_id=? AND status='held' LIMIT 1",
           )
           .get(id);
-        if (held) {
-          const currentBarcodes = this.getProduct(id)
-            .barcodes.map((b) => b.value.toLowerCase())
-            .sort();
-          const nextBarcodes = value.barcodes
-            .map((b) => b.toLowerCase())
-            .sort();
-          if (JSON.stringify(currentBarcodes) !== JSON.stringify(nextBarcodes))
-            throw new Error(
-              'Product barcode cannot change while card payment is pending',
-            );
-        }
+        if (held && barcodeSetChanged)
+          throw new Error(
+            'Product barcode cannot change while card payment is pending',
+          );
         this.assertCategoryExists(value.categoryId);
         const result = this.connection
           .prepare(
@@ -427,10 +425,12 @@ export class StoreDatabase {
             id,
           );
         if (result.changes === 0) throw new Error('Product not found');
-        this.connection
-          .prepare('DELETE FROM product_barcodes WHERE product_id = ?')
-          .run(id);
-        this.insertBarcodes(id, value.barcodes, now());
+        if (barcodeSetChanged) {
+          this.connection
+            .prepare('DELETE FROM product_barcodes WHERE product_id = ?')
+            .run(id);
+          this.insertBarcodes(id, value.barcodes, now());
+        }
         this.enqueueEntity('product', id);
         this.addAudit('product.updated', 'product', id, { name: value.name });
       })();

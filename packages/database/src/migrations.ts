@@ -577,6 +577,17 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
     `,
   },
+  {
+    version: 14,
+    name: 'held_reservation_barcode_update_protection',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_update
+      BEFORE UPDATE OF product_id, value, kind, position ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=OLD.product_id AND status='held')
+        OR EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=NEW.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
