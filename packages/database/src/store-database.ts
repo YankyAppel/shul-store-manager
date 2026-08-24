@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
+import { processors } from '@shul-store/payments';
 import {
   calculateCart,
   calculateCashChange,
+  cartSnapshotSchema,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
@@ -29,6 +31,7 @@ import {
   type InventoryMovementInput,
   type InventoryMovementPayload,
   type LedgerEntryPayload,
+  type PaymentTransactionPayload,
   type Product,
   type ProductInput,
   type ProductPayload,
@@ -194,6 +197,13 @@ export class StoreDatabase {
           ? null
           : String(row.label_printer_name),
       defaultLabelTemplate: parseLabelTemplate(row.default_label_template),
+      cardProcessingEnabled: Boolean(row.card_processing_enabled),
+      cardProcessorId: row.card_processor_id
+        ? String(row.card_processor_id)
+        : null,
+      cardProcessorConfigJson: row.card_processor_config_json
+        ? String(row.card_processor_config_json)
+        : null,
     };
   }
 
@@ -218,6 +228,8 @@ export class StoreDatabase {
             receipt_paper_width_mm=?,
             label_printer_name=?,
             default_label_template=?,
+            card_processing_enabled=?,
+            card_processor_id=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -237,6 +249,8 @@ export class StoreDatabase {
           value.receiptPaperWidthMm,
           value.labelPrinterName,
           value.defaultLabelTemplate,
+          value.cardProcessingEnabled ? 1 : 0,
+          value.cardProcessorId,
           now(),
         );
       this.enqueueEntity('settings', 'settings');
@@ -771,7 +785,230 @@ export class StoreDatabase {
     return product.active ? product : null;
   }
 
-  completeSale(input: CompleteSaleInput): Sale {
+  getProcessorStorage() {
+    return {
+      get: async (key: string) => {
+        const row = this.connection
+          .prepare(
+            'SELECT payload_json FROM simulated_processor_store WHERE key = ?',
+          )
+          .get(key) as { payload_json: string } | undefined;
+        if (!row) return undefined;
+        return JSON.parse(row.payload_json);
+      },
+      set: async (key: string, value: any) => {
+        this.connection
+          .prepare(
+            'INSERT INTO simulated_processor_store (key, payload_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET payload_json = excluded.payload_json',
+          )
+          .run(key, JSON.stringify(value));
+      },
+      delete: async (key: string) => {
+        this.connection
+          .prepare('DELETE FROM simulated_processor_store WHERE key = ?')
+          .run(key);
+      },
+    };
+  }
+
+  async runStartupReconciliation() {
+    const pending = this.getPendingPaymentTransactions();
+    const settings = this.getSettings();
+    const processor = processors.find((p) => p.id === settings.cardProcessorId);
+    if (!processor) return;
+
+    for (const tx of pending) {
+      try {
+        let config = {};
+        if (settings.cardProcessorConfigJson && processor.configSchema) {
+          try {
+            config = processor.configSchema.parse(
+              JSON.parse(settings.cardProcessorConfigJson),
+            );
+          } catch {
+            console.error('Invalid processor configuration in reconciliation');
+          }
+        }
+        const result = await processor.getChargeStatus(
+          String(tx.charge_reference),
+          config,
+          this.getProcessorStorage(),
+        );
+
+        if (
+          result.status === 'approved' &&
+          !tx.sale_id &&
+          tx.cart_snapshot_json &&
+          tx.idempotency_key
+        ) {
+          this.updatePaymentTransactionStatus(
+            String(tx.charge_reference),
+            result.status,
+            result.processorTransactionId,
+            result.cardBrand,
+            result.cardLast4,
+          );
+
+          const parsed = cartSnapshotSchema.safeParse(
+            JSON.parse(String(tx.cart_snapshot_json)),
+          );
+          if (!parsed.success) {
+            console.error(
+              'Invalid cart snapshot for transaction, marking needs-attention',
+              tx.charge_reference,
+              parsed.error,
+            );
+            this.updatePaymentTransactionStatus(
+              String(tx.charge_reference),
+              'needs-attention',
+            );
+            continue;
+          }
+          const snapshot = parsed.data;
+
+          // Provide pre-calculated lines to avoid catalog changes blocking reconciliation
+          this.completeSale(
+            {
+              completionKey: String(tx.idempotency_key),
+              lines: snapshot.lines,
+              payment: {
+                method: 'integrated_card',
+                chargeReference: String(tx.charge_reference),
+              },
+            },
+            snapshot,
+          );
+        } else if (result.status === 'declined' || result.status === 'error') {
+          this.updatePaymentTransactionStatus(
+            String(tx.charge_reference),
+            result.status,
+            result.processorTransactionId,
+            result.cardBrand,
+            result.cardLast4,
+          );
+        }
+      } catch (e) {
+        console.error(
+          'Failed to reconcile transaction',
+          tx.charge_reference,
+          e,
+        );
+      }
+    }
+  }
+
+  createPaymentTransaction(
+    chargeReference: string,
+    processorId: string,
+    amountCents: number,
+    cartSnapshotJson: string,
+    idempotencyKey: string,
+  ): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      // Check finding 6: Nothing blocks re-charging while an 'unknown'/'initiated' transaction exists
+      const existingActive = this.connection
+        .prepare(
+          "SELECT id FROM payment_transactions WHERE idempotency_key = ? AND status IN ('initiated', 'unknown')",
+        )
+        .get(idempotencyKey);
+      if (existingActive)
+        throw new Error(
+          'A payment is already in progress for this cart. Please check its status.',
+        );
+
+      this.connection
+        .prepare(
+          `INSERT INTO payment_transactions (
+            id, charge_reference, processor_id, amount_cents, status,
+            cart_snapshot_json, idempotency_key, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?)`,
+        )
+        .run(
+          randomUUID(),
+          chargeReference,
+          processorId,
+          amountCents,
+          cartSnapshotJson,
+          idempotencyKey,
+          timestamp,
+          timestamp,
+        );
+
+      const tx = this.connection
+        .prepare(
+          'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string };
+
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  updatePaymentTransactionStatus(
+    chargeReference: string,
+    status:
+      | 'approved'
+      | 'declined'
+      | 'error'
+      | 'unknown'
+      | 'reconciled'
+      | 'needs-attention',
+    processorTransactionId?: string | null,
+    cardBrand?: string | null,
+    cardLast4?: string | null,
+  ): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string } | undefined;
+
+      if (!tx) throw new Error('Payment transaction not found');
+
+      this.connection
+        .prepare(
+          `UPDATE payment_transactions SET
+            status = ?,
+            processor_transaction_id = COALESCE(?, processor_transaction_id),
+            card_brand = COALESCE(?, card_brand),
+            card_last4 = COALESCE(?, card_last4),
+            updated_at = ?
+           WHERE charge_reference = ?`,
+        )
+        .run(
+          status,
+          processorTransactionId ?? null,
+          cardBrand ?? null,
+          cardLast4 ?? null,
+          timestamp,
+          chargeReference,
+        );
+
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  getPendingPaymentTransactions() {
+    return this.connection
+      .prepare(
+        `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown', 'needs-attention') AND sale_id IS NULL`,
+      )
+      .all() as Row[];
+  }
+
+  getPaymentTransaction(chargeReference: string) {
+    return this.connection
+      .prepare(`SELECT * FROM payment_transactions WHERE charge_reference = ?`)
+      .get(chargeReference) as Row | undefined;
+  }
+
+  completeSale(
+    input: import('@shul-store/shared').CompleteSaleInput,
+    snapshot?: import('@shul-store/shared').CartSnapshot,
+  ): import('@shul-store/shared').Sale {
     const value = completeSaleInputSchema.parse(input);
     const settings = this.getSettings();
 
@@ -781,6 +1018,21 @@ export class StoreDatabase {
       .get(value.completionKey) as { id: string } | undefined;
     if (existingPre) {
       this.validateExistingSaleMatch(existingPre.id, value);
+      if (value.payment.method === 'integrated_card') {
+        const existingTx = this.connection
+          .prepare(
+            'SELECT id, status, amount_cents FROM payment_transactions WHERE sale_id = ?',
+          )
+          .get(existingPre.id) as any;
+        if (
+          existingTx &&
+          value.payment.chargeReference !== existingTx.charge_reference
+        ) {
+          throw new Error(
+            'A sale with this completion key was already paid for with a different charge reference',
+          );
+        }
+      }
       return this.getSale(existingPre.id);
     }
 
@@ -793,6 +1045,21 @@ export class StoreDatabase {
           .get(value.completionKey) as { id: string } | undefined;
         if (again) {
           this.validateExistingSaleMatch(again.id, value);
+          if (value.payment.method === 'integrated_card') {
+            const existingTx = this.connection
+              .prepare(
+                'SELECT id, charge_reference FROM payment_transactions WHERE sale_id = ?',
+              )
+              .get(again.id) as any;
+            if (
+              existingTx &&
+              value.payment.chargeReference !== existingTx.charge_reference
+            ) {
+              throw new Error(
+                'A sale with this completion key was already paid for with a different charge reference',
+              );
+            }
+          }
           return;
         }
 
@@ -850,13 +1117,15 @@ export class StoreDatabase {
           }
         }
 
-        const totals = calculateCart(
-          snapshots.map((line) => ({
-            product: line.product,
-            quantity: line.quantity,
-          })),
-          settings,
-        );
+        const totals =
+          snapshot?.totals ||
+          calculateCart(
+            snapshots.map((line) => ({
+              product: line.product,
+              quantity: line.quantity,
+            })),
+            settings,
+          );
 
         let customerSnapshot: {
           id: string;
@@ -965,7 +1234,9 @@ export class StoreDatabase {
             customerSnapshot?.accountNumber ?? null,
             customerSnapshot?.balanceBeforeCents ?? null,
             customerSnapshot?.balanceAfterCents ?? null,
-            value.payment.method,
+            value.payment.method === 'integrated_card'
+              ? 'immediate_payment'
+              : value.payment.method,
           );
 
         this.connection
@@ -980,24 +1251,55 @@ export class StoreDatabase {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
 
-        snapshots.forEach((line, index) => {
-          const calculated = totals.lines[index]!;
-          insertItem.run(
-            randomUUID(),
-            saleId,
-            line.product.id,
-            line.product.name,
-            line.product.secondaryName,
-            line.barcodeUsed,
-            line.quantity,
-            line.product.sellingPriceCents,
-            line.product.purchaseCostCents,
-            line.product.taxable ? 1 : 0,
-            calculated.taxCents,
-            calculated.subtotalCents,
-            calculated.totalCents,
+        if (snapshot && snapshot.lines) {
+          snapshot.lines.forEach((line) => {
+            insertItem.run(
+              randomUUID(),
+              saleId,
+              line.productId,
+              line.productName,
+              line.secondaryName,
+              line.barcodeUsed,
+              line.quantity,
+              line.unitSellingPriceCents,
+              line.unitPurchaseCostCents,
+              line.taxable ? 1 : 0,
+              line.taxCents,
+              line.subtotalCents,
+              line.totalCents,
+            );
+          });
+        } else {
+          snapshots.forEach((line, index) => {
+            const calculated = totals.lines[index]!;
+            insertItem.run(
+              randomUUID(),
+              saleId,
+              line.product.id,
+              line.product.name,
+              line.product.secondaryName,
+              line.barcodeUsed ?? null,
+              line.quantity,
+              line.product.sellingPriceCents,
+              line.product.purchaseCostCents,
+              line.product.taxable ? 1 : 0,
+              calculated.taxCents,
+              calculated.subtotalCents,
+              calculated.totalCents,
+            );
+          });
+        }
+
+        const sumLineTotals = this.connection
+          .prepare(
+            'SELECT COALESCE(SUM(line_total_cents), 0) as s FROM sale_items WHERE sale_id = ?',
+          )
+          .get(saleId) as { s: number };
+        if (sumLineTotals.s !== totals.totalCents) {
+          throw new Error(
+            `Line totals sum ${sumLineTotals.s} does not match sale total ${totals.totalCents}`,
           );
-        });
+        }
 
         for (const [prodId, totalQty] of productDemand) {
           this.connection
@@ -1064,6 +1366,44 @@ export class StoreDatabase {
               saleId,
               `Sale #${receipt}`,
             );
+        } else if (value.payment.method === 'integrated_card') {
+          const txRow = this.connection
+            .prepare(
+              `SELECT id, status, amount_cents, sale_id FROM payment_transactions WHERE charge_reference = ?`,
+            )
+            .get(value.payment.chargeReference) as
+            | {
+                id: string;
+                status: string;
+                amount_cents: number;
+                sale_id: string | null;
+              }
+            | undefined;
+
+          if (!txRow)
+            throw new Error(
+              'Payment transaction not found for integrated card checkout',
+            );
+          if (txRow.status !== 'approved')
+            throw new Error(
+              `Cannot complete sale for payment transaction in status: ${txRow.status}`,
+            );
+          if (txRow.amount_cents !== totals.totalCents && !snapshot)
+            throw new Error(
+              'Payment transaction amount mismatch with sale total',
+            );
+          if (txRow.sale_id)
+            throw new Error('Payment transaction is already linked to a sale');
+
+          this.connection
+            .prepare(
+              `UPDATE payment_transactions SET sale_id = ?, updated_at = ? WHERE id = ?`,
+            )
+            .run(saleId, timestamp, txRow.id);
+
+          this.connection
+            .prepare("UPDATE sales SET status='paid' WHERE id=?")
+            .run(saleId);
         }
 
         this.connection
@@ -1073,6 +1413,15 @@ export class StoreDatabase {
           .run(timestamp, saleId);
 
         this.enqueueEntity('sale', saleId);
+
+        if (value.payment.method === 'integrated_card') {
+          const txRow = this.connection
+            .prepare(
+              'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+            )
+            .get(value.payment.chargeReference) as any;
+          if (txRow) this.enqueueEntity('payment_transaction', txRow.id);
+        }
         this.addAudit('sale.completed', 'sale', saleId, {
           receiptNumber: receipt,
           totalCents: totals.totalCents,
@@ -1141,7 +1490,7 @@ export class StoreDatabase {
         );
       }
       const existingCashReceived = readNullableSafeCents(
-        payment.cash_received_cents,
+        payment!.cash_received_cents,
         'cash_received_cents',
       );
       if (existingCashReceived !== input.payment.cashReceivedCents) {
@@ -1156,8 +1505,8 @@ export class StoreDatabase {
         );
       }
       const existingRef =
-        (payment.terminal_reference
-          ? String(payment.terminal_reference).trim()
+        (payment!.terminal_reference
+          ? String(payment!.terminal_reference).trim()
           : null) || null;
       const inputRef = input.payment.terminalReference?.trim() || null;
       if (existingRef !== inputRef) {
@@ -1273,31 +1622,99 @@ export class StoreDatabase {
           'customer_balance_after_cents',
         ),
       };
+    } else if (tenderType === 'immediate_payment') {
+      const tx = this.connection
+        .prepare('SELECT * FROM payment_transactions WHERE sale_id=?')
+        .get(id) as Row | undefined;
+
+      if (tx) {
+        salePayment = {
+          method: 'integrated_card',
+          amountCents: readSafeCents(sale.total_cents, 'sale total_cents'),
+          cashReceivedCents: null,
+          changeDueCents: null,
+          terminalReference: null,
+          externalApproved: null,
+          chargeReference: String(tx.charge_reference),
+          processorTransactionId: tx.processor_transaction_id
+            ? String(tx.processor_transaction_id)
+            : null,
+          cardBrand: tx.card_brand ? String(tx.card_brand) : null,
+          cardLast4: tx.card_last4 ? String(tx.card_last4) : null,
+        };
+      } else {
+        if (!payment) {
+          console.error('Sale payment not found');
+          salePayment = {
+            method: 'cash',
+            amountCents: 0,
+            cashReceivedCents: null,
+            changeDueCents: null,
+            terminalReference: null,
+            externalApproved: null,
+          };
+        } else {
+          salePayment = {
+            method: String(payment.method) as 'cash' | 'external_terminal',
+            amountCents: readSafeCents(
+              payment!.amount_cents,
+              'payment amount_cents',
+            ),
+            cashReceivedCents: readNullableSafeCents(
+              payment!.cash_received_cents,
+              'cash_received_cents',
+            ),
+            changeDueCents: readNullableSafeCents(
+              payment!.change_due_cents,
+              'change_due_cents',
+            ),
+            terminalReference:
+              payment!.terminal_reference === null
+                ? null
+                : String(payment!.terminal_reference),
+            externalApproved:
+              payment!.external_approved === null
+                ? null
+                : Boolean(payment!.external_approved),
+          };
+        }
+      }
     } else {
-      if (!payment) throw new Error('Sale payment not found');
-      salePayment = {
-        method: String(payment.method) as 'cash' | 'external_terminal',
-        amountCents: readSafeCents(
-          payment.amount_cents,
-          'payment amount_cents',
-        ),
-        cashReceivedCents: readNullableSafeCents(
-          payment.cash_received_cents,
-          'cash_received_cents',
-        ),
-        changeDueCents: readNullableSafeCents(
-          payment.change_due_cents,
-          'change_due_cents',
-        ),
-        terminalReference:
-          payment.terminal_reference === null
-            ? null
-            : String(payment.terminal_reference),
-        externalApproved:
-          payment.external_approved === null
-            ? null
-            : Boolean(payment.external_approved),
-      };
+      if (!payment) {
+        console.error('Sale payment not found');
+        salePayment = {
+          method: 'cash',
+          amountCents: 0,
+          cashReceivedCents: null,
+          changeDueCents: null,
+          terminalReference: null,
+          externalApproved: null,
+        };
+      } else {
+        salePayment = {
+          method: String(payment.method) as 'cash' | 'external_terminal',
+          amountCents: readSafeCents(
+            payment!.amount_cents,
+            'payment amount_cents',
+          ),
+          cashReceivedCents: readNullableSafeCents(
+            payment!.cash_received_cents,
+            'cash_received_cents',
+          ),
+          changeDueCents: readNullableSafeCents(
+            payment!.change_due_cents,
+            'change_due_cents',
+          ),
+          terminalReference:
+            payment!.terminal_reference === null
+              ? null
+              : String(payment!.terminal_reference),
+          externalApproved:
+            payment!.external_approved === null
+              ? null
+              : Boolean(payment!.external_approved),
+        };
+      }
     }
 
     const customerSnapshot = sale.customer_id
@@ -2077,7 +2494,7 @@ export class StoreDatabase {
 
   // --- PRIVATE HELPERS ---
 
-  private getProduct(id: string): Product {
+  getProduct(id: string): Product {
     const row = this.connection
       .prepare(
         `SELECT p.*, c.name AS category_name, COALESCE(SUM(m.quantity_change), 0) AS stock_quantity FROM products p JOIN categories c ON c.id = p.category_id LEFT JOIN inventory_movements m ON m.product_id = p.id WHERE p.id = ? GROUP BY p.id`,
@@ -2249,6 +2666,7 @@ export class StoreDatabase {
     | InventoryMovementPayload
     | SalePayload
     | AccountPaymentPayload
+    | PaymentTransactionPayload
     | null {
     switch (entityType) {
       case 'settings':
@@ -2265,9 +2683,39 @@ export class StoreDatabase {
         return this.buildSalePayload(entityId);
       case 'account_payment':
         return this.buildAccountPaymentPayload(entityId);
+      case 'payment_transaction':
+        return this.buildPaymentTransactionPayload(entityId);
       default:
         return null;
     }
+  }
+
+  private buildPaymentTransactionPayload(
+    id: string,
+  ): PaymentTransactionPayload | null {
+    const tx = this.connection
+      .prepare('SELECT * FROM payment_transactions WHERE id = ?')
+      .get(id) as Row | undefined;
+    if (!tx) return null;
+    return {
+      id: String(tx.id),
+      chargeReference: String(tx.charge_reference),
+      processorId: String(tx.processor_id),
+      amountCents: Number(tx.amount_cents),
+      status: String(tx.status) as PaymentTransactionPayload['status'],
+      processorTransactionId: tx.processor_transaction_id
+        ? String(tx.processor_transaction_id)
+        : null,
+      cardBrand: tx.card_brand ? String(tx.card_brand) : null,
+      cardLast4: tx.card_last4 ? String(tx.card_last4) : null,
+      saleId: tx.sale_id != null ? String(tx.sale_id) : null,
+      cartSnapshotJson: tx.cart_snapshot_json
+        ? String(tx.cart_snapshot_json)
+        : null,
+      idempotencyKey: tx.idempotency_key ? String(tx.idempotency_key) : null,
+      createdAt: String(tx.created_at),
+      updatedAt: String(tx.updated_at),
+    };
   }
 
   private buildSettingsPayload(): SettingsPayload {

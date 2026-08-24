@@ -8,6 +8,7 @@ import {
   type Product,
   type Sale,
   type StoreSettings,
+  type PaymentTransactionPayload,
 } from '@shul-store/shared';
 import { CustomerEditorModal } from './customers/CustomerEditorModal';
 import { formatMoney } from '../utils/formatters';
@@ -36,12 +37,29 @@ export function CheckoutScreen({
   onInventoryChanged(): Promise<void>;
 }) {
   const [settings, setSettings] = useState<StoreSettings>();
+
+  const [pendingTxs, setPendingTxs] = useState<PaymentTransactionPayload[]>([]);
+  useEffect(() => {
+    window.storeApi.payments
+      .reconcileTransactions()
+      .then(() =>
+        window.storeApi.payments.getPendingTransactions().then(setPendingTxs),
+      )
+      .catch(() => {});
+  }, []);
+
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const [payment, setPayment] = useState<
-    'cash' | 'external_terminal' | 'account' | null
+    'cash' | 'external_terminal' | 'account' | 'integrated_card' | null
   >(null);
+
+  const [chargeReference, setChargeReference] = useState<string | null>(null);
+  const [chargeStatus, setChargeStatus] = useState<
+    'idle' | 'initiating' | 'pending' | 'declined' | 'error'
+  >('idle');
+  const [chargeError, setChargeError] = useState<string | null>(null);
   const [cash, setCash] = useState('');
   const [approved, setApproved] = useState(false);
   const [reference, setReference] = useState('');
@@ -61,6 +79,7 @@ export function CheckoutScreen({
   const completionKey = useRef(crypto.randomUUID());
   const searchReqIdRef = useRef(0);
   const isCompletingRef = useRef(false);
+  const isChargingRef = useRef(false);
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
@@ -208,6 +227,9 @@ export function CheckoutScreen({
           customerId: selectedCustomer.id,
           confirmed: true,
         };
+      } else if (payment === 'integrated_card') {
+        if (!chargeReference) return;
+        paymentInput = { method: 'integrated_card', chargeReference };
       } else {
         return;
       }
@@ -230,6 +252,102 @@ export function CheckoutScreen({
     } finally {
       isCompletingRef.current = false;
       setCompleting(false);
+    }
+  }
+
+  async function initiateCharge() {
+    if (isChargingRef.current) return;
+    isChargingRef.current = true;
+    if (!totals) {
+      isChargingRef.current = false;
+      return;
+    }
+    setChargeStatus('initiating');
+    setChargeError(null);
+    const ref = crypto.randomUUID();
+    setChargeReference(ref);
+
+    try {
+      const input = {
+        chargeReference: ref,
+        lines: cart.map((c) => ({
+          productId: c.product.id,
+          quantity: c.quantity,
+          barcodeUsed: c.barcodeUsed,
+        })),
+        idempotencyKey: completionKey.current,
+      };
+
+      const result = await window.storeApi.payments.initiateCharge(input);
+
+      if (result.status === 'approved') {
+        const inputComp = {
+          completionKey: completionKey.current,
+          lines: cart.map((c) => ({
+            productId: c.product.id,
+            quantity: c.quantity,
+            barcodeUsed: c.barcodeUsed,
+          })),
+          payment: {
+            method: 'integrated_card' as const,
+            chargeReference: ref,
+          },
+        };
+        const completed = await window.storeApi.checkout.complete(inputComp);
+        setSale(completed);
+        await onInventoryChanged();
+      } else if (result.status === 'declined') {
+        setChargeStatus('declined');
+        setChargeError(result.declineReason || 'Card declined');
+      } else if (result.status === 'error') {
+        setChargeStatus('error');
+        setChargeError(
+          result.errorMessage || 'An error occurred during payment',
+        );
+      } else if (result.status === 'pending' || result.status === 'unknown') {
+        setChargeStatus('pending');
+      }
+    } catch (e: any) {
+      setChargeStatus('error');
+      setChargeError(e.message);
+    } finally {
+      isChargingRef.current = false;
+    }
+  }
+
+  async function checkChargeStatus() {
+    if (!chargeReference || chargeStatus !== 'pending') return;
+    setChargeError(null);
+    try {
+      const result =
+        await window.storeApi.payments.getChargeStatus(chargeReference);
+      if (result.status === 'approved') {
+        const inputComp = {
+          completionKey: completionKey.current,
+          lines: cart.map((c) => ({
+            productId: c.product.id,
+            quantity: c.quantity,
+            barcodeUsed: c.barcodeUsed,
+          })),
+          payment: {
+            method: 'integrated_card' as const,
+            chargeReference,
+          },
+        };
+        const completed = await window.storeApi.checkout.complete(inputComp);
+        setSale(completed);
+        await onInventoryChanged();
+      } else if (result.status === 'declined') {
+        setChargeStatus('declined');
+        setChargeError(result.declineReason || 'Card declined');
+      } else if (result.status === 'error') {
+        setChargeStatus('error');
+        setChargeError(
+          result.errorMessage || 'An error occurred during payment',
+        );
+      }
+    } catch (e: any) {
+      setChargeError(e.message);
     }
   }
 
@@ -277,6 +395,17 @@ export function CheckoutScreen({
 
   return (
     <div className="checkout-layout">
+      {pendingTxs.length > 0 && (
+        <div className="banner warning" style={{ gridColumn: '1 / -1' }}>
+          <strong>Pending Transactions</strong>
+          <p>
+            There {pendingTxs.length === 1 ? 'is' : 'are'} {pendingTxs.length}{' '}
+            unresolved payment{' '}
+            {pendingTxs.length === 1 ? 'transaction' : 'transactions'}. They
+            will be resolved automatically in the background.
+          </p>
+        </div>
+      )}
       <section className="checkout-products">
         <form
           onSubmit={(e) => {
@@ -374,6 +503,22 @@ export function CheckoutScreen({
             >
               External card terminal
             </button>
+
+            {settings?.cardProcessingEnabled && settings?.cardProcessorId && (
+              <button
+                disabled={!cart.length || insufficient || isZeroTotal}
+                title={
+                  isZeroTotal
+                    ? 'Integrated card tender is not available for $0.00 sales'
+                    : ''
+                }
+                onClick={() => setPayment('integrated_card')}
+                style={{ background: '#0d2d20', color: 'white' }}
+              >
+                Pay now
+              </button>
+            )}
+
             <button
               disabled={!cart.length || insufficient || isZeroTotal}
               title={
@@ -430,6 +575,85 @@ export function CheckoutScreen({
             <button disabled={completing} onClick={() => setPayment(null)}>
               Back
             </button>
+          </div>
+        ) : payment === 'integrated_card' ? (
+          <div className="pay-box">
+            <h4>Integrated Card</h4>
+            <p>
+              Amount to charge: <b>{money(totals?.totalCents ?? 0)}</b>
+            </p>
+            {chargeStatus === 'idle' && (
+              <>
+                <button
+                  className="primary"
+                  onClick={() => void initiateCharge()}
+                >
+                  Charge Card
+                </button>
+                <button onClick={() => setPayment(null)}>Back</button>
+              </>
+            )}
+            {chargeStatus === 'initiating' && (
+              <p>Processing charge... Please wait.</p>
+            )}
+            {chargeStatus === 'pending' && (
+              <div
+                className="alert"
+                style={{ background: '#fff3cd', color: '#856404' }}
+              >
+                The payment status is uncertain. Please check the status before
+                trying again.
+                <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+                  <button
+                    className="primary"
+                    onClick={() => void checkChargeStatus()}
+                  >
+                    Check status
+                  </button>
+                </div>
+              </div>
+            )}
+            {(chargeStatus === 'declined' || chargeStatus === 'error') && (
+              <div
+                className="alert"
+                style={{
+                  background:
+                    chargeStatus === 'declined' ? '#fff3cd' : '#fdeded',
+                  color: chargeStatus === 'declined' ? '#856404' : '#842029',
+                }}
+              >
+                {chargeError}
+                <div style={{ marginTop: '12px', display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={() => {
+                      setChargeStatus('idle');
+                      setChargeError(null);
+                      setPayment(null);
+                    }}
+                  >
+                    Choose another payment method
+                  </button>
+                  <button
+                    className="primary"
+                    onClick={() => void initiateCharge()}
+                  >
+                    Retry charge
+                  </button>
+                </div>
+              </div>
+            )}
+            {chargeError && chargeStatus === 'pending' && (
+              <div
+                className="alert"
+                style={{
+                  background: '#fdeded',
+                  marginTop: '12px',
+                  color: '#842029',
+                }}
+              >
+                Error checking status: {chargeError}
+              </div>
+            )}
           </div>
         ) : payment === 'external_terminal' ? (
           <div className="pay-box">

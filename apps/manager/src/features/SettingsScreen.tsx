@@ -310,6 +310,98 @@ export function SettingsScreen() {
           )}
         </div>
       </form>
+
+      <hr
+        style={{
+          border: 'none',
+          borderTop: '1px solid #e0e5e2',
+          margin: '24px 0',
+        }}
+      />
+      <div className="settings-form">
+        <h3 style={{ margin: '0 0 4px 0' }}>Card processing</h3>
+        <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
+          Enable integrated credit card processing. Real processors (Sola, First
+          Choice, Donary) will be added later; currently, the Simulated
+          processor is available for testing/training.
+        </p>
+
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={settings.cardProcessingEnabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              const next = { ...settings, cardProcessingEnabled: enabled };
+              if (enabled && !next.cardProcessorId) {
+                next.cardProcessorId = 'simulated';
+              }
+              setSettings(next);
+            }}
+          />
+          Enable integrated card processing
+        </label>
+
+        {settings.cardProcessingEnabled && (
+          <>
+            <label>
+              Processor
+              <select
+                value={settings.cardProcessorId || ''}
+                onChange={(e) => {
+                  const next = {
+                    ...settings,
+                    cardProcessorId: e.target.value || null,
+                  };
+                  setSettings(next);
+                }}
+              >
+                <option value="">None</option>
+                <option value="simulated">
+                  Simulated card processor (testing)
+                </option>
+              </select>
+            </label>
+
+            {settings.cardProcessorId === 'simulated' && (
+              <label>
+                Processor Configuration (JSON)
+                <textarea
+                  value={settings.cardProcessorConfigJson || ''}
+                  onChange={(e) => {
+                    const next = {
+                      ...settings,
+                      cardProcessorConfigJson: e.target.value || null,
+                    };
+                    setSettings(next);
+                  }}
+                  placeholder="{}"
+                />
+              </label>
+            )}
+          </>
+        )}
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+          <button
+            className="primary"
+            onClick={(e) => {
+              e.preventDefault();
+              void submit(e);
+            }}
+          >
+            Save settings
+          </button>
+        </div>
+      </div>
+
+      <hr
+        style={{
+          border: 'none',
+          borderTop: '1px solid #e0e5e2',
+          margin: '24px 0',
+        }}
+      />
+
       <CloudBackupSection />
     </>
   );

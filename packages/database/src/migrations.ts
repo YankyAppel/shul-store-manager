@@ -416,8 +416,79 @@ export const migrations: Migration[] = [
       INSERT INTO sync_settings (singleton_id) VALUES (1);
     `,
   },
-];
 
+  {
+    version: 7,
+    name: 'integrated_card_payments',
+    sql: `
+      ALTER TABLE store_settings ADD COLUMN card_processing_enabled INTEGER NOT NULL DEFAULT 0 CHECK (card_processing_enabled IN (0, 1));
+      ALTER TABLE store_settings ADD COLUMN card_processor_id TEXT;
+      ALTER TABLE store_settings ADD COLUMN card_processor_config_json TEXT;
+
+      CREATE TABLE payment_transactions (
+        id TEXT PRIMARY KEY,
+        charge_reference TEXT NOT NULL UNIQUE,
+        processor_id TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        status TEXT NOT NULL CHECK (status IN ('initiated','approved','declined','error','unknown','reconciled','needs-attention')),
+        processor_transaction_id TEXT,
+        card_brand TEXT,
+        card_last4 TEXT,
+        sale_id TEXT REFERENCES sales(id) ON DELETE RESTRICT,
+        cart_snapshot_json TEXT,
+        idempotency_key TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX payment_transactions_status_idx ON payment_transactions(status);
+      CREATE INDEX payment_transactions_sale_idx ON payment_transactions(sale_id);
+
+      CREATE TRIGGER payment_transactions_no_delete
+      BEFORE DELETE ON payment_transactions
+      BEGIN
+        SELECT RAISE(ABORT, 'Payment transactions cannot be deleted');
+      END;
+
+      CREATE TRIGGER payment_transactions_no_update_financials
+      BEFORE UPDATE ON payment_transactions
+      WHEN NEW.charge_reference IS NOT OLD.charge_reference
+        OR NEW.processor_id IS NOT OLD.processor_id
+        OR NEW.amount_cents IS NOT OLD.amount_cents
+        OR NEW.created_at IS NOT OLD.created_at
+        OR NEW.cart_snapshot_json IS NOT OLD.cart_snapshot_json
+        OR NEW.idempotency_key IS NOT OLD.idempotency_key
+      BEGIN
+        SELECT RAISE(ABORT, 'Payment transaction financial fields are immutable');
+      END;
+
+      CREATE TRIGGER payment_transactions_status_transitions
+      BEFORE UPDATE OF status ON payment_transactions
+      WHEN OLD.status != NEW.status AND NOT (
+        (OLD.status = 'initiated' AND NEW.status IN ('approved','declined','error','unknown')) OR
+        (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error')) OR
+        (OLD.status = 'approved' AND NEW.status = 'needs-attention')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Invalid payment transaction status transition');
+      END;
+
+      CREATE TRIGGER payment_transactions_sale_link
+      BEFORE UPDATE OF sale_id ON payment_transactions
+      WHEN NEW.sale_id IS NOT NULL AND (
+        NOT EXISTS (SELECT 1 FROM sales WHERE id = NEW.sale_id)
+        OR NEW.status != 'approved'
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Payment transaction sale link must point to a sale with matching total amount and transaction must be approved');
+      END;
+
+      CREATE TABLE simulated_processor_store (
+        key TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL
+      );
+    `,
+  },
+];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
   db.pragma('journal_mode = WAL');
