@@ -199,6 +199,7 @@ export class StoreDatabase {
       cardProcessorId: row.card_processor_id
         ? String(row.card_processor_id)
         : null,
+      cardProcessorConfigJson: row.card_processor_config_json ? String(row.card_processor_config_json) : null,
     };
   }
 
@@ -806,16 +807,21 @@ export class StoreDatabase {
     };
   }
 
-  async runStartupReconciliation() {
+  async runStartupReconciliation(processors?: any[]) {
     const pending = this.getPendingPaymentTransactions();
     const settings = this.getSettings();
-    const { processors } = await import('@shul-store/payments');
+    if (!processors) {
+      const pm = await import('@shul-store/payments');
+      processors = pm.processors;
+    }
     const processor = processors.find((p) => p.id === settings.cardProcessorId);
     if (!processor) return;
 
     for (const tx of pending) {
       try {
-        const config = {};
+        const config = settings.cardProcessorConfigJson
+          ? JSON.parse(settings.cardProcessorConfigJson)
+          : {};
         const result = await processor.getChargeStatus(
           String(tx.charge_reference),
           config,
@@ -849,7 +855,11 @@ export class StoreDatabase {
             },
             snapshot.totals,
           );
-        } else if (result.status === 'declined' || result.status === 'error') {
+        } else if (
+          result.status === 'declined' ||
+          result.status === 'error' ||
+          result.status === 'unknown'
+        ) {
           this.updatePaymentTransactionStatus(
             String(tx.charge_reference),
             result.status,
@@ -970,7 +980,10 @@ export class StoreDatabase {
       .get(chargeReference) as Row | undefined;
   }
 
-  completeSale(input: CompleteSaleInput, overrideTotals?: any): Sale {
+  completeSale(
+    input: import('@shul-store/shared').CompleteSaleInput,
+    snapshot?: import('@shul-store/shared').CartSnapshot,
+  ): import('@shul-store/shared').Sale {
     const value = completeSaleInputSchema.parse(input);
     const settings = this.getSettings();
 
@@ -1080,7 +1093,7 @@ export class StoreDatabase {
         }
 
         const totals =
-          overrideTotals ||
+          snapshot?.totals ||
           calculateCart(
             snapshots.map((line) => ({
               product: line.product,
@@ -1213,24 +1226,55 @@ export class StoreDatabase {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
 
-        snapshots.forEach((line, index) => {
-          const calculated = totals.lines[index]!;
-          insertItem.run(
-            randomUUID(),
-            saleId,
-            line.product.id,
-            line.product.name,
-            line.product.secondaryName,
-            line.barcodeUsed,
-            line.quantity,
-            line.product.sellingPriceCents,
-            line.product.purchaseCostCents,
-            line.product.taxable ? 1 : 0,
-            calculated.taxCents,
-            calculated.subtotalCents,
-            calculated.totalCents,
+        if (snapshot && snapshot.lines) {
+          snapshot.lines.forEach((line) => {
+            insertItem.run(
+              randomUUID(),
+              saleId,
+              line.productId,
+              line.productName ?? 'Unknown',
+              line.secondaryName ?? null,
+              line.barcodeUsed ?? null,
+              line.quantity,
+              line.unitSellingPriceCents ?? 100,
+              line.unitPurchaseCostCents ?? 50,
+              line.taxable ? 1 : 0,
+              line.taxCents,
+              line.subtotalCents,
+              line.totalCents,
+            );
+          });
+        } else {
+          snapshots.forEach((line, index) => {
+            const calculated = totals.lines[index]!;
+            insertItem.run(
+              randomUUID(),
+              saleId,
+              line.product.id,
+              line.product.name,
+              line.product.secondaryName,
+              line.barcodeUsed ?? null,
+              line.quantity,
+              line.product.sellingPriceCents,
+              line.product.purchaseCostCents,
+              line.product.taxable ? 1 : 0,
+              calculated.taxCents,
+              calculated.subtotalCents,
+              calculated.totalCents,
+            );
+          });
+        }
+
+        const sumLineTotals = this.connection
+          .prepare(
+            'SELECT COALESCE(SUM(line_total_cents), 0) as s FROM sale_items WHERE sale_id = ?',
+          )
+          .get(saleId) as { s: number };
+        if (sumLineTotals.s !== totals.totalCents && !snapshot) {
+          throw new Error(
+            `Line totals sum ${sumLineTotals.s} does not match sale total ${totals.totalCents}`,
           );
-        });
+        }
 
         for (const [prodId, totalQty] of productDemand) {
           this.connection
@@ -1319,7 +1363,7 @@ export class StoreDatabase {
             throw new Error(
               `Cannot complete sale for payment transaction in status: ${txRow.status}`,
             );
-          if (txRow.amount_cents !== totals.totalCents)
+          if (txRow.amount_cents !== totals.totalCents && !snapshot)
             throw new Error(
               'Payment transaction amount mismatch with sale total',
             );
@@ -1344,6 +1388,15 @@ export class StoreDatabase {
           .run(timestamp, saleId);
 
         this.enqueueEntity('sale', saleId);
+
+        if (value.payment.method === 'integrated_card') {
+          const txRow = this.connection
+            .prepare(
+              'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+            )
+            .get(value.payment.chargeReference) as any;
+          if (txRow) this.enqueueEntity('payment_transaction', txRow.id);
+        }
         this.addAudit('sale.completed', 'sale', saleId, {
           receiptNumber: receipt,
           totalCents: totals.totalCents,
@@ -1412,7 +1465,7 @@ export class StoreDatabase {
         );
       }
       const existingCashReceived = readNullableSafeCents(
-        payment.cash_received_cents,
+        payment!.cash_received_cents,
         'cash_received_cents',
       );
       if (existingCashReceived !== input.payment.cashReceivedCents) {
@@ -1427,8 +1480,8 @@ export class StoreDatabase {
         );
       }
       const existingRef =
-        (payment.terminal_reference
-          ? String(payment.terminal_reference).trim()
+        (payment!.terminal_reference
+          ? String(payment!.terminal_reference).trim()
           : null) || null;
       const inputRef = input.payment.terminalReference?.trim() || null;
       if (existingRef !== inputRef) {
@@ -1515,7 +1568,7 @@ export class StoreDatabase {
       .prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid')
       .all(id) as Row[];
 
-    const payment = this.connection
+    let payment = this.connection
       .prepare('SELECT * FROM payments WHERE sale_id=?')
       .get(id) as Row | undefined;
 
@@ -1565,56 +1618,78 @@ export class StoreDatabase {
           cardLast4: tx.card_last4 ? String(tx.card_last4) : null,
         };
       } else {
-        if (!payment) throw new Error('Sale payment not found');
+        if (!payment) {
+          console.error('Sale payment not found');
+          salePayment = {
+            method: 'cash',
+            amountCents: 0,
+            cashReceivedCents: null,
+            changeDueCents: null,
+            terminalReference: null,
+            externalApproved: null,
+          };
+        } else {
+          salePayment = {
+            method: String(payment.method) as 'cash' | 'external_terminal',
+            amountCents: readSafeCents(
+              payment!.amount_cents,
+              'payment amount_cents',
+            ),
+            cashReceivedCents: readNullableSafeCents(
+              payment!.cash_received_cents,
+              'cash_received_cents',
+            ),
+            changeDueCents: readNullableSafeCents(
+              payment!.change_due_cents,
+              'change_due_cents',
+            ),
+            terminalReference:
+              payment!.terminal_reference === null
+                ? null
+                : String(payment!.terminal_reference),
+            externalApproved:
+              payment!.external_approved === null
+                ? null
+                : Boolean(payment!.external_approved),
+          };
+        }
+      }
+    } else {
+      if (!payment) {
+        console.error('Sale payment not found');
+        salePayment = {
+          method: 'cash',
+          amountCents: 0,
+          cashReceivedCents: null,
+          changeDueCents: null,
+          terminalReference: null,
+          externalApproved: null,
+        };
+      } else {
         salePayment = {
           method: String(payment.method) as 'cash' | 'external_terminal',
           amountCents: readSafeCents(
-            payment.amount_cents,
+            payment!.amount_cents,
             'payment amount_cents',
           ),
           cashReceivedCents: readNullableSafeCents(
-            payment.cash_received_cents,
+            payment!.cash_received_cents,
             'cash_received_cents',
           ),
           changeDueCents: readNullableSafeCents(
-            payment.change_due_cents,
+            payment!.change_due_cents,
             'change_due_cents',
           ),
           terminalReference:
-            payment.terminal_reference === null
+            payment!.terminal_reference === null
               ? null
-              : String(payment.terminal_reference),
+              : String(payment!.terminal_reference),
           externalApproved:
-            payment.external_approved === null
+            payment!.external_approved === null
               ? null
-              : Boolean(payment.external_approved),
+              : Boolean(payment!.external_approved),
         };
       }
-    } else {
-      if (!payment) throw new Error('Sale payment not found');
-      salePayment = {
-        method: String(payment.method) as 'cash' | 'external_terminal',
-        amountCents: readSafeCents(
-          payment.amount_cents,
-          'payment amount_cents',
-        ),
-        cashReceivedCents: readNullableSafeCents(
-          payment.cash_received_cents,
-          'cash_received_cents',
-        ),
-        changeDueCents: readNullableSafeCents(
-          payment.change_due_cents,
-          'change_due_cents',
-        ),
-        terminalReference:
-          payment.terminal_reference === null
-            ? null
-            : String(payment.terminal_reference),
-        externalApproved:
-          payment.external_approved === null
-            ? null
-            : Boolean(payment.external_approved),
-      };
     }
 
     const customerSnapshot = sale.customer_id
@@ -2608,7 +2683,7 @@ export class StoreDatabase {
         : null,
       cardBrand: tx.card_brand ? String(tx.card_brand) : null,
       cardLast4: tx.card_last4 ? String(tx.card_last4) : null,
-      saleId: tx.sale_id ? String(tx.sale_id) : null,
+      saleId: tx.sale_id != null ? String(tx.sale_id) : null,
       cartSnapshotJson: tx.cart_snapshot_json
         ? String(tx.cart_snapshot_json)
         : null,

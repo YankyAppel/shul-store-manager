@@ -423,8 +423,7 @@ export const migrations: Migration[] = [
     sql: `
       ALTER TABLE store_settings ADD COLUMN card_processing_enabled INTEGER NOT NULL DEFAULT 0 CHECK (card_processing_enabled IN (0, 1));
       ALTER TABLE store_settings ADD COLUMN card_processor_id TEXT;
-      ALTER TABLE store_settings ADD COLUMN card_processor_config_secret TEXT;
-      ALTER TABLE store_settings ADD COLUMN card_processor_config_encrypted INTEGER NOT NULL DEFAULT 0 CHECK (card_processor_config_encrypted IN (0, 1));
+      ALTER TABLE store_settings ADD COLUMN card_processor_config_json TEXT;
 
       CREATE TABLE payment_transactions (
         id TEXT PRIMARY KEY,
@@ -464,7 +463,7 @@ export const migrations: Migration[] = [
 
       CREATE TRIGGER payment_transactions_status_transitions
       BEFORE UPDATE OF status ON payment_transactions
-      WHEN NOT (
+      WHEN OLD.status != NEW.status AND NOT (
         (OLD.status = 'initiated' AND NEW.status IN ('approved','declined','error','unknown')) OR
         (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error'))
       )
@@ -475,7 +474,7 @@ export const migrations: Migration[] = [
       CREATE TRIGGER payment_transactions_sale_link
       BEFORE UPDATE OF sale_id ON payment_transactions
       WHEN NEW.sale_id IS NOT NULL AND (
-        NOT EXISTS (SELECT 1 FROM sales WHERE id = NEW.sale_id AND total_cents = NEW.amount_cents)
+        NOT EXISTS (SELECT 1 FROM sales WHERE id = NEW.sale_id)
         OR NEW.status != 'approved'
       )
       BEGIN

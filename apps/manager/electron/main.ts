@@ -175,8 +175,29 @@ function registerIpc(): void {
       throw new Error('Cannot process $0.00 charge');
 
     const cartSnapshotJson = JSON.stringify({
-      lines: value.lines,
-      totals: calculated,
+      lines: value.lines.map((l, i) => {
+        const product = database.getProduct(l.productId);
+        const calcLine = calculated.lines[i]!;
+        return {
+          productId: l.productId,
+          quantity: l.quantity,
+          barcodeUsed: l.barcodeUsed,
+          productName: product.name,
+          secondaryName: product.secondaryName,
+          unitSellingPriceCents: product.sellingPriceCents,
+          unitPurchaseCostCents: product.purchaseCostCents,
+          taxable: product.taxable,
+          unitPriceCents: calcLine.unitPriceCents,
+          subtotalCents: calcLine.subtotalCents,
+          taxCents: calcLine.taxCents,
+          totalCents: calcLine.totalCents,
+        };
+      }),
+      totals: {
+        subtotalCents: calculated.subtotalCents,
+        taxCents: calculated.taxCents,
+        totalCents: calculated.totalCents,
+      },
     });
 
     database.createPaymentTransaction(
@@ -254,7 +275,8 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('payments:reconcileTransactions', async () => {
-    await database.runStartupReconciliation();
+    const { processors } = await import('@shul-store/payments');
+    await database.runStartupReconciliation(processors);
   });
 
   // Categories

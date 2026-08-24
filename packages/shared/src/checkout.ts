@@ -47,6 +47,7 @@ export const storeSettingsSchema = z.object({
     .default('thermal_40x30'),
   cardProcessingEnabled: z.boolean().default(false),
   cardProcessorId: z.string().nullable().default(null),
+  cardProcessorConfigJson: z.string().nullable().default(null),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 
@@ -91,6 +92,34 @@ export const completeSaleInputSchema = z.object({
   ]),
 });
 export type CompleteSaleInput = z.infer<typeof completeSaleInputSchema>;
+
+export const cartSnapshotLineSchema = z.object({
+  productId: z.string().uuid(),
+  quantity: z.number().int().safe().positive().max(10000),
+  barcodeUsed: z.string().trim().min(1).max(100).nullable(),
+  productName: z.string(),
+  secondaryName: z.string().nullable(),
+  unitSellingPriceCents: z.number().int().safe().nonnegative(),
+  unitPurchaseCostCents: z.number().int().safe().nonnegative(),
+  taxable: z.boolean(),
+  unitPriceCents: z.number().int().safe().nonnegative(),
+  subtotalCents: z.number().int().safe().nonnegative(),
+  taxCents: z.number().int().safe().nonnegative(),
+  totalCents: z.number().int().safe().nonnegative(),
+});
+
+export const cartSnapshotSchema = z.object({
+  lines: z.array(cartSnapshotLineSchema).min(1).max(500),
+  totals: z.object({
+    subtotalCents: z.number().int().safe().nonnegative(),
+    taxCents: z.number().int().safe().nonnegative(),
+    totalCents: z.number().int().safe().nonnegative(),
+    lines: z.any().optional(), // calculateCart includes lines but we only need totals here
+  }),
+});
+
+export type CartSnapshotLine = z.infer<typeof cartSnapshotLineSchema>;
+export type CartSnapshot = z.infer<typeof cartSnapshotSchema>;
 
 export interface CartProduct {
   id: string;

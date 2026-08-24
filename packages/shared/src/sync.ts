@@ -1,3 +1,4 @@
+import { cartSnapshotSchema } from './checkout.js';
 import { z } from 'zod';
 import { storeSettingsSchema, type StoreSettings } from './checkout.js';
 import { ledgerEntryTypeSchema } from './customers.js';
@@ -244,7 +245,21 @@ export const paymentTransactionPayloadSchema = z.object({
   cardBrand: z.string().nullable(),
   cardLast4: z.string().nullable(),
   saleId: uuidString.nullable(),
-  cartSnapshotJson: z.string().nullable(),
+  cartSnapshotJson: z
+    .string()
+    .nullable()
+    .superRefine((val, ctx) => {
+      if (val === null) return;
+      try {
+        const parsed = JSON.parse(val);
+        cartSnapshotSchema.parse(parsed);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid cartSnapshotJson',
+        });
+      }
+    }),
   idempotencyKey: z.string().nullable(),
   createdAt: isoString,
   updatedAt: isoString,

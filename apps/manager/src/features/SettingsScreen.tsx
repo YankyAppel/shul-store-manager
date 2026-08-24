@@ -343,24 +343,43 @@ export function SettingsScreen() {
         </label>
 
         {settings.cardProcessingEnabled && (
-          <label>
-            Processor
-            <select
-              value={settings.cardProcessorId || ''}
-              onChange={(e) => {
-                const next = {
-                  ...settings,
-                  cardProcessorId: e.target.value || null,
-                };
-                setSettings(next);
-              }}
-            >
-              <option value="">None</option>
-              <option value="simulated">
-                Simulated card processor (testing)
-              </option>
-            </select>
-          </label>
+          <>
+            <label>
+              Processor
+              <select
+                value={settings.cardProcessorId || ''}
+                onChange={(e) => {
+                  const next = {
+                    ...settings,
+                    cardProcessorId: e.target.value || null,
+                  };
+                  setSettings(next);
+                }}
+              >
+                <option value="">None</option>
+                <option value="simulated">
+                  Simulated card processor (testing)
+                </option>
+              </select>
+            </label>
+
+            {settings.cardProcessorId === 'simulated' && (
+              <label>
+                Processor Configuration (JSON)
+                <textarea
+                  value={settings.cardProcessorConfigJson || ''}
+                  onChange={(e) => {
+                    const next = {
+                      ...settings,
+                      cardProcessorConfigJson: e.target.value || null,
+                    };
+                    setSettings(next);
+                  }}
+                  placeholder="{}"
+                />
+              </label>
+            )}
+          </>
         )}
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <button

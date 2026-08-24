@@ -1,46 +1,50 @@
-# Payments
+# Payment Processor Integration
 
-## Adapter Interface Contract
+## Adapter Contract
 
-The `PaymentProcessor` interface provides a processor-agnostic boundary.
+Adapters must implement the `PaymentProcessor` interface.
 
-- **Idempotency**: Future adapters must treat the `chargeReference` (a UUID) as an idempotency key.
-- **No-PAN**: The application must never store, process, or transmit raw PANs or CVV. The `PaymentProcessor` interface does not include fields for raw card numbers. Adapters for real processors must use the processor's hosted fields, terminal SDK, or tokenization pages to keep this codebase fully out of PCI scope.
+- **Idempotency:** Implementations MUST use `idempotencyKey` to deduplicate charges safely.
+- **No-PAN:** Raw card data (PAN/CVV/expiry) MUST NEVER touch the store-manager memory or logs.
+- **Storage Injection:** Long-lived state (e.g. pending charge tokens) MUST be written to the injected `ProcessorStorage` so it survives application crashes and restarts.
 
-## Charge Lifecycle
+## Lifecycle Diagram
 
-1. **Initiate**: App saves `payment_transactions` row with status `initiated`.
-2. **Charge**: App invokes processor's `createCharge`.
-3. **Persist**: App updates `payment_transactions` with the outcome (`approved`, `declined`, `error`, `unknown`).
-4. **Complete Sale**: On `approved`, app links the sale ID to the transaction and marks the sale complete in one transaction.
+```text
+[Cart] --> (initiate charge) --> [payment_transactions: 'initiated']
+         --> (call processor)
+             |--> Success: update 'approved', complete sale, link sale_id
+             |--> Declined: update 'declined'
+             |--> Network/Crash: 'unknown'
+```
+
+Legal transitions:
+
+- `initiated` -> `approved` | `declined` | `error` | `unknown`
+- `unknown` -> `approved` | `declined` | `error`
 
 ## Reconciliation Behavior
 
-If the app crashes or network fails between the charge and sale completion, the transaction remains in `initiated` or `unknown`.
-On next startup or manual resolution, the app lists pending transactions.
-Invoking "Resolve" calls the processor's `getChargeStatus`.
+On startup, the system queries pending payment transactions (`initiated` or `unknown`). It calls the adapter's `getChargeStatus`. If `approved`, it synthesizes a historical sale from the snapshotted cart data. If `declined`/`error`, it just marks the transaction.
 
-- If `approved`, it completes the sale using the persisted `cartSnapshotJson` and `idempotencyKey`.
-- If `declined`/`error`, it updates the state, allowing a fresh attempt.
+## Simulated Conventions
 
-## Simulated Processor Conventions
+For testing, the Simulated Processor acts on the `amountCents`:
 
-A built-in simulated processor is provided for testing:
+- `$XX.01` -> `declined`
+- `$XX.02` -> `error`
+- `$XX.03` -> `unknown` (resolves to `approved` on subsequent status checks)
+- Any other amount -> `approved`
 
-- Amount ending in `.01` -> Declines
-- Amount ending in `.02` -> Errors
-- Amount ending in `.03` -> Stays `pending` until status check, then approves.
-- All other amounts -> Approves after a short delay.
+## PCI Guidance for Future Adapters
 
-## PCI-Scope Guidance
+Any future real integration (e.g. Stripe, Square) must use out-of-scope methods like Hosted Checkout pages, Terminal APIs, or iFrames. Direct API entry of PANs is forbidden by architecture.
 
-Because no raw card data ever touches the local memory, network, or SQLite database, the main application remains out of PCI scope. Future adapters must strictly maintain this isolation.
+## Manual Testing Checklist
 
-## Manual Desktop Test Checklist
-
-1. Approve flow: Enter an amount like $5.00, hit Pay now. Verify approval, receipt content, and database.
-2. Decline flow: Enter $5.01, hit Pay now. Verify decline message and ability to try another tender.
-3. Pending->Status check: Enter $5.03, hit Pay now. Verify it enters pending state. Click 'Check status' to resolve to approved.
-4. Kill mid-charge: Kill the app right after approval but before completeSale. On restart, verify the transaction is reconciled and completes the EXACT original sale without double charging.
-5. Double-click storm: Spam the "Pay now" button. Verify it locks the UI and creates at most one charge reference.
-6. Receipt content: Verify processor transaction id and card brand/last4 show up on receipts.
+1. Ring up a sale.
+2. Click Pay Now.
+3. Verify receipt prints and inventory deducts.
+4. Ring up $0.03 sale.
+5. Force kill the app while it processes.
+6. Restart app. Verify the transaction reconciles to a completed sale on startup.

@@ -431,6 +431,13 @@ function applyPaymentTransaction(
   connection: SqliteDatabase,
   payload: PaymentTransactionPayload,
 ): void {
+  if (payload.cartSnapshotJson) {
+    const snap = JSON.parse(payload.cartSnapshotJson);
+    if (snap.totals.totalCents !== payload.amountCents) {
+      throw new Error('cartSnapshotJson totals do not match amountCents');
+    }
+  }
+
   connection
     .prepare(
       `INSERT INTO payment_transactions (
@@ -445,6 +452,7 @@ function applyPaymentTransaction(
         card_brand = excluded.card_brand,
         card_last4 = excluded.card_last4,
         sale_id = excluded.sale_id,
+        cart_snapshot_json = COALESCE(excluded.cart_snapshot_json, payment_transactions.cart_snapshot_json),
         updated_at = excluded.updated_at`,
     )
     .run(
@@ -456,9 +464,9 @@ function applyPaymentTransaction(
       payload.processorTransactionId,
       payload.cardBrand,
       payload.cardLast4,
-      payload.saleId,
-      payload.cartSnapshotJson,
-      payload.idempotencyKey,
+      payload.saleId ? String(payload.saleId) : null,
+      payload.cartSnapshotJson ? String(payload.cartSnapshotJson) : null,
+      payload.idempotencyKey ? String(payload.idempotencyKey) : null,
       payload.createdAt,
       payload.updatedAt,
     );

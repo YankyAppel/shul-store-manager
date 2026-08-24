@@ -36,6 +36,17 @@ export function CheckoutScreen({
   onInventoryChanged(): Promise<void>;
 }) {
   const [settings, setSettings] = useState<StoreSettings>();
+
+  const [pendingTxs, setPendingTxs] = useState<PaymentTransactionPayload[]>([]);
+  useEffect(() => {
+    window.storeApi.payments
+      .reconcileTransactions()
+      .then(() =>
+        window.storeApi.payments.getPendingTransactions().then(setPendingTxs),
+      )
+      .catch(() => {});
+  }, []);
+
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
@@ -67,6 +78,7 @@ export function CheckoutScreen({
   const completionKey = useRef(crypto.randomUUID());
   const searchReqIdRef = useRef(0);
   const isCompletingRef = useRef(false);
+  const isChargingRef = useRef(false);
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
@@ -243,7 +255,12 @@ export function CheckoutScreen({
   }
 
   async function initiateCharge() {
-    if (!totals) return;
+    if (isChargingRef.current) return;
+    isChargingRef.current = true;
+    if (!totals) {
+      isChargingRef.current = false;
+      return;
+    }
     setChargeStatus('initiating');
     setChargeError(null);
     const ref = crypto.randomUUID();
@@ -292,6 +309,8 @@ export function CheckoutScreen({
     } catch (e: any) {
       setChargeStatus('error');
       setChargeError(e.message);
+    } finally {
+      isChargingRef.current = false;
     }
   }
 
