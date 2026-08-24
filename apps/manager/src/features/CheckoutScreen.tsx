@@ -8,6 +8,7 @@ import {
   type Product,
   type Sale,
   type StoreSettings,
+  type PaymentTransactionPayload,
 } from '@shul-store/shared';
 import { CustomerEditorModal } from './customers/CustomerEditorModal';
 import { formatMoney } from '../utils/formatters';
