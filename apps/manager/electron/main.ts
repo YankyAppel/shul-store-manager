@@ -158,10 +158,34 @@ import {
 } from '@shul-store/shared';
 
 function registerIpc(): void {
-  ipcMain.handle('kiosk:getSettings', () => ({ ...database.getKioskServerSettings(), kiosks: database.listKiosks() }));
-  ipcMain.handle('kiosk:pairCode', () => { if (!kioskServer) throw new Error('Enable Kiosk server first'); return kioskServer.newPairingCode(); });
-  ipcMain.handle('kiosk:revoke', (_e, id) => database.revokeKiosk(idSchema.parse(id)));
-  ipcMain.handle('kiosk:setServer', async (_e, enabled, port) => { const p=z.number().int().min(1).max(65535).parse(port); database.setKioskServerSettings(z.boolean().parse(enabled),p); if (enabled) { kioskServer ??= new KioskServer(database); await kioskServer.start(p); kioskReconcileTimer ??= setInterval(()=>void database.runStartupReconciliation(),600000); } else { await kioskServer?.stop(); kioskServer=null; if(kioskReconcileTimer)clearInterval(kioskReconcileTimer); kioskReconcileTimer=null; } });
+  ipcMain.handle('kiosk:getSettings', () => ({
+    ...database.getKioskServerSettings(),
+    kiosks: database.listKiosks(),
+  }));
+  ipcMain.handle('kiosk:pairCode', () => {
+    if (!kioskServer) throw new Error('Enable Kiosk server first');
+    return kioskServer.newPairingCode();
+  });
+  ipcMain.handle('kiosk:revoke', (_e, id) =>
+    database.revokeKiosk(idSchema.parse(id)),
+  );
+  ipcMain.handle('kiosk:setServer', async (_e, enabled, port) => {
+    const p = z.number().int().min(1).max(65535).parse(port);
+    database.setKioskServerSettings(z.boolean().parse(enabled), p);
+    if (enabled) {
+      kioskServer ??= new KioskServer(database);
+      await kioskServer.start(p);
+      kioskReconcileTimer ??= setInterval(
+        () => void database.runStartupReconciliation(),
+        600000,
+      );
+    } else {
+      await kioskServer?.stop();
+      kioskServer = null;
+      if (kioskReconcileTimer) clearInterval(kioskReconcileTimer);
+      kioskReconcileTimer = null;
+    }
+  });
   // Payments
   ipcMain.handle('payments:initiateCharge', async (_event, input) => {
     const value = initiateChargeInputSchema.parse(input);
@@ -813,7 +837,14 @@ app.whenReady().then(async () => {
   database = new StoreDatabase(path.join(dataDirectory, 'shul-store.sqlite'));
   registerIpc();
   const kioskConfig = database.getKioskServerSettings();
-  if (kioskConfig.enabled) { kioskServer = new KioskServer(database); await kioskServer.start(kioskConfig.port); kioskReconcileTimer=setInterval(()=>void database.runStartupReconciliation(),600000); }
+  if (kioskConfig.enabled) {
+    kioskServer = new KioskServer(database);
+    await kioskServer.start(kioskConfig.port);
+    kioskReconcileTimer = setInterval(
+      () => void database.runStartupReconciliation(),
+      600000,
+    );
+  }
   secretStore = new ElectronSafeStorageSyncSecretStore();
   // Start the background sync loop immediately if cloud backup is enabled.
   recreateSyncEngine();
