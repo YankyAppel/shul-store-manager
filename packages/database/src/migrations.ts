@@ -488,6 +488,21 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    name: 'kiosk_pairing_and_sale_attribution',
+    sql: `
+      CREATE TABLE kiosks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        admin_pin_hash TEXT NOT NULL, last_seen_at TEXT, created_at TEXT NOT NULL
+      );
+      ALTER TABLE sales ADD COLUMN channel TEXT NOT NULL DEFAULT 'manager' CHECK (channel IN ('manager','kiosk'));
+      ALTER TABLE sales ADD COLUMN kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL;
+      CREATE INDEX sales_kiosk_idx ON sales(kiosk_id, completed_at DESC);
+      CREATE TABLE kiosk_server_settings (singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), enabled INTEGER NOT NULL DEFAULT 0, port INTEGER NOT NULL DEFAULT 3939);
+      INSERT INTO kiosk_server_settings (singleton_id) VALUES (1);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

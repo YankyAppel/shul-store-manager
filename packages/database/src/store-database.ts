@@ -999,6 +999,23 @@ export class StoreDatabase {
       .all() as Row[];
   }
 
+  getKioskServerSettings(): { enabled: boolean; port: number } { const r=this.connection.prepare('SELECT enabled,port FROM kiosk_server_settings WHERE singleton_id=1').get() as Row; return {enabled:Boolean(r.enabled),port:Number(r.port)}; }
+  setKioskServerSettings(enabled: boolean, port: number): void { this.connection.prepare('UPDATE kiosk_server_settings SET enabled=?,port=? WHERE singleton_id=1').run(enabled?1:0,port); }
+
+  // --- KIOSK PAIRING ---
+  createKiosk(id: string, name: string, tokenHash: string, pinHash: string): void {
+    this.connection.prepare('INSERT INTO kiosks (id,name,token_hash,admin_pin_hash,created_at) VALUES (?,?,?,?,?)').run(id, name, tokenHash, pinHash, now());
+  }
+  findKioskByTokenHash(tokenHash: string): { id: string; name: string; last_seen_at: string | null } | undefined {
+    return this.connection.prepare('SELECT id,name,last_seen_at FROM kiosks WHERE token_hash=?').get(tokenHash) as { id: string; name: string; last_seen_at: string | null } | undefined;
+  }
+  listKiosks(): { id: string; name: string; lastSeenAt: string | null }[] {
+    return (this.connection.prepare('SELECT id,name,last_seen_at FROM kiosks ORDER BY name').all() as Row[]).map(r => ({ id: String(r.id), name: String(r.name), lastSeenAt: r.last_seen_at ? String(r.last_seen_at) : null }));
+  }
+  touchKiosk(id: string): void { this.connection.prepare('UPDATE kiosks SET last_seen_at=? WHERE id=?').run(now(), id); }
+  revokeKiosk(id: string): void { this.connection.prepare('DELETE FROM kiosks WHERE id=?').run(id); }
+  attributeKioskSale(saleId: string, kioskId: string): void { this.connection.prepare("UPDATE sales SET channel='kiosk', kiosk_id=? WHERE id=?").run(kioskId, saleId); }
+
   getPaymentTransaction(chargeReference: string) {
     return this.connection
       .prepare(`SELECT * FROM payment_transactions WHERE charge_reference = ?`)
