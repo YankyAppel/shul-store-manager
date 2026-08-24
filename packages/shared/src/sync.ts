@@ -240,6 +240,7 @@ export const paymentTransactionPayloadSchema = z.object({
     'error',
     'unknown',
     'reconciled',
+    'needs-attention',
   ]),
   processorTransactionId: z.string().nullable(),
   cardBrand: z.string().nullable(),

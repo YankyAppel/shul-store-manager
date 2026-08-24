@@ -994,7 +994,7 @@ export class StoreDatabase {
   getPendingPaymentTransactions() {
     return this.connection
       .prepare(
-        `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown') AND sale_id IS NULL`,
+        `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown', 'needs-attention') AND sale_id IS NULL`,
       )
       .all() as Row[];
   }
