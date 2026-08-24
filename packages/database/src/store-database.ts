@@ -853,7 +853,7 @@ export class StoreDatabase {
                 chargeReference: String(tx.charge_reference),
               },
             },
-            snapshot.totals,
+            snapshot,
           );
         } else if (
           result.status === 'declined' ||
@@ -1270,7 +1270,7 @@ export class StoreDatabase {
             'SELECT COALESCE(SUM(line_total_cents), 0) as s FROM sale_items WHERE sale_id = ?',
           )
           .get(saleId) as { s: number };
-        if (sumLineTotals.s !== totals.totalCents && !snapshot) {
+        if (sumLineTotals.s !== totals.totalCents) {
           throw new Error(
             `Line totals sum ${sumLineTotals.s} does not match sale total ${totals.totalCents}`,
           );
