@@ -295,7 +295,6 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('payments:reconcileTransactions', async () => {
-    
     await database.runStartupReconciliation();
   });
 
