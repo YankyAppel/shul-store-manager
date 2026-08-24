@@ -394,6 +394,17 @@ export function CheckoutScreen({
 
   return (
     <div className="checkout-layout">
+      {pendingTxs.length > 0 && (
+        <div className="banner warning" style={{ gridColumn: '1 / -1' }}>
+          <strong>Pending Transactions</strong>
+          <p>
+            There {pendingTxs.length === 1 ? 'is' : 'are'} {pendingTxs.length}{' '}
+            unresolved payment{' '}
+            {pendingTxs.length === 1 ? 'transaction' : 'transactions'}. They
+            will be resolved automatically in the background.
+          </p>
+        </div>
+      )}
       <section className="checkout-products">
         <form
           onSubmit={(e) => {

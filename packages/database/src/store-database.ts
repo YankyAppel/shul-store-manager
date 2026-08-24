@@ -1570,7 +1570,7 @@ export class StoreDatabase {
       .prepare('SELECT * FROM sale_items WHERE sale_id=? ORDER BY rowid')
       .all(id) as Row[];
 
-    let payment = this.connection
+    const payment = this.connection
       .prepare('SELECT * FROM payments WHERE sale_id=?')
       .get(id) as Row | undefined;
 
