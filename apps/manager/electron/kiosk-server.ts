@@ -121,22 +121,18 @@ export class KioskServer {
       const kiosk = this.auth(req);
       if (!kiosk) return json(res, 401, { error: 'Unauthorized' });
       if (req.method === 'GET' && url.pathname === '/api/catalog') {
-        const ps = this.db
-          .listProducts()
-          .map((p) => ({
-            id: p.id,
-            categoryId: p.categoryId,
-            name: p.name,
-            secondaryName: p.secondaryName,
-            barcodes: p.barcodes.map((b) => b.value),
-          }));
-        const cs = this.db
-          .listCategories()
-          .map((c) => ({
-            id: c.id,
-            name: c.name,
-            secondaryName: c.secondaryName,
-          }));
+        const ps = this.db.listProducts().map((p) => ({
+          id: p.id,
+          categoryId: p.categoryId,
+          name: p.name,
+          secondaryName: p.secondaryName,
+          barcodes: p.barcodes.map((b) => b.value),
+        }));
+        const cs = this.db.listCategories().map((c) => ({
+          id: c.id,
+          name: c.name,
+          secondaryName: c.secondaryName,
+        }));
         return json(res, 200, {
           storeName: this.db.getSettings().storeName,
           categories: cs,
