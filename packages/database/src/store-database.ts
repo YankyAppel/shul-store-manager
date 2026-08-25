@@ -31,6 +31,7 @@ import {
   type InventoryMovementInput,
   type InventoryMovementPayload,
   type KioskPayload,
+  type LocalRestoreResult,
   type KioskSummary,
   type LedgerEntryPayload,
   type PaymentTransactionPayload,
@@ -140,6 +141,7 @@ export interface SyncConfigRecord {
 
 export interface StoreDatabaseOptions {
   backupDirectory?: string;
+  imageDirectory?: string;
 }
 
 export class StoreDatabase {
@@ -147,6 +149,7 @@ export class StoreDatabase {
   private paymentService: PaymentService | null = null;
   private readonly secretStore: SecretStore;
   private readonly backupDirectory: string | null;
+  private readonly imageDirectory: string | null;
 
   constructor(
     filename: string,
@@ -155,6 +158,7 @@ export class StoreDatabase {
   ) {
     this.secretStore = secretStore;
     this.backupDirectory = options.backupDirectory ?? null;
+    this.imageDirectory = options.imageDirectory ?? null;
     this.connection = new SqliteDatabase(filename);
     this.connection.pragma('busy_timeout = 5000');
     const currentVersion = this.schemaVersion();
@@ -171,6 +175,8 @@ export class StoreDatabase {
         this.backupDirectory,
         'premigration',
         currentVersion,
+        new Date(),
+        this.imageDirectory ?? undefined,
       );
       if (!preMigrationAttempt.ok) {
         this.connection.close();
@@ -212,12 +218,16 @@ export class StoreDatabase {
         bytes: 0,
         ok: false,
         message: 'A backup directory is not configured.',
+        imagesCopied: 0,
+        imagesMissing: 0,
       };
     const attempt = createBackupFile(
       this.connection,
       this.backupDirectory,
       kind,
       this.schemaVersion(),
+      new Date(),
+      this.imageDirectory ?? undefined,
     );
     try {
       recordBackupAttempt(this.connection, attempt);
@@ -236,6 +246,47 @@ export class StoreDatabase {
 
   getBackupDirectory(): string | null {
     return this.backupDirectory;
+  }
+
+  recordRestoreResult(result: LocalRestoreResult): void {
+    this.connection
+      .prepare(
+        `INSERT INTO restore_results
+         (completed_at, filename, images_restored, images_missing, message)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        result.completedAt,
+        result.filename,
+        result.imagesRestored,
+        result.imagesMissing,
+        result.message,
+      );
+  }
+
+  getLastRestoreResult(): LocalRestoreResult | null {
+    const row = this.connection
+      .prepare(
+        `SELECT completed_at, filename, images_restored, images_missing, message
+         FROM restore_results ORDER BY completed_at DESC LIMIT 1`,
+      )
+      .get() as
+      | {
+          completed_at: string;
+          filename: string;
+          images_restored: number;
+          images_missing: number;
+          message: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      completedAt: row.completed_at,
+      filename: row.filename,
+      imagesRestored: Number(row.images_restored),
+      imagesMissing: Number(row.images_missing),
+      message: row.message,
+    };
   }
 
   // --- SETTINGS ---

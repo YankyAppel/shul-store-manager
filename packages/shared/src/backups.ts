@@ -8,8 +8,18 @@ export interface LocalBackupAttempt {
   bytes: number;
   ok: boolean;
   message: string;
+  imagesCopied: number;
+  imagesMissing: number;
 }
 
 export interface LocalBackup extends LocalBackupAttempt {
   available: boolean;
+}
+
+export interface LocalRestoreResult {
+  completedAt: string;
+  filename: string;
+  imagesRestored: number;
+  imagesMissing: number;
+  message: string;
 }

@@ -27,7 +27,11 @@ import type {
   SyncStatus,
 } from './sync.js';
 import type { KioskServerSettings } from './kiosk.js';
-import type { LocalBackup, LocalBackupAttempt } from './backups.js';
+import type {
+  LocalBackup,
+  LocalBackupAttempt,
+  LocalRestoreResult,
+} from './backups.js';
 
 export * from './barcode.js';
 export * from './backups.js';
@@ -256,6 +260,7 @@ export interface StoreApi {
   backups: {
     list(): Promise<LocalBackup[]>;
     create(): Promise<LocalBackupAttempt>;
+    getLastRestoreResult(): Promise<LocalRestoreResult | null>;
     revealFolder(): Promise<void>;
     restore(filename: string, confirmation: string): Promise<void>;
   };

@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   readdirSync,
+  readFileSync,
   renameSync,
   statSync,
   unlinkSync,
+  writeFileSync,
   mkdirSync,
 } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -25,10 +27,17 @@ export interface BackupAttempt {
   bytes: number;
   ok: boolean;
   message: string;
+  imagesCopied: number;
+  imagesMissing: number;
 }
 
 export interface BackupListing extends BackupAttempt {
   available: boolean;
+}
+
+export interface RestoreImageResult {
+  imagesRestored: number;
+  imagesMissing: number;
 }
 
 export interface BackupConnection {
@@ -53,6 +62,262 @@ const MANUAL_RE = new RegExp(
 const PRERESTORE_RE = new RegExp(
   `^shul-store-prerestore-(${TIMESTAMP.slice(1, -1)})\\.sqlite$`,
 );
+const IMAGE_DIGEST_RE = /^[0-9a-f]{64}$/;
+
+function isImageDigest(value: string): boolean {
+  return IMAGE_DIGEST_RE.test(value);
+}
+
+function imageVaultPath(directory: string, digest: string): string {
+  return path.join(directory, 'images', digest.slice(0, 2), digest);
+}
+
+function safeImagePath(directory: string, relativePath: string): string | null {
+  const root = path.resolve(directory);
+  const candidate = path.resolve(root, relativePath);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`)
+    ? candidate
+    : null;
+}
+
+function digestOf(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+interface ImageRow {
+  relative_path: string;
+  sha256: string;
+}
+
+function snapshotImages(filename: string): ImageRow[] {
+  let database: DatabaseSync | undefined;
+  try {
+    database = new DatabaseSync(filename, { readOnly: true });
+    return database
+      .prepare('SELECT relative_path, sha256 FROM images')
+      .all() as unknown as ImageRow[];
+  } catch {
+    return [];
+  } finally {
+    database?.close();
+  }
+}
+
+function ensureVaultImage(
+  backupDirectory: string,
+  imageDirectory: string | undefined,
+  image: ImageRow,
+): boolean {
+  if (!isImageDigest(image.sha256)) return false;
+  const target = imageVaultPath(backupDirectory, image.sha256);
+  try {
+    if (
+      statSync(target).isFile() &&
+      digestOf(readFileSync(target)) === image.sha256
+    )
+      return true;
+  } catch {
+    // The vault object is absent or corrupt; try to rebuild it from the source.
+  }
+  if (!imageDirectory) return false;
+  const source = safeImagePath(imageDirectory, image.relative_path);
+  if (!source) return false;
+  let content: Buffer;
+  try {
+    content = readFileSync(source);
+  } catch {
+    return false;
+  }
+  if (digestOf(content) !== image.sha256) return false;
+  const targetDirectory = path.dirname(target);
+  const temporary = path.join(
+    targetDirectory,
+    `.${image.sha256}-${randomUUID()}.tmp`,
+  );
+  try {
+    mkdirSync(targetDirectory, { recursive: true });
+    writeFileSync(temporary, content, { flag: 'wx' });
+    renameSync(temporary, target);
+    return true;
+  } catch {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file may not have been created.
+    }
+    return false;
+  }
+}
+
+function copySnapshotImages(
+  snapshotFilename: string,
+  backupDirectory: string,
+  imageDirectory: string | undefined,
+): { imagesCopied: number; imagesMissing: number } {
+  let imagesCopied = 0;
+  let imagesMissing = 0;
+  for (const image of snapshotImages(snapshotFilename)) {
+    const target = isImageDigest(image.sha256)
+      ? imageVaultPath(backupDirectory, image.sha256)
+      : null;
+    let alreadyPresent = false;
+    if (target) {
+      try {
+        alreadyPresent =
+          statSync(target).isFile() &&
+          digestOf(readFileSync(target)) === image.sha256;
+      } catch {
+        alreadyPresent = false;
+      }
+    }
+    if (alreadyPresent) continue;
+    if (ensureVaultImage(backupDirectory, imageDirectory, image))
+      imagesCopied++;
+    else imagesMissing++;
+  }
+  return { imagesCopied, imagesMissing };
+}
+
+function referencedImageDigests(
+  database: DatabaseSync | BackupConnection,
+): Set<string> {
+  const rows = database.prepare('SELECT sha256 FROM images').all() as Array<{
+    sha256: string;
+  }>;
+  return new Set(
+    rows.map((row) => row.sha256).filter((digest) => isImageDigest(digest)),
+  );
+}
+
+function collectRetainedImageDigests(
+  backupDirectory: string,
+  retainedBackups: ParsedBackupName[],
+): Set<string> | null {
+  const digests = new Set<string>();
+  for (const backup of retainedBackups) {
+    let database: DatabaseSync | undefined;
+    try {
+      database = new DatabaseSync(path.join(backupDirectory, backup.filename), {
+        readOnly: true,
+      });
+      for (const digest of referencedImageDigests(database))
+        digests.add(digest);
+    } catch {
+      return null;
+    } finally {
+      database?.close();
+    }
+  }
+  return digests;
+}
+
+function garbageCollectImageVault(
+  backupDirectory: string,
+  connection: BackupConnection,
+  retainedBackups: ParsedBackupName[],
+): void {
+  let keep: Set<string>;
+  try {
+    keep = referencedImageDigests(connection);
+  } catch {
+    return;
+  }
+  const backupDigests = collectRetainedImageDigests(
+    backupDirectory,
+    retainedBackups,
+  );
+  if (!backupDigests) return;
+  for (const digest of backupDigests) keep.add(digest);
+  const vault = path.join(backupDirectory, 'images');
+  let prefixes;
+  try {
+    prefixes = readdirSync(vault, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const prefix of prefixes) {
+    if (!prefix.isDirectory() || !/^[0-9a-f]{2}$/.test(prefix.name)) continue;
+    let objects;
+    try {
+      objects = readdirSync(path.join(vault, prefix.name), {
+        withFileTypes: true,
+      });
+    } catch {
+      continue;
+    }
+    for (const object of objects) {
+      if (
+        !object.isFile() ||
+        !IMAGE_DIGEST_RE.test(object.name) ||
+        !object.name.startsWith(prefix.name)
+      )
+        continue;
+      if (!keep.has(object.name)) {
+        try {
+          unlinkSync(path.join(vault, prefix.name, object.name));
+        } catch {
+          // A concurrent cleanup does not invalidate the backup.
+        }
+      }
+    }
+  }
+}
+
+export function restoreImagesFromVault(
+  snapshotFilename: string,
+  backupDirectory: string,
+  imageDirectory: string,
+): RestoreImageResult {
+  let imagesRestored = 0;
+  let imagesMissing = 0;
+  for (const image of snapshotImages(snapshotFilename)) {
+    if (!isImageDigest(image.sha256)) {
+      imagesMissing++;
+      continue;
+    }
+    const destination = safeImagePath(imageDirectory, image.relative_path);
+    if (!destination) {
+      imagesMissing++;
+      continue;
+    }
+    try {
+      if (
+        statSync(destination).isFile() &&
+        digestOf(readFileSync(destination)) === image.sha256
+      )
+        continue;
+    } catch {
+      // Restore the missing or corrupt destination from the vault.
+    }
+    const source = imageVaultPath(backupDirectory, image.sha256);
+    let content: Buffer;
+    try {
+      content = readFileSync(source);
+    } catch {
+      imagesMissing++;
+      continue;
+    }
+    if (digestOf(content) !== image.sha256) {
+      imagesMissing++;
+      continue;
+    }
+    const temporary = `${destination}.${randomUUID()}.tmp`;
+    try {
+      mkdirSync(path.dirname(destination), { recursive: true });
+      writeFileSync(temporary, content, { flag: 'wx' });
+      renameSync(temporary, destination);
+      imagesRestored++;
+    } catch {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // The temporary file may not have been created.
+      }
+      imagesMissing++;
+    }
+  }
+  return { imagesRestored, imagesMissing };
+}
 
 function formatTimestamp(value: Date): string {
   const parts = [
@@ -217,6 +482,7 @@ export function createBackup(
   kind: BackupKind,
   schemaVersion: number,
   at = new Date(),
+  imageDirectory?: string,
 ): BackupAttempt {
   const attemptedAt = new Date().toISOString();
   let target: { filename: string; path: string } | undefined;
@@ -240,12 +506,26 @@ export function createBackup(
         bytes: 0,
         ok: false,
         message: verification.message,
+        imagesCopied: 0,
+        imagesMissing: 0,
       };
     }
-    const parsed = readdirSync(directory)
-      .map(parseBackupName)
-      .filter((value): value is ParsedBackupName => value !== null);
-    for (const backup of selectBackupsToDelete(parsed)) {
+    const imageResult = copySnapshotImages(
+      target.path,
+      directory,
+      imageDirectory,
+    );
+    let parsed: ParsedBackupName[] = [];
+    try {
+      parsed = readdirSync(directory)
+        .map(parseBackupName)
+        .filter((value): value is ParsedBackupName => value !== null);
+    } catch {
+      // A verified database snapshot remains a successful backup even if
+      // rotation cannot inspect the directory.
+    }
+    const deletions = selectBackupsToDelete(parsed);
+    for (const backup of deletions) {
       if (backup.filename === target.filename) continue;
       try {
         unlinkSync(path.join(directory, backup.filename));
@@ -254,6 +534,18 @@ export function createBackup(
         // verified backup itself.
       }
     }
+    if (parsed.length > 0) {
+      let retained: ParsedBackupName[] = [];
+      try {
+        retained = readdirSync(directory)
+          .map(parseBackupName)
+          .filter((value): value is ParsedBackupName => value !== null);
+      } catch {
+        // Skip image cleanup when the retained set cannot be determined.
+      }
+      if (retained.length > 0)
+        garbageCollectImageVault(directory, connection, retained);
+    }
     return {
       attemptedAt,
       kind,
@@ -261,6 +553,7 @@ export function createBackup(
       bytes: verification.bytes,
       ok: true,
       message: 'Backup verified successfully.',
+      ...imageResult,
     };
   } catch (error) {
     if (temporary)
@@ -282,6 +575,8 @@ export function createBackup(
       bytes: 0,
       ok: false,
       message: `Backup failed: ${error instanceof Error ? error.message : String(error)}`,
+      imagesCopied: 0,
+      imagesMissing: 0,
     };
   }
 }
@@ -293,8 +588,8 @@ export function recordBackupAttempt(
   connection
     .prepare(
       `INSERT INTO backup_attempts
-       (attempted_at, kind, filename, bytes, ok, message)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       (attempted_at, kind, filename, bytes, ok, message, images_copied, images_missing)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       attempt.attemptedAt,
@@ -303,6 +598,8 @@ export function recordBackupAttempt(
       attempt.bytes,
       attempt.ok ? 1 : 0,
       attempt.message,
+      attempt.imagesCopied,
+      attempt.imagesMissing,
     );
 }
 
@@ -317,11 +614,14 @@ export function listBackups(
     bytes: number;
     ok: number;
     message: string;
+    images_copied: number;
+    images_missing: number;
   }> = [];
   try {
     rows = connection
       .prepare(
-        `SELECT attempted_at, kind, filename, bytes, ok, message
+        `SELECT attempted_at, kind, filename, bytes, ok, message,
+                images_copied, images_missing
          FROM backup_attempts ORDER BY attempted_at DESC`,
       )
       .all() as typeof rows;
@@ -345,6 +645,8 @@ export function listBackups(
       bytes,
       ok: Boolean(row.ok),
       message: row.message,
+      imagesCopied: Number(row.images_copied),
+      imagesMissing: Number(row.images_missing),
       available,
     };
   });

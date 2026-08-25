@@ -24,6 +24,7 @@ import { z } from 'zod';
 import {
   KioskServer,
   parseBackupName,
+  restoreImagesFromVault,
   StoreDatabase,
 } from '@shul-store/database';
 import {
@@ -73,6 +74,7 @@ let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
 let databasePath = '';
 let backupDirectory = '';
+let imageDirectory = '';
 let backupTimer: ReturnType<typeof setInterval> | null = null;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -532,6 +534,9 @@ function registerIpc(): void {
   });
   ipcMain.handle('backups:list', () => database.listBackups());
   ipcMain.handle('backups:create', () => database.createBackup('manual'));
+  ipcMain.handle('backups:getLastRestoreResult', () =>
+    database.getLastRestoreResult(),
+  );
   ipcMain.handle('backups:revealFolder', () => {
     void shell.openPath(backupDirectory);
   });
@@ -579,9 +584,29 @@ function registerIpc(): void {
         await unlink(temporary).catch(() => undefined);
         database = new StoreDatabase(databasePath, secretStore, {
           backupDirectory,
+          imageDirectory,
         });
         throw error;
       }
+      const imageResult = restoreImagesFromVault(
+        databasePath,
+        backupDirectory,
+        imageDirectory,
+      );
+      database = new StoreDatabase(databasePath, secretStore, {
+        backupDirectory,
+        imageDirectory,
+      });
+      database.recordRestoreResult({
+        completedAt: new Date().toISOString(),
+        filename: selected,
+        imagesRestored: imageResult.imagesRestored,
+        imagesMissing: imageResult.imagesMissing,
+        message:
+          imageResult.imagesMissing > 0
+            ? `${imageResult.imagesMissing} image(s) could not be restored from the backup vault.`
+            : 'All images referenced by the restored database are available.',
+      });
       app.relaunch();
       app.exit(0);
     },
@@ -791,7 +816,6 @@ async function chooseImage() {
 
   const id = randomUUID();
   const relativePath = `${id}${extension}`;
-  const imageDirectory = path.join(app.getPath('userData'), 'images');
   const destination = path.join(imageDirectory, relativePath);
   await mkdir(imageDirectory, { recursive: true });
   await copyFile(source, destination);
@@ -823,9 +847,13 @@ app.whenReady().then(async () => {
   const dataDirectory = app.getPath('userData');
   await mkdir(dataDirectory, { recursive: true });
   backupDirectory = path.join(dataDirectory, 'backups');
+  imageDirectory = path.join(dataDirectory, 'images');
   databasePath = path.join(dataDirectory, 'shul-store.sqlite');
   secretStore = new ElectronSafeStorageSyncSecretStore();
-  database = new StoreDatabase(databasePath, secretStore, { backupDirectory });
+  database = new StoreDatabase(databasePath, secretStore, {
+    backupDirectory,
+    imageDirectory,
+  });
   registerIpc();
   const newestScheduled = () =>
     database

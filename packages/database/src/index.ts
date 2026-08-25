@@ -32,12 +32,14 @@ export {
   listBackups,
   parseBackupName,
   recordBackupAttempt,
+  restoreImagesFromVault,
   selectBackupsToDelete,
   verifyBackup,
   type BackupAttempt,
   type BackupKind,
   type BackupListing,
   type ParsedBackupName,
+  type RestoreImageResult,
 } from './backup.js';
 export {
   enqueueOutboxEvent,

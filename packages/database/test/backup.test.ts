@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
@@ -15,12 +16,34 @@ import {
   formatBackupName,
   migrations,
   parseBackupName,
+  restoreImagesFromVault,
   selectBackupsToDelete,
   StoreDatabase,
 } from '../src/index.js';
 
 const temporaryDirectory = () =>
   path.join(tmpdir(), `shul-backup-${randomUUID()}`);
+
+function addImage(
+  database: StoreDatabase,
+  imageDirectory: string,
+  content: string,
+): { relativePath: string; digest: string } {
+  const relativePath = `${randomUUID()}.png`;
+  const bytes = Buffer.from(content);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  mkdirSync(imageDirectory, { recursive: true });
+  writeFileSync(path.join(imageDirectory, relativePath), bytes);
+  database.registerImage({
+    id: randomUUID(),
+    relativePath,
+    originalName: relativePath,
+    mimeType: 'image/png',
+    byteSize: bytes.length,
+    sha256: digest,
+  });
+  return { relativePath, digest };
+}
 
 function makeOldDatabase(filename: string): void {
   const database = new DatabaseSync(filename);
@@ -124,6 +147,191 @@ describe('local SQLite backups', () => {
     expect(result.ok).toBe(false);
     expect(readFileSync(path.join(backups, oldName), 'utf8')).toBe('keep me');
     expect(readdirSync(backups)).toEqual([oldName]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('deduplicates image objects in the shared vault', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const first = addImage(database, images, 'first image');
+    const second = addImage(database, images, 'second image');
+    const firstBackup = database.createBackup('manual');
+    const secondBackup = database.createBackup('manual');
+    expect(firstBackup).toMatchObject({
+      ok: true,
+      imagesCopied: 2,
+      imagesMissing: 0,
+    });
+    expect(secondBackup).toMatchObject({
+      ok: true,
+      imagesCopied: 0,
+      imagesMissing: 0,
+    });
+    expect(
+      readdirSync(path.join(backups, 'images', first.digest.slice(0, 2))),
+    ).toContain(first.digest);
+    expect(
+      readdirSync(path.join(backups, 'images', second.digest.slice(0, 2))),
+    ).toContain(second.digest);
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps the database backup successful when an image is missing', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const image = addImage(database, images, 'missing image');
+    unlinkSync(path.join(images, image.relativePath));
+    const result = database.createBackup('manual');
+    expect(result).toMatchObject({
+      ok: true,
+      imagesCopied: 0,
+      imagesMissing: 1,
+    });
+    expect(() =>
+      readFileSync(
+        path.join(backups, 'images', image.digest.slice(0, 2), image.digest),
+      ),
+    ).toThrow();
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not store corrupt image bytes under the claimed digest', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const image = addImage(database, images, 'expected image');
+    writeFileSync(path.join(images, image.relativePath), 'corrupt image');
+    const result = database.createBackup('manual');
+    expect(result).toMatchObject({
+      ok: true,
+      imagesCopied: 0,
+      imagesMissing: 1,
+    });
+    expect(() =>
+      readFileSync(
+        path.join(backups, 'images', image.digest.slice(0, 2), image.digest),
+      ),
+    ).toThrow();
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('garbage collects orphan image objects while retaining referenced backup images', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const retained = addImage(database, images, 'retained image');
+    expect(database.createBackup('manual').ok).toBe(true);
+    database.connection
+      .prepare('DELETE FROM images WHERE sha256 = ?')
+      .run(retained.digest);
+    const orphan = 'a'.repeat(64);
+    mkdirSync(path.join(backups, 'images', orphan.slice(0, 2)), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(backups, 'images', orphan.slice(0, 2), orphan),
+      'orphan',
+    );
+    expect(database.createBackup('manual').ok).toBe(true);
+    expect(
+      readFileSync(
+        path.join(
+          backups,
+          'images',
+          retained.digest.slice(0, 2),
+          retained.digest,
+        ),
+      ),
+    ).toEqual(Buffer.from('retained image'));
+    expect(() =>
+      readFileSync(path.join(backups, 'images', orphan.slice(0, 2), orphan)),
+    ).toThrow();
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('skips image garbage collection when a retained backup is unreadable', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const orphan = 'b'.repeat(64);
+    mkdirSync(path.join(backups, 'images', orphan.slice(0, 2)), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(backups, 'images', orphan.slice(0, 2), orphan),
+      'orphan',
+    );
+    writeFileSync(
+      path.join(backups, formatBackupName('manual', new Date('2025-01-01'))),
+      'not a database',
+    );
+    expect(database.createBackup('manual').ok).toBe(true);
+    expect(
+      readFileSync(path.join(backups, 'images', orphan.slice(0, 2), orphan)),
+    ).toEqual(Buffer.from('orphan'));
+    database.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('restores missing image files from the vault', () => {
+    const root = temporaryDirectory();
+    const filename = path.join(root, 'live.sqlite');
+    const backups = path.join(root, 'backups');
+    const images = path.join(root, 'images');
+    mkdirSync(root, { recursive: true });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+      imageDirectory: images,
+    });
+    const image = addImage(database, images, 'restored image');
+    const backup = database.createBackup('manual');
+    unlinkSync(path.join(images, image.relativePath));
+    const result = restoreImagesFromVault(
+      path.join(backups, backup.filename),
+      backups,
+      images,
+    );
+    expect(result).toEqual({ imagesRestored: 1, imagesMissing: 0 });
+    expect(readFileSync(path.join(images, image.relativePath))).toEqual(
+      Buffer.from('restored image'),
+    );
+    database.close();
     rmSync(root, { recursive: true, force: true });
   });
 

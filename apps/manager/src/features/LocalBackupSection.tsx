@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { LocalBackup, LocalBackupAttempt } from '@shul-store/shared';
+import type {
+  LocalBackup,
+  LocalBackupAttempt,
+  LocalRestoreResult,
+} from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 
 const formatBytes = (bytes: number): string => {
@@ -20,6 +24,9 @@ const kindLabel = (kind: LocalBackup['kind']): string =>
 export function LocalBackupSection() {
   const [backups, setBackups] = useState<LocalBackup[]>([]);
   const [result, setResult] = useState<LocalBackupAttempt | null>(null);
+  const [restoreResult, setRestoreResult] = useState<LocalRestoreResult | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const [restoreFile, setRestoreFile] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState('');
@@ -27,7 +34,12 @@ export function LocalBackupSection() {
 
   async function refresh() {
     try {
-      setBackups(await window.storeApi.backups.list());
+      const [nextBackups, nextRestoreResult] = await Promise.all([
+        window.storeApi.backups.list(),
+        window.storeApi.backups.getLastRestoreResult(),
+      ]);
+      setBackups(nextBackups);
+      setRestoreResult(nextRestoreResult);
     } catch (error) {
       setRestoreMessage(messageFrom(error));
     }
@@ -52,6 +64,8 @@ export function LocalBackupSection() {
         bytes: 0,
         ok: false,
         message: messageFrom(error),
+        imagesCopied: 0,
+        imagesMissing: 0,
       });
     } finally {
       setLoading(false);
@@ -89,7 +103,8 @@ export function LocalBackupSection() {
       <h3 className="local-backup-heading">Local backups</h3>
       <p className="local-backup-description">
         Verified SQLite backups are kept on this computer automatically. Product
-        images under <code>userData/images</code> are not included.
+        images are copied to a shared, deduplicated vault and checked during
+        restore.
       </p>
       <div className="local-backup-actions">
         <button
@@ -108,8 +123,19 @@ export function LocalBackupSection() {
           className={`${result.ok ? 'success' : 'alert'} local-backup-result`}
         >
           {result.ok
-            ? `Backup complete: ${result.filename} (${formatBytes(result.bytes)}).`
+            ? `Backup complete: ${result.filename} (${formatBytes(result.bytes)}); ${result.imagesCopied} image(s) copied, ${result.imagesMissing} missing.`
             : `Backup failed: ${result.message}`}
+        </div>
+      )}
+      {restoreResult && (
+        <div
+          className={`local-backup-result ${
+            restoreResult.imagesMissing > 0 ? 'alert' : 'success'
+          }`}
+        >
+          Last restore ({new Date(restoreResult.completedAt).toLocaleString()}):{' '}
+          {restoreResult.imagesRestored} image(s) restored,{' '}
+          {restoreResult.imagesMissing} missing. {restoreResult.message}
         </div>
       )}
       {lastFailure && (
@@ -151,6 +177,20 @@ export function LocalBackupSection() {
                   </button>
                 )}
               </span>
+              {backup.ok && (
+                <span
+                  className={
+                    backup.imagesMissing > 0
+                      ? 'local-backup-image-warning'
+                      : 'local-backup-image-summary'
+                  }
+                >
+                  {backup.imagesCopied} image(s) copied ·{' '}
+                  {backup.imagesMissing > 0
+                    ? `${backup.imagesMissing} missing`
+                    : 'complete'}
+                </span>
+              )}
             </div>
           ))}
         </div>

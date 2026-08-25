@@ -119,6 +119,8 @@ const api: StoreApi = {
   backups: {
     list: () => ipcRenderer.invoke('backups:list'),
     create: () => ipcRenderer.invoke('backups:create'),
+    getLastRestoreResult: () =>
+      ipcRenderer.invoke('backups:getLastRestoreResult'),
     revealFolder: () => ipcRenderer.invoke('backups:revealFolder'),
     restore: (filename, confirmation) =>
       ipcRenderer.invoke('backups:restore', filename, confirmation),

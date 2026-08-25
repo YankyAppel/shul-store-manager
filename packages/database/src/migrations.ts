@@ -653,10 +653,23 @@ export const migrations: Migration[] = [
         filename TEXT NOT NULL,
         bytes INTEGER NOT NULL CHECK (bytes >= 0),
         ok INTEGER NOT NULL CHECK (ok IN (0, 1)),
-        message TEXT NOT NULL
+        message TEXT NOT NULL,
+        images_copied INTEGER NOT NULL DEFAULT 0 CHECK (images_copied >= 0),
+        images_missing INTEGER NOT NULL DEFAULT 0 CHECK (images_missing >= 0)
       );
       CREATE INDEX backup_attempts_time_idx
         ON backup_attempts(attempted_at DESC);
+
+      CREATE TABLE restore_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        completed_at TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        images_restored INTEGER NOT NULL CHECK (images_restored >= 0),
+        images_missing INTEGER NOT NULL CHECK (images_missing >= 0),
+        message TEXT NOT NULL
+      );
+      CREATE INDEX restore_results_time_idx
+        ON restore_results(completed_at DESC);
     `,
   },
 ];

@@ -217,6 +217,15 @@ button.primary:hover {
   border-bottom: 1px solid #edf0ee;
   padding: 6px 0;
 }
+.local-backup-image-summary,
+.local-backup-image-warning {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.local-backup-image-warning {
+  color: #a33;
+  font-weight: 600;
+}
 .local-backup-restore-button {
   margin-left: 8px;
 }
