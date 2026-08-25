@@ -12,8 +12,7 @@ import {
   safeStorage,
 } from 'electron';
 import { z } from 'zod';
-import { StoreDatabase } from '@shul-store/database';
-import { KioskServer } from './kiosk-server.js';
+import { KioskServer, StoreDatabase } from '@shul-store/database';
 import {
   accountPaymentReceiptHtml,
   categoryInputSchema,
@@ -150,12 +149,7 @@ async function createWindow(): Promise<void> {
     await window.loadFile(path.join(import.meta.dirname, '../dist/index.html'));
 }
 
-import { processors } from '@shul-store/payments';
-import {
-  initiateChargeInputSchema,
-  calculateCart,
-  errorMessage,
-} from '@shul-store/shared';
+import { initiateChargeInputSchema } from '@shul-store/shared';
 
 function registerIpc(): void {
   ipcMain.handle('kiosk:getSettings', () => ({
@@ -186,153 +180,26 @@ function registerIpc(): void {
       kioskReconcileTimer = null;
     }
   });
-  // Payments
+  // Payments — every integrated card charge goes through the shared payment service so the
+  // manager and the LAN kiosk share one validation, snapshot, reservation, finalization and
+  // reconciliation path.
   ipcMain.handle('payments:initiateCharge', async (_event, input) => {
     const value = initiateChargeInputSchema.parse(input);
-    const settings = database.getSettings();
-    if (!settings.cardProcessingEnabled || !settings.cardProcessorId) {
-      throw new Error('Card processing is not enabled');
-    }
-
-    const managerProducts = value.lines.map((l) => {
-      const product = database.getProduct(l.productId);
-      if (!product.active) throw new Error('Product is inactive');
-      if (
-        l.barcodeUsed &&
-        !product.barcodes.some(
-          (barcode) =>
-            barcode.value.toLowerCase() === l.barcodeUsed!.toLowerCase(),
-        )
-      )
-        throw new Error('Barcode does not belong to the selected product');
-      return { product, quantity: l.quantity };
-    });
-    const calculated = calculateCart(managerProducts, settings);
-
-    if (calculated.totalCents <= 0)
-      throw new Error('Cannot process $0.00 charge');
-
-    const processor = processors.find((p) => p.id === settings.cardProcessorId);
-    if (!processor) throw new Error('Processor not found');
-    let config: unknown;
-    try {
-      config = settings.cardProcessorConfigJson
-        ? processor.configSchema.parse(
-            JSON.parse(settings.cardProcessorConfigJson),
-          )
-        : processor.configSchema.parse({});
-    } catch {
-      throw new Error('Invalid processor configuration');
-    }
-
-    const cartSnapshotJson = JSON.stringify({
-      lines: value.lines.map((l, i) => {
-        const product = database.getProduct(l.productId);
-        const calcLine = calculated.lines[i]!;
-        return {
-          productId: l.productId,
-          quantity: l.quantity,
-          barcodeUsed: l.barcodeUsed,
-          productName: product.name,
-          secondaryName: product.secondaryName,
-          unitSellingPriceCents: product.sellingPriceCents,
-          unitPurchaseCostCents: product.purchaseCostCents,
-          taxable: product.taxable,
-          unitPriceCents: calcLine.unitPriceCents,
-          subtotalCents: calcLine.subtotalCents,
-          taxCents: calcLine.taxCents,
-          totalCents: calcLine.totalCents,
-        };
-      }),
-      totals: {
-        subtotalCents: calculated.subtotalCents,
-        taxCents: calculated.taxCents,
-        totalCents: calculated.totalCents,
+    return database.payments.charge(
+      {
+        chargeReference: value.chargeReference,
+        idempotencyKey: value.idempotencyKey,
+        lines: value.lines,
       },
-    });
-
-    database.createPaymentTransaction(
-      value.chargeReference,
-      settings.cardProcessorId,
-      calculated.totalCents,
-      cartSnapshotJson,
-      value.idempotencyKey,
-      null,
-      [
-        ...value.lines.reduce(
-          (map, line) =>
-            map.set(
-              line.productId,
-              (map.get(line.productId) ?? 0) + line.quantity,
-            ),
-          new Map<string, number>(),
-        ),
-      ].map(([productId, quantity]) => ({ productId, quantity })),
+      { channel: 'manager', kioskId: null },
     );
-
-    try {
-      const result = await processor.createCharge(
-        {
-          chargeReference: value.chargeReference,
-          amountCents: calculated.totalCents,
-        },
-        config,
-        database.getProcessorStorage(),
-      );
-
-      database.updatePaymentTransactionStatus(
-        value.chargeReference,
-        result.status === 'pending' ? 'unknown' : result.status,
-        result.processorTransactionId,
-        result.cardBrand,
-        result.cardLast4,
-      );
-
-      return result;
-    } catch (e: unknown) {
-      database.updatePaymentTransactionStatus(value.chargeReference, 'unknown');
-      return { status: 'unknown', errorMessage: errorMessage(e) };
-    }
   });
 
   ipcMain.handle(
     'payments:getChargeStatus',
     async (_event, chargeReference) => {
       const id = z.string().uuid().parse(chargeReference);
-      const settings = database.getSettings();
-      const processor = processors.find(
-        (p) => p.id === settings.cardProcessorId,
-      );
-      if (!processor) throw new Error('Processor not found');
-
-      try {
-        let config = {};
-        if (settings.cardProcessorConfigJson && processor.configSchema) {
-          try {
-            config = processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            );
-          } catch {
-            throw new Error('Invalid processor configuration');
-          }
-        }
-
-        const result = await processor.getChargeStatus(
-          id,
-          config,
-          database.getProcessorStorage(),
-        );
-        database.updatePaymentTransactionStatus(
-          id,
-          result.status === 'pending' ? 'unknown' : result.status,
-          result.processorTransactionId,
-          result.cardBrand,
-          result.cardLast4,
-        );
-        return result;
-      } catch (e: unknown) {
-        return { status: 'error', errorMessage: errorMessage(e) };
-      }
+      return database.payments.reconcile(id);
     },
   );
 
@@ -343,6 +210,20 @@ function registerIpc(): void {
   ipcMain.handle('payments:reconcileTransactions', async () => {
     await database.runStartupReconciliation();
   });
+
+  // Approved-but-unfinalizable charges that need an operator.
+  ipcMain.handle('payments:listNeedsAttention', () =>
+    database.payments.listNeedsAttention(),
+  );
+  ipcMain.handle(
+    'payments:resolveNeedsAttention',
+    (_event, chargeReference, action, note) =>
+      database.payments.resolveNeedsAttention(
+        z.string().uuid().parse(chargeReference),
+        z.enum(['retry', 'void']).parse(action),
+        z.string().trim().max(400).optional().parse(note),
+      ),
+  );
 
   // Categories
   ipcMain.handle('categories:list', (_event, includeInactive) =>

@@ -160,6 +160,21 @@ export interface StoredImage {
   mimeType: string;
 }
 
+/** An approved card charge that could not be finalized from its frozen snapshot. */
+export interface NeedsAttentionCharge {
+  chargeReference: string;
+  status: string;
+  totalCents: number;
+  attentionReason: string | null;
+  processorId: string;
+  originChannel: 'manager' | 'kiosk';
+  kioskId: string | null;
+  kioskName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  reservations: { productId: string; quantity: number; status: string }[];
+}
+
 export interface StoreApi {
   payments: {
     initiateCharge(
@@ -182,6 +197,17 @@ export interface StoreApi {
     }>;
     getPendingTransactions(): Promise<any[]>;
     reconcileTransactions(): Promise<void>;
+    listNeedsAttention(): Promise<NeedsAttentionCharge[]>;
+    resolveNeedsAttention(
+      chargeReference: string,
+      action: 'retry' | 'void',
+      note?: string,
+    ): Promise<{
+      chargeReference: string;
+      status: string;
+      totalCents: number;
+      attentionReason?: string;
+    } | null>;
   };
 
   categories: {
