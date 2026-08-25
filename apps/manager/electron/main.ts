@@ -212,6 +212,19 @@ function registerIpc(): void {
     if (calculated.totalCents <= 0)
       throw new Error('Cannot process $0.00 charge');
 
+    const processor = processors.find((p) => p.id === settings.cardProcessorId);
+    if (!processor) throw new Error('Processor not found');
+    let config: unknown;
+    try {
+      config = settings.cardProcessorConfigJson
+        ? processor.configSchema.parse(
+            JSON.parse(settings.cardProcessorConfigJson),
+          )
+        : processor.configSchema.parse({});
+    } catch {
+      throw new Error('Invalid processor configuration');
+    }
+
     const cartSnapshotJson = JSON.stringify({
       lines: value.lines.map((l, i) => {
         const product = database.getProduct(l.productId);
@@ -258,22 +271,6 @@ function registerIpc(): void {
     );
 
     try {
-      const processor = processors.find(
-        (p) => p.id === settings.cardProcessorId,
-      );
-      if (!processor) throw new Error('Processor not found');
-
-      let config = {};
-      if (settings.cardProcessorConfigJson && processor.configSchema) {
-        try {
-          config = processor.configSchema.parse(
-            JSON.parse(settings.cardProcessorConfigJson),
-          );
-        } catch {
-          throw new Error('Invalid processor configuration');
-        }
-      }
-
       const result = await processor.createCharge(
         {
           chargeReference: value.chargeReference,
