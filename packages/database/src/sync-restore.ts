@@ -73,6 +73,29 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
     'inventory_movements',
     'customer_ledger',
     'audit_events',
+  ];
+  for (const table of tables) {
+    const row = connection
+      .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+      .get() as { count: number } | undefined;
+    if ((row?.count ?? 0) > 0) return false;
+  }
+  return true;
+}
+
+/** Includes operational rows that must be protected before a schema upgrade. */
+export function hasBusinessRows(connection: SqliteDatabase): boolean {
+  const tables = [
+    'categories',
+    'products',
+    'customers',
+    'sales',
+    'sale_items',
+    'payments',
+    'account_payments',
+    'inventory_movements',
+    'customer_ledger',
+    'audit_events',
     'payment_transactions',
     'kiosks',
   ];
@@ -84,9 +107,9 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
     const row = connection
       .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
       .get() as { count: number } | undefined;
-    if ((row?.count ?? 0) > 0) return false;
+    if ((row?.count ?? 0) > 0) return true;
   }
-  return true;
+  return false;
 }
 
 /** Insert a metadata-only image stub so image_id foreign keys remain valid.

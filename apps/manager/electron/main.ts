@@ -531,9 +531,9 @@ function registerIpc(): void {
     return result;
   });
   ipcMain.handle('backups:list', () => database.listBackups());
-  ipcMain.handle('backups:create', () => database.createBackup('scheduled'));
+  ipcMain.handle('backups:create', () => database.createBackup('manual'));
   ipcMain.handle('backups:revealFolder', () => {
-    shell.showItemInFolder(backupDirectory);
+    void shell.openPath(backupDirectory);
   });
   ipcMain.handle(
     'backups:restore',
@@ -577,6 +577,9 @@ function registerIpc(): void {
         await rename(temporary, databasePath);
       } catch (error) {
         await unlink(temporary).catch(() => undefined);
+        database = new StoreDatabase(databasePath, secretStore, {
+          backupDirectory,
+        });
         throw error;
       }
       app.relaunch();
@@ -879,23 +882,23 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   engine?.stop();
   if (database) {
-    void Promise.resolve()
-      .then(() => {
-        const latest = database
-          .listBackups()
-          .filter(
-            (backup) =>
-              backup.kind === 'scheduled' && backup.ok && backup.available,
-          )
-          .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
-        if (
-          !latest ||
-          new Date(latest.attemptedAt).toDateString() !==
-            new Date().toDateString()
+    try {
+      const latest = database
+        .listBackups()
+        .filter(
+          (backup) =>
+            backup.kind === 'scheduled' && backup.ok && backup.available,
         )
-          database.createBackup('scheduled');
-      })
-      .catch(() => undefined);
+        .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
+      if (
+        !latest ||
+        new Date(latest.attemptedAt).toDateString() !==
+          new Date().toDateString()
+      )
+        database.createBackup('scheduled');
+    } catch {
+      // Quitting must remain best-effort even if the backup cannot run.
+    }
   }
   if (backupTimer) clearInterval(backupTimer);
 });

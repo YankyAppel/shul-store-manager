@@ -9,7 +9,7 @@ import {
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 
-export type BackupKind = 'scheduled' | 'premigration' | 'prerestore';
+export type BackupKind = 'scheduled' | 'manual' | 'premigration' | 'prerestore';
 
 export interface ParsedBackupName {
   filename: string;
@@ -47,6 +47,9 @@ const BACKUP_RE = new RegExp(
 const PREMIGRATION_RE = new RegExp(
   `^shul-store-premigration-(${TIMESTAMP.slice(1, -1)})-v(\\d+)\\.sqlite$`,
 );
+const MANUAL_RE = new RegExp(
+  `^shul-store-manual-(${TIMESTAMP.slice(1, -1)})\\.sqlite$`,
+);
 const PRERESTORE_RE = new RegExp(
   `^shul-store-prerestore-(${TIMESTAMP.slice(1, -1)})\\.sqlite$`,
 );
@@ -78,6 +81,7 @@ export function formatBackupName(
       );
     return `shul-store-premigration-${timestamp}-v${schemaVersion}.sqlite`;
   }
+  if (kind === 'manual') return `shul-store-manual-${timestamp}.sqlite`;
   if (kind === 'prerestore') return `shul-store-prerestore-${timestamp}.sqlite`;
   return `shul-store-${timestamp}.sqlite`;
 }
@@ -98,6 +102,14 @@ export function parseBackupName(filename: string): ParsedBackupName | null {
       kind: 'premigration',
       timestamp: match[1]!,
       schemaVersion: Number(match[2]),
+    };
+  match = MANUAL_RE.exec(filename);
+  if (match)
+    return {
+      filename,
+      kind: 'manual',
+      timestamp: match[1]!,
+      schemaVersion: null,
     };
   match = PRERESTORE_RE.exec(filename);
   if (match)
@@ -121,7 +133,12 @@ export function selectBackupsToDelete(
       .slice(keep)
       .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   };
-  return [...deleteOldest('scheduled', 10), ...deleteOldest('premigration', 3)];
+  return [
+    ...deleteOldest('scheduled', 10),
+    ...deleteOldest('manual', 5),
+    ...deleteOldest('premigration', 3),
+    ...deleteOldest('prerestore', 3),
+  ];
 }
 
 function sqlString(value: string): string {

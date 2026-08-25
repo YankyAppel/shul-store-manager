@@ -11,8 +11,12 @@ Backups are stored in the `backups` directory under Electron's `userData`
 directory. A scheduled backup is made when the newest scheduled copy is more
 than 20 hours old, then approximately every 24 hours while the manager runs.
 The manager keeps the 10 newest scheduled backups and the 3 newest
-pre-migration backups. Foreign files and files with unrecognized names are
+pre-migration backups, plus the 5 newest manual backups and 3 newest
+pre-restore safety backups. Foreign files and files with unrecognized names are
 left untouched.
+
+Use **Back up now** to create a manual backup. Manual backups have their own
+retention limit and are not counted as scheduled backups.
 
 Before a database migration on a non-empty store, the manager makes and
 verifies a pre-migration backup. If that backup cannot be verified, the

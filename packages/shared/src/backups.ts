@@ -1,4 +1,5 @@
-export type LocalBackupKind = 'scheduled' | 'premigration' | 'prerestore';
+export type LocalBackupKind =
+  'scheduled' | 'manual' | 'premigration' | 'prerestore';
 
 export interface LocalBackupAttempt {
   attemptedAt: string;

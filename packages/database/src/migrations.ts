@@ -649,7 +649,7 @@ export const migrations: Migration[] = [
       CREATE TABLE backup_attempts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         attempted_at TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('scheduled', 'premigration', 'prerestore')),
+        kind TEXT NOT NULL CHECK (kind IN ('scheduled', 'manual', 'premigration', 'prerestore')),
         filename TEXT NOT NULL,
         bytes INTEGER NOT NULL CHECK (bytes >= 0),
         ok INTEGER NOT NULL CHECK (ok IN (0, 1)),

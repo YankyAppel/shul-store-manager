@@ -11,9 +11,11 @@ const formatBytes = (bytes: number): string => {
 const kindLabel = (kind: LocalBackup['kind']): string =>
   kind === 'premigration'
     ? 'Pre-migration'
-    : kind === 'prerestore'
-      ? 'Pre-restore'
-      : 'Scheduled';
+    : kind === 'manual'
+      ? 'Manual'
+      : kind === 'prerestore'
+        ? 'Pre-restore'
+        : 'Scheduled';
 
 export function LocalBackupSection() {
   const [backups, setBackups] = useState<LocalBackup[]>([]);
@@ -45,7 +47,7 @@ export function LocalBackupSection() {
     } catch (error) {
       setResult({
         attemptedAt: new Date().toISOString(),
-        kind: 'scheduled',
+        kind: 'manual',
         filename: '',
         bytes: 0,
         ok: false,
@@ -66,23 +68,30 @@ export function LocalBackupSection() {
     }
   }
 
-  const lastFailure = backups.find((backup) => !backup.ok);
+  const latestFailure = backups
+    .filter((backup) => !backup.ok)
+    .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
+  const latestSuccess = backups
+    .filter((backup) => backup.ok)
+    .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
+  const lastFailure =
+    latestFailure &&
+    (!latestSuccess || latestFailure.attemptedAt > latestSuccess.attemptedAt)
+      ? latestFailure
+      : null;
   const selected = backups.find(
     (backup) =>
       backup.filename === restoreFile && backup.available && backup.ok,
   );
 
   return (
-    <section
-      className="settings-form"
-      style={{ borderTop: '1px solid #e0e5e2', marginTop: 16, paddingTop: 16 }}
-    >
-      <h3 style={{ margin: '0 0 4px 0' }}>Local backups</h3>
-      <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
+    <section className="settings-form local-backup-section">
+      <h3 className="local-backup-heading">Local backups</h3>
+      <p className="local-backup-description">
         Verified SQLite backups are kept on this computer automatically. Product
         images under <code>userData/images</code> are not included.
       </p>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div className="local-backup-actions">
         <button
           className="primary"
           onClick={() => void backupNow()}
@@ -96,8 +105,7 @@ export function LocalBackupSection() {
       </div>
       {result && (
         <div
-          className={result.ok ? 'success' : 'alert'}
-          style={{ marginBottom: 12 }}
+          className={`${result.ok ? 'success' : 'alert'} local-backup-result`}
         >
           {result.ok
             ? `Backup complete: ${result.filename} (${formatBytes(result.bytes)}).`
@@ -105,26 +113,20 @@ export function LocalBackupSection() {
         </div>
       )}
       {lastFailure && (
-        <div className="alert" style={{ marginBottom: 12 }}>
+        <div className="alert local-backup-result">
           Last backup failure (
           {new Date(lastFailure.attemptedAt).toLocaleString()}):{' '}
           {lastFailure.message}
         </div>
       )}
       {backups.length === 0 ? (
-        <p style={{ color: '#66776d' }}>No backup attempts yet.</p>
+        <p className="local-backup-empty">No backup attempts yet.</p>
       ) : (
-        <div style={{ display: 'grid', gap: 6 }}>
+        <div className="local-backup-list">
           {backups.map((backup) => (
             <div
               key={`${backup.attemptedAt}-${backup.filename}`}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                gap: 12,
-                borderBottom: '1px solid #edf0ee',
-                padding: '6px 0',
-              }}
+              className="local-backup-row"
             >
               <span>
                 {new Date(backup.attemptedAt).toLocaleString()} ·{' '}
@@ -138,7 +140,7 @@ export function LocalBackupSection() {
                     : 'Failed'}
                 {backup.ok && backup.available && (
                   <button
-                    style={{ marginLeft: 8 }}
+                    className="local-backup-restore-button"
                     onClick={() => {
                       setRestoreFile(backup.filename);
                       setConfirmation('');
@@ -154,7 +156,7 @@ export function LocalBackupSection() {
         </div>
       )}
       {selected && (
-        <div className="alert" style={{ marginTop: 12 }}>
+        <div className="alert local-backup-restore">
           <strong>Restore {selected.filename}?</strong>
           <p>
             This replaces the live database. A verified pre-restore copy will be
@@ -166,7 +168,7 @@ export function LocalBackupSection() {
             onChange={(event) => setConfirmation(event.target.value)}
             placeholder={`RESTORE ${selected.filename}`}
           />
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <div className="local-backup-confirm-actions">
             <button
               className="primary"
               disabled={confirmation !== `RESTORE ${selected.filename}`}

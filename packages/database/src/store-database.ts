@@ -71,6 +71,7 @@ import {
 } from './sync-outbox.js';
 import {
   isBusinessDataEmpty,
+  hasBusinessRows,
   restoreFromEvents,
   type RestoreOutcome,
   type ValidatedRestoreEvent,
@@ -149,18 +150,11 @@ export class StoreDatabase {
 
   constructor(
     filename: string,
-    secretStoreOrOptions:
-      SecretStore | StoreDatabaseOptions = new PlaintextSecretStore(),
+    secretStore: SecretStore = new PlaintextSecretStore(),
     options: StoreDatabaseOptions = {},
   ) {
-    const isSecretStore = 'encrypt' in secretStoreOrOptions;
-    this.secretStore = isSecretStore
-      ? secretStoreOrOptions
-      : new PlaintextSecretStore();
-    this.backupDirectory =
-      (isSecretStore
-        ? options.backupDirectory
-        : secretStoreOrOptions.backupDirectory) ?? null;
+    this.secretStore = secretStore;
+    this.backupDirectory = options.backupDirectory ?? null;
     this.connection = new SqliteDatabase(filename);
     this.connection.pragma('busy_timeout = 5000');
     const currentVersion = this.schemaVersion();
@@ -170,7 +164,7 @@ export class StoreDatabase {
       this.backupDirectory &&
       currentVersion > 0 &&
       currentVersion < latestVersion &&
-      !isBusinessDataEmpty(this.connection)
+      hasBusinessRows(this.connection)
     ) {
       preMigrationAttempt = createBackupFile(
         this.connection,

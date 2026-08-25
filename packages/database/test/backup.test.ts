@@ -127,7 +127,7 @@ describe('local SQLite backups', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('keeps the newest scheduled and pre-migration backups and ignores foreign files', () => {
+  it('keeps the newest backups by kind and ignores foreign files', () => {
     const names = [
       ...Array.from({ length: 12 }, (_, index) =>
         parseBackupName(
@@ -146,18 +146,38 @@ describe('local SQLite backups', () => {
           ),
         )!,
       ),
+      ...Array.from({ length: 7 }, (_, index) =>
+        parseBackupName(
+          formatBackupName(
+            'manual',
+            new Date(`2026-03-${String(index + 1).padStart(2, '0')}T00:00:00Z`),
+          ),
+        )!,
+      ),
+      ...Array.from({ length: 5 }, (_, index) =>
+        parseBackupName(
+          formatBackupName(
+            'prerestore',
+            new Date(`2026-04-${String(index + 1).padStart(2, '0')}T00:00:00Z`),
+          ),
+        )!,
+      ),
     ];
     const deletions = selectBackupsToDelete(names);
     expect(deletions.filter((item) => item.kind === 'scheduled')).toHaveLength(
       2,
     );
+    expect(deletions.filter((item) => item.kind === 'manual')).toHaveLength(2);
     expect(
       deletions.filter((item) => item.kind === 'premigration'),
     ).toHaveLength(2);
+    expect(deletions.filter((item) => item.kind === 'prerestore')).toHaveLength(
+      2,
+    );
     expect(parseBackupName('foreign.sqlite')).toBeNull();
   });
 
-  it('round-trips scheduled and pre-migration filenames', () => {
+  it('round-trips backup filenames', () => {
     const date = new Date('2026-03-04T05:06:07Z');
     expect(parseBackupName(formatBackupName('scheduled', date))).toMatchObject({
       kind: 'scheduled',
@@ -170,6 +190,18 @@ describe('local SQLite backups', () => {
       timestamp: '20260304-050607',
       schemaVersion: 16,
     });
+    expect(parseBackupName(formatBackupName('manual', date))).toMatchObject({
+      kind: 'manual',
+      timestamp: '20260304-050607',
+      schemaVersion: null,
+    });
+    expect(parseBackupName(formatBackupName('prerestore', date))).toMatchObject(
+      {
+        kind: 'prerestore',
+        timestamp: '20260304-050607',
+        schemaVersion: null,
+      },
+    );
   });
 
   it('takes a pre-migration backup before upgrading a populated database', () => {
@@ -178,7 +210,9 @@ describe('local SQLite backups', () => {
     const backups = path.join(root, 'backups');
     mkdirSync(root, { recursive: true });
     makeOldDatabase(filename);
-    const upgraded = new StoreDatabase(filename, { backupDirectory: backups });
+    const upgraded = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+    });
     expect(upgraded.schemaVersion()).toBe(17);
     expect(
       upgraded
@@ -194,7 +228,9 @@ describe('local SQLite backups', () => {
     const filename = path.join(root, 'live.sqlite');
     const backups = path.join(root, 'backups');
     mkdirSync(root, { recursive: true });
-    const database = new StoreDatabase(filename, { backupDirectory: backups });
+    const database = new StoreDatabase(filename, undefined, {
+      backupDirectory: backups,
+    });
     const attempt = database.createBackup('scheduled');
     expect(attempt.ok).toBe(true);
     rmSync(path.join(backups, attempt.filename));
@@ -217,7 +253,10 @@ describe('local SQLite backups', () => {
     makeOldDatabase(filename);
     writeFileSync(invalidDirectory, 'not a directory');
     expect(
-      () => new StoreDatabase(filename, { backupDirectory: invalidDirectory }),
+      () =>
+        new StoreDatabase(filename, undefined, {
+          backupDirectory: invalidDirectory,
+        }),
     ).toThrow(/Pre-migration backup failed/);
     const raw = new DatabaseSync(filename, { readOnly: true });
     expect(

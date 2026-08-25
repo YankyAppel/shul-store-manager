@@ -50,6 +50,7 @@ export {
 } from './sync-outbox.js';
 export {
   isBusinessDataEmpty,
+  hasBusinessRows,
   restoreFromEvents,
   verifyRestoreIntegrity,
   type RestoreCounts,
