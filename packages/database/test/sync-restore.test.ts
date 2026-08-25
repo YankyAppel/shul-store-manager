@@ -29,6 +29,11 @@ describe('restore guards', () => {
     expect(store.isRestoreAllowed()).toBe(false);
   });
 
+  it('allows cloud restore when the only local row is a paired kiosk', () => {
+    store.createKiosk(randomUUID(), 'Front kiosk', 'token-hash', 'pin-hash');
+    expect(store.isRestoreAllowed()).toBe(true);
+  });
+
   it('rolls back the whole replay when a database invariant is violated', () => {
     // A standalone inventory_movement event whose productId does not exist must
     // be rejected by the foreign-key constraint, aborting the transaction and

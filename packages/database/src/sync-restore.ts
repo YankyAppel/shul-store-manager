@@ -83,6 +83,35 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
   return true;
 }
 
+/** Includes operational rows that must be protected before a schema upgrade. */
+export function hasBusinessRows(connection: SqliteDatabase): boolean {
+  const tables = [
+    'categories',
+    'products',
+    'customers',
+    'sales',
+    'sale_items',
+    'payments',
+    'account_payments',
+    'inventory_movements',
+    'customer_ledger',
+    'audit_events',
+    'payment_transactions',
+    'kiosks',
+  ];
+  for (const table of tables) {
+    const exists = connection
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(table);
+    if (!exists) continue;
+    const row = connection
+      .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
+      .get() as { count: number } | undefined;
+    if ((row?.count ?? 0) > 0) return true;
+  }
+  return false;
+}
+
 /** Insert a metadata-only image stub so image_id foreign keys remain valid.
  *  Image FILES are explicitly out of scope for this milestone; only enough of a
  *  row is created to preserve referential integrity (the image protocol already

@@ -49,6 +49,9 @@ See [Label printing](docs/labels.md) for templates, printer behavior, and the de
 
 See [Cloud sync](docs/cloud-sync.md) for architecture, the outbox design, cloud-side DDL + RLS, setup, restore, failure modes, and the desktop test checklist.
 
+See [Local backups](docs/backups.md) for automatic verified SQLite backups,
+rotation, migration safeguards, and local restore.
+
 ## Requirements
 
 - Node.js 22.13 or newer (use the version declared in `.nvmrc`)

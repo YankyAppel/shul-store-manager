@@ -178,6 +178,60 @@ button.primary:hover {
   color: inherit;
   font-size: 20px;
 }
+.local-backup-section {
+  border-top: 1px solid #e0e5e2;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.local-backup-heading {
+  margin: 0 0 4px;
+}
+.local-backup-description,
+.local-backup-empty {
+  color: #66776d;
+}
+.local-backup-description {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+.local-backup-actions,
+.local-backup-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.local-backup-confirm-actions {
+  margin: 8px 0 0;
+}
+.local-backup-result {
+  margin-bottom: 12px;
+}
+.local-backup-list {
+  display: grid;
+  gap: 6px;
+}
+.local-backup-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #edf0ee;
+  padding: 6px 0;
+}
+.local-backup-image-summary,
+.local-backup-image-warning {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.local-backup-image-warning {
+  color: #a33;
+  font-weight: 600;
+}
+.local-backup-restore-button {
+  margin-left: 8px;
+}
+.local-backup-restore {
+  margin-top: 12px;
+}
 .toolbar {
   display: flex;
   justify-content: space-between;

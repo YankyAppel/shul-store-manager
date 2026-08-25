@@ -31,6 +31,7 @@ import {
   type InventoryMovementInput,
   type InventoryMovementPayload,
   type KioskPayload,
+  type LocalRestoreResult,
   type KioskSummary,
   type LedgerEntryPayload,
   type PaymentTransactionPayload,
@@ -51,7 +52,15 @@ import {
   type SyncEntityType,
   type SyncStatus,
 } from '@shul-store/shared';
-import { runMigrations } from './migrations.js';
+import { migrations, runMigrations } from './migrations.js';
+import {
+  createBackup as createBackupFile,
+  listBackups as listBackupFiles,
+  recordBackupAttempt,
+  type BackupAttempt,
+  type BackupKind,
+  type BackupListing,
+} from './backup.js';
 import {
   enqueueOutboxEvent,
   listAllOutboxEvents,
@@ -63,6 +72,7 @@ import {
 } from './sync-outbox.js';
 import {
   isBusinessDataEmpty,
+  hasBusinessRows,
   restoreFromEvents,
   type RestoreOutcome,
   type ValidatedRestoreEvent,
@@ -129,19 +139,66 @@ export interface SyncConfigRecord {
   backfillCompleted: boolean;
 }
 
+export interface StoreDatabaseOptions {
+  backupDirectory?: string;
+  imageDirectory?: string;
+}
+
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
   private paymentService: PaymentService | null = null;
   private readonly secretStore: SecretStore;
+  private readonly backupDirectory: string | null;
+  private readonly imageDirectory: string | null;
 
   constructor(
     filename: string,
     secretStore: SecretStore = new PlaintextSecretStore(),
+    options: StoreDatabaseOptions = {},
   ) {
-    this.connection = new SqliteDatabase(filename);
     this.secretStore = secretStore;
+    this.backupDirectory = options.backupDirectory ?? null;
+    this.imageDirectory = options.imageDirectory ?? null;
+    this.connection = new SqliteDatabase(filename);
     this.connection.pragma('busy_timeout = 5000');
-    runMigrations(this.connection);
+    const currentVersion = this.schemaVersion();
+    const latestVersion = migrations.at(-1)?.version ?? currentVersion;
+    let preMigrationAttempt: BackupAttempt | null = null;
+    if (
+      this.backupDirectory &&
+      currentVersion > 0 &&
+      currentVersion < latestVersion &&
+      hasBusinessRows(this.connection)
+    ) {
+      preMigrationAttempt = createBackupFile(
+        this.connection,
+        this.backupDirectory,
+        'premigration',
+        currentVersion,
+        new Date(),
+        this.imageDirectory ?? undefined,
+      );
+      if (!preMigrationAttempt.ok) {
+        this.connection.close();
+        throw new Error(
+          `Pre-migration backup failed: ${preMigrationAttempt.message}`,
+        );
+      }
+    }
+    try {
+      runMigrations(this.connection);
+      if (preMigrationAttempt) {
+        try {
+          recordBackupAttempt(this.connection, preMigrationAttempt);
+        } catch {
+          // A migration must not be rolled back because its history row could
+          // not be written after the verified snapshot was created.
+        }
+      }
+    } catch (error) {
+      this.connection.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -150,6 +207,86 @@ export class StoreDatabase {
 
   schemaVersion(): number {
     return this.connection.pragma('user_version', { simple: true }) as number;
+  }
+
+  createBackup(kind: BackupKind): BackupAttempt {
+    if (!this.backupDirectory)
+      return {
+        attemptedAt: now(),
+        kind,
+        filename: '',
+        bytes: 0,
+        ok: false,
+        message: 'A backup directory is not configured.',
+        imagesCopied: 0,
+        imagesMissing: 0,
+      };
+    const attempt = createBackupFile(
+      this.connection,
+      this.backupDirectory,
+      kind,
+      this.schemaVersion(),
+      new Date(),
+      this.imageDirectory ?? undefined,
+    );
+    try {
+      recordBackupAttempt(this.connection, attempt);
+    } catch {
+      // Backup failures are surfaced through the returned attempt and should
+      // never crash the manager process.
+    }
+    return attempt;
+  }
+
+  listBackups(): BackupListing[] {
+    return this.backupDirectory
+      ? listBackupFiles(this.connection, this.backupDirectory)
+      : [];
+  }
+
+  getBackupDirectory(): string | null {
+    return this.backupDirectory;
+  }
+
+  recordRestoreResult(result: LocalRestoreResult): void {
+    this.connection
+      .prepare(
+        `INSERT INTO restore_results
+         (completed_at, filename, images_restored, images_missing, message)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        result.completedAt,
+        result.filename,
+        result.imagesRestored,
+        result.imagesMissing,
+        result.message,
+      );
+  }
+
+  getLastRestoreResult(): LocalRestoreResult | null {
+    const row = this.connection
+      .prepare(
+        `SELECT completed_at, filename, images_restored, images_missing, message
+         FROM restore_results ORDER BY completed_at DESC LIMIT 1`,
+      )
+      .get() as
+      | {
+          completed_at: string;
+          filename: string;
+          images_restored: number;
+          images_missing: number;
+          message: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      completedAt: row.completed_at,
+      filename: row.filename,
+      imagesRestored: Number(row.images_restored),
+      imagesMissing: Number(row.images_missing),
+      message: row.message,
+    };
   }
 
   // --- SETTINGS ---
