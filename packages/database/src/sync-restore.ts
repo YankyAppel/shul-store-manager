@@ -6,6 +6,7 @@ import type {
   CloudPayload,
   CustomerPayload,
   InventoryMovementPayload,
+  KioskPayload,
   LedgerEntryPayload,
   PaymentTransactionPayload,
   ProductPayload,
@@ -15,6 +16,7 @@ import type {
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+const RESTORED_KIOSK_CREDENTIAL_SENTINEL = 'restored';
 
 export interface RestoreCounts {
   settings: number;
@@ -27,6 +29,7 @@ export interface RestoreCounts {
   inventoryMovements: number;
   ledgerEntries: number;
   auditEvents: number;
+  kiosks: number;
 }
 
 export interface RestoreOutcome {
@@ -446,9 +449,9 @@ function applyPaymentTransaction(
         id, charge_reference, processor_id, amount_cents, status,
         processor_transaction_id, card_brand, card_last4,
         sale_id, cart_snapshot_json, idempotency_key,
-        snapshot_hash, processor_config_hash, origin_channel, attention_reason,
+        kiosk_id, snapshot_hash, processor_config_hash, origin_channel, attention_reason,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         processor_transaction_id = excluded.processor_transaction_id,
@@ -470,12 +473,33 @@ function applyPaymentTransaction(
       payload.saleId ? String(payload.saleId) : null,
       payload.cartSnapshotJson ? String(payload.cartSnapshotJson) : null,
       payload.idempotencyKey ? String(payload.idempotencyKey) : null,
+      payload.kioskId ? String(payload.kioskId) : null,
       payload.snapshotHash ? String(payload.snapshotHash) : null,
       payload.processorConfigHash ? String(payload.processorConfigHash) : null,
       payload.originChannel === 'kiosk' ? 'kiosk' : 'manager',
       payload.attentionReason ? String(payload.attentionReason) : null,
       payload.createdAt,
       payload.updatedAt,
+    );
+}
+
+function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
+  connection
+    .prepare(
+      `INSERT INTO kiosks
+        (id, name, token_hash, admin_pin_hash, created_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         revoked_at = excluded.revoked_at`,
+    )
+    .run(
+      payload.id,
+      payload.name,
+      RESTORED_KIOSK_CREDENTIAL_SENTINEL,
+      RESTORED_KIOSK_CREDENTIAL_SENTINEL,
+      payload.createdAt,
+      payload.revokedAt ?? now(),
     );
 }
 
@@ -544,6 +568,10 @@ function applyOne(
       );
       counts.paymentTransactions += 1;
       break;
+    case 'kiosk':
+      applyKiosk(connection, event.payload as KioskPayload);
+      counts.kiosks += 1;
+      break;
     case 'audit_event':
       applyAuditEvent(connection, event.payload as AuditEventPayload);
       counts.auditEvents += 1;
@@ -573,7 +601,10 @@ export function restoreFromEvents(
     inventoryMovements: 0,
     ledgerEntries: 0,
     auditEvents: 0,
+    kiosks: 0,
   };
+
+  connection.exec('PRAGMA defer_foreign_keys = ON');
 
   const seedOutbox = connection.prepare(
     `INSERT OR IGNORE INTO sync_outbox
@@ -630,6 +661,40 @@ export function verifyRestoreIntegrity(connection: SqliteDatabase): string[] {
     );
   }
   checks.push('foreign_key_check: no violations');
+
+  const danglingSales = (
+    connection
+      .prepare(
+        `SELECT COUNT(*) AS count FROM sales
+         WHERE kiosk_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM kiosks WHERE kiosks.id = sales.kiosk_id)`,
+      )
+      .get() as { count: number }
+  ).count;
+  if (danglingSales > 0) {
+    throw new Error(
+      `Restore integrity check failed: ${danglingSales} sales kiosk reference(s) point to missing kiosks`,
+    );
+  }
+  checks.push('sales.kiosk_id: no dangling kiosk references');
+
+  const danglingPaymentTransactions = (
+    connection
+      .prepare(
+        `SELECT COUNT(*) AS count FROM payment_transactions
+         WHERE kiosk_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM kiosks WHERE kiosks.id = payment_transactions.kiosk_id
+           )`,
+      )
+      .get() as { count: number }
+  ).count;
+  if (danglingPaymentTransactions > 0) {
+    throw new Error(
+      `Restore integrity check failed: ${danglingPaymentTransactions} payment transaction kiosk reference(s) point to missing kiosks`,
+    );
+  }
+  checks.push('payment_transactions.kiosk_id: no dangling kiosk references');
 
   const customers = connection
     .prepare('SELECT id FROM customers ORDER BY created_at, name')

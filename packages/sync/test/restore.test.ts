@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { CloudEvent } from '@shul-store/shared';
-import { parseRestoreEvent, restoreFromCloud } from '../src/index.js';
+import { syncEntityTypeSchema, type CloudEvent } from '@shul-store/shared';
+import {
+  parseRestoreEvent,
+  restoreFromCloud,
+  PAYLOAD_SCHEMA_BY_TYPE,
+} from '../src/index.js';
 import {
   createDb,
   disposeDb,
@@ -13,6 +17,11 @@ import {
 } from './helpers.js';
 
 describe('restore validation', () => {
+  it('keeps a payload schema for every sync entity type', () => {
+    for (const entityType of syncEntityTypeSchema.options) {
+      expect(PAYLOAD_SCHEMA_BY_TYPE[entityType]).toBeDefined();
+    }
+  });
   it('rejects malformed cloud payloads before touching the database', () => {
     const good = {
       eventId: randomUUID(),
@@ -182,6 +191,215 @@ describe('restore round-trip', () => {
     target.db.createCategory({ name: 'After restore' });
     expect(target.db.pendingSyncEventCount()).toBeGreaterThan(0);
 
+    disposeDb(source.db, source.file);
+    disposeDb(target.db, target.file);
+  });
+
+  it('restores kiosk identity, kiosk sale, and card attribution without dangling references', async () => {
+    const source = createDb();
+    enableSync(source.db);
+    source.db.updateSettings({
+      ...source.db.getSettings(),
+      cardProcessingEnabled: true,
+      cardProcessorId: 'simulated',
+    });
+    const category = source.db.createCategory({ name: 'Drinks' });
+    const product = source.db.createProduct({
+      categoryId: category.id,
+      name: 'Water',
+      purchaseCostCents: 50,
+      sellingPriceCents: 100,
+      taxable: false,
+      lowStockThreshold: 1,
+      barcodes: ['WATER-1'],
+    });
+    source.db.addInventoryMovement({
+      productId: product.id,
+      quantityChange: 5,
+      reason: 'stock_received',
+      notes: 'Opening stock',
+    });
+    const kioskId = randomUUID();
+    source.db.createKiosk(kioskId, 'Front kiosk', 'token-hash', 'pin-hash');
+    const chargeReference = randomUUID();
+    const idempotencyKey = randomUUID();
+    const snapshot = {
+      lines: [
+        {
+          productId: product.id,
+          quantity: 1,
+          barcodeUsed: 'WATER-1',
+          productName: 'Water',
+          secondaryName: null,
+          unitSellingPriceCents: 100,
+          unitPurchaseCostCents: 50,
+          taxable: false,
+          unitPriceCents: 100,
+          subtotalCents: 100,
+          taxCents: 0,
+          totalCents: 100,
+        },
+      ],
+      totals: { subtotalCents: 100, taxCents: 0, totalCents: 100 },
+    };
+    source.db.createPaymentTransaction(
+      chargeReference,
+      'simulated',
+      100,
+      JSON.stringify(snapshot),
+      idempotencyKey,
+      kioskId,
+      [{ productId: product.id, quantity: 1 }],
+    );
+    await source.db.getProcessorStorage().set(chargeReference, {
+      status: 'approved',
+      processorTransactionId: 'processor-1',
+      cardBrand: 'Visa',
+      cardLast4: '1111',
+    });
+    await source.db.runStartupReconciliation();
+    source.db.backfillOutbox();
+
+    const events = outboxToCloudEvents(source.db.exportOutboxSnapshot());
+    const kioskEvent = events.find((event) => event.entityType === 'kiosk');
+    expect(kioskEvent).toBeDefined();
+    expect(
+      events.some(
+        (event) =>
+          event.entityType === 'payment_transaction' &&
+          event.payload.kioskId === kioskId,
+      ),
+    ).toBe(true);
+    expect(kioskEvent!.payload).not.toHaveProperty('tokenHash');
+    expect(kioskEvent!.payload).not.toHaveProperty('adminPinHash');
+    expect(kioskEvent!.payload).not.toHaveProperty('token_hash');
+    expect(kioskEvent!.payload).not.toHaveProperty('admin_pin_hash');
+
+    const target = createDb();
+    const transport = new FakeTransport();
+    transport.seed(events);
+    const result = await restoreFromCloud(target.db, transport, TEST_STORE_ID);
+    expect(result.ok).toBe(true);
+    expect(result.summary?.kiosks).toBe(1);
+    expect(target.db.listKiosks()[0]).toMatchObject({
+      id: kioskId,
+      name: 'Front kiosk',
+      revokedAt: expect.any(String),
+      lastSeenAt: null,
+    });
+    expect(target.db.findKioskByTokenHash('token-hash')).toBeUndefined();
+    expect(target.db.listSales()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ channel: 'kiosk', kioskId }),
+      ]),
+    );
+    expect(target.db.getPaymentTransaction(chargeReference)?.kiosk_id).toBe(
+      kioskId,
+    );
+    expect(result.summary?.integrityChecks).toContain(
+      'foreign_key_check: no violations',
+    );
+
+    disposeDb(source.db, source.file);
+    disposeDb(target.db, target.file);
+  });
+
+  it('restores when the sale sequence precedes the kiosk sequence', async () => {
+    const source = createDb();
+    enableSync(source.db);
+    const category = source.db.createCategory({ name: 'Drinks' });
+    const product = source.db.createProduct({
+      categoryId: category.id,
+      name: 'Water',
+      purchaseCostCents: 50,
+      sellingPriceCents: 100,
+      taxable: false,
+      lowStockThreshold: 1,
+      barcodes: ['WATER-1'],
+    });
+    source.db.addInventoryMovement({
+      productId: product.id,
+      quantityChange: 5,
+      reason: 'stock_received',
+      notes: 'Opening stock',
+    });
+    const kioskId = randomUUID();
+    source.db.createKiosk(kioskId, 'Front kiosk', 'token-hash', 'pin-hash');
+    source.db.completeSale(
+      {
+        completionKey: randomUUID(),
+        lines: [{ productId: product.id, quantity: 1, barcodeUsed: 'WATER-1' }],
+        payment: { method: 'cash', cashReceivedCents: 100 },
+      },
+      undefined,
+      kioskId,
+    );
+    source.db.backfillOutbox();
+    const events = outboxToCloudEvents(source.db.exportOutboxSnapshot());
+    const reordered = events
+      .filter(
+        (event) => event.entityType !== 'kiosk' && event.entityType !== 'sale',
+      )
+      .concat(
+        events.filter((event) => event.entityType === 'sale'),
+        events.filter((event) => event.entityType === 'kiosk'),
+      )
+      .map((event, index) => ({ ...event, sequence: index + 1 }));
+
+    const target = createDb();
+    const transport = new FakeTransport();
+    transport.seed(reordered);
+    const result = await restoreFromCloud(target.db, transport, TEST_STORE_ID);
+    expect(result.ok).toBe(true);
+    expect(target.db.listSales()[0]?.kioskId).toBe(kioskId);
+    disposeDb(source.db, source.file);
+    disposeDb(target.db, target.file);
+  });
+
+  it('rolls back when a kiosk reference has no kiosk event', async () => {
+    const source = createDb();
+    enableSync(source.db);
+    const category = source.db.createCategory({ name: 'Drinks' });
+    const product = source.db.createProduct({
+      categoryId: category.id,
+      name: 'Water',
+      purchaseCostCents: 50,
+      sellingPriceCents: 100,
+      taxable: false,
+      lowStockThreshold: 1,
+      barcodes: ['WATER-1'],
+    });
+    source.db.addInventoryMovement({
+      productId: product.id,
+      quantityChange: 5,
+      reason: 'stock_received',
+      notes: 'Opening stock',
+    });
+    const kioskId = randomUUID();
+    source.db.createKiosk(kioskId, 'Front kiosk', 'token-hash', 'pin-hash');
+    source.db.completeSale(
+      {
+        completionKey: randomUUID(),
+        lines: [{ productId: product.id, quantity: 1, barcodeUsed: 'WATER-1' }],
+        payment: { method: 'cash', cashReceivedCents: 100 },
+      },
+      undefined,
+      kioskId,
+    );
+    source.db.backfillOutbox();
+    const events = outboxToCloudEvents(source.db.exportOutboxSnapshot()).filter(
+      (event) => event.entityType !== 'kiosk',
+    );
+
+    const target = createDb();
+    const transport = new FakeTransport();
+    transport.seed(events);
+    const result = await restoreFromCloud(target.db, transport, TEST_STORE_ID);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/rolled back/i);
+    expect(target.db.isRestoreAllowed()).toBe(true);
+    expect(target.db.listSales()).toHaveLength(0);
+    expect(target.db.pendingSyncEventCount()).toBe(0);
     disposeDb(source.db, source.file);
     disposeDb(target.db, target.file);
   });

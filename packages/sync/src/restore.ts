@@ -6,6 +6,8 @@ import {
   categoryPayloadSchema,
   customerPayloadSchema,
   inventoryMovementPayloadSchema,
+  kioskPayloadSchema,
+  paymentTransactionPayloadSchema,
   productPayloadSchema,
   salePayloadSchema,
   settingsPayloadSchema,
@@ -15,6 +17,7 @@ import type {
   CloudEvent,
   RestoreResult,
   RestoreSummary,
+  SyncEntityType,
 } from '@shul-store/shared';
 import type { SyncTransport } from './transport.js';
 
@@ -23,12 +26,14 @@ type PayloadSchema =
   | typeof categoryPayloadSchema
   | typeof productPayloadSchema
   | typeof inventoryMovementPayloadSchema
+  | typeof paymentTransactionPayloadSchema
+  | typeof kioskPayloadSchema
   | typeof customerPayloadSchema
   | typeof salePayloadSchema
   | typeof accountPaymentPayloadSchema
   | typeof auditEventPayloadSchema;
 
-const PAYLOAD_SCHEMA_BY_TYPE: Record<string, PayloadSchema> = {
+export const PAYLOAD_SCHEMA_BY_TYPE: Record<SyncEntityType, PayloadSchema> = {
   settings: settingsPayloadSchema,
   category: categoryPayloadSchema,
   product: productPayloadSchema,
@@ -36,6 +41,8 @@ const PAYLOAD_SCHEMA_BY_TYPE: Record<string, PayloadSchema> = {
   customer: customerPayloadSchema,
   sale: salePayloadSchema,
   account_payment: accountPaymentPayloadSchema,
+  payment_transaction: paymentTransactionPayloadSchema,
+  kiosk: kioskPayloadSchema,
   audit_event: auditEventPayloadSchema,
 };
 
@@ -120,6 +127,7 @@ function toSummary(
       products: number;
       customers: number;
       sales: number;
+      kiosks: number;
       accountPayments: number;
       inventoryMovements: number;
       ledgerEntries: number;
@@ -137,6 +145,7 @@ function toSummary(
     products: outcome.counts.products,
     customers: outcome.counts.customers,
     sales: outcome.counts.sales,
+    kiosks: outcome.counts.kiosks,
     accountPayments: outcome.counts.accountPayments,
     inventoryMovements: outcome.counts.inventoryMovements,
     ledgerEntries: outcome.counts.ledgerEntries,
