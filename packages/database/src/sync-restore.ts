@@ -16,6 +16,7 @@ import type {
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+const RESTORED_KIOSK_CREDENTIAL_SENTINEL = 'restored';
 
 export interface RestoreCounts {
   settings: number;
@@ -486,22 +487,19 @@ function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
   connection
     .prepare(
       `INSERT INTO kiosks
-        (id, name, token_hash, admin_pin_hash, last_seen_at, created_at, revoked_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+        (id, name, token_hash, admin_pin_hash, created_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
-         last_seen_at = excluded.last_seen_at,
-         created_at = excluded.created_at,
          revoked_at = excluded.revoked_at`,
     )
     .run(
       payload.id,
       payload.name,
-      `restored-token-${cryptoUuid()}`,
-      `restored-pin-${cryptoUuid()}`,
-      payload.lastSeenAt,
+      RESTORED_KIOSK_CREDENTIAL_SENTINEL,
+      RESTORED_KIOSK_CREDENTIAL_SENTINEL,
       payload.createdAt,
-      payload.revokedAt,
+      payload.revokedAt ?? now(),
     );
 }
 

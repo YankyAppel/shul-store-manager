@@ -281,6 +281,13 @@ describe('restore round-trip', () => {
     const result = await restoreFromCloud(target.db, transport, TEST_STORE_ID);
     expect(result.ok).toBe(true);
     expect(result.summary?.kiosks).toBe(1);
+    expect(target.db.listKiosks()[0]).toMatchObject({
+      id: kioskId,
+      name: 'Front kiosk',
+      revokedAt: expect.any(String),
+      lastSeenAt: null,
+    });
+    expect(target.db.findKioskByTokenHash('token-hash')).toBeUndefined();
     expect(target.db.listSales()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ channel: 'kiosk', kioskId }),
@@ -289,9 +296,9 @@ describe('restore round-trip', () => {
     expect(target.db.getPaymentTransaction(chargeReference)?.kiosk_id).toBe(
       kioskId,
     );
-    expect(
-      target.db.connection.prepare('PRAGMA foreign_key_check').all(),
-    ).toHaveLength(0);
+    expect(result.summary?.integrityChecks).toContain(
+      'foreign_key_check: no violations',
+    );
 
     disposeDb(source.db, source.file);
     disposeDb(target.db, target.file);

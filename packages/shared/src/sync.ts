@@ -280,7 +280,6 @@ export type PaymentTransactionPayload = z.infer<
 export const kioskPayloadSchema = z.object({
   id: uuidString,
   name: z.string().min(1).max(200),
-  lastSeenAt: isoString.nullable(),
   createdAt: isoString,
   revokedAt: isoString.nullable(),
 });

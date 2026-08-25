@@ -282,6 +282,21 @@ describe('kiosk LAN API', () => {
     expect(upgraded).not.toBe(legacy);
   });
 
+  it('rejects the restored credential sentinel as an admin PIN', async () => {
+    const lan = await startLan();
+    const token = 'restored-token';
+    lan.db.createKiosk(
+      randomUUID(),
+      'Restored kiosk',
+      createHash('sha256').update(token).digest('hex'),
+      'restored',
+    );
+
+    const response = await adminVerify(lan, token, '1234');
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({ error: 'Invalid PIN' });
+  });
+
   it('resolves a scanned barcode from the cached catalog and completes the sale', async () => {
     const lan = await startLan();
     const { token } = await pair(lan);

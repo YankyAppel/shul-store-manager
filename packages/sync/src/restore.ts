@@ -17,6 +17,7 @@ import type {
   CloudEvent,
   RestoreResult,
   RestoreSummary,
+  SyncEntityType,
 } from '@shul-store/shared';
 import type { SyncTransport } from './transport.js';
 
@@ -32,10 +33,7 @@ type PayloadSchema =
   | typeof accountPaymentPayloadSchema
   | typeof auditEventPayloadSchema;
 
-export const PAYLOAD_SCHEMA_BY_TYPE: Record<
-  import('@shul-store/shared').SyncEntityType,
-  PayloadSchema
-> = {
+export const PAYLOAD_SCHEMA_BY_TYPE: Record<SyncEntityType, PayloadSchema> = {
   settings: settingsPayloadSchema,
   category: categoryPayloadSchema,
   product: productPayloadSchema,

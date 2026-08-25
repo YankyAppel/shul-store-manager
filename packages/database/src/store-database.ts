@@ -1210,10 +1210,9 @@ export class StoreDatabase {
     }));
   }
   touchKiosk(id: string): void {
-    const result = this.connection
+    this.connection
       .prepare('UPDATE kiosks SET last_seen_at=? WHERE id=?')
       .run(now(), id);
-    if (result.changes > 0) this.enqueueEntity('kiosk', id);
   }
   revokeKiosk(id: string): void {
     const result = this.connection
@@ -3022,15 +3021,12 @@ export class StoreDatabase {
 
   private buildKioskPayload(id: string): KioskPayload | null {
     const row = this.connection
-      .prepare(
-        'SELECT id,name,last_seen_at,created_at,revoked_at FROM kiosks WHERE id = ?',
-      )
+      .prepare('SELECT id,name,created_at,revoked_at FROM kiosks WHERE id = ?')
       .get(id) as Row | undefined;
     if (!row) return null;
     return {
       id: String(row.id),
       name: String(row.name),
-      lastSeenAt: row.last_seen_at === null ? null : String(row.last_seen_at),
       createdAt: String(row.created_at),
       revokedAt: row.revoked_at === null ? null : String(row.revoked_at),
     };
