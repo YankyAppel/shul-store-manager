@@ -13,7 +13,7 @@ const line = z
   );
 export const kioskPairRequestSchema = z
   .object({
-    code: z.string().regex(/^\d+$/).max(100),
+    code: z.string().regex(/^\d{6}$/),
     name: z.string().trim().min(1).max(100),
     adminPin: z.string().regex(/^\d{4,12}$/),
   })

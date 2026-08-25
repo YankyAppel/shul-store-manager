@@ -8,7 +8,6 @@ import {
 } from 'node:crypto';
 import {
   calculateCart,
-  errorMessage,
   kioskChargeRequestSchema,
   kioskPairRequestSchema,
   kioskPriceRequestSchema,
@@ -332,7 +331,6 @@ export class KioskServer {
             : { error: error.message },
         );
       }
-      const message = errorMessage(error);
       const status =
         (error as { name?: string }).name === 'ZodError' ||
         error instanceof SyntaxError
@@ -341,7 +339,7 @@ export class KioskServer {
       if (status === 500) {
         console.error('Kiosk LAN API error', error);
         json(res, status, { error: 'Unable to process request' });
-      } else json(res, status, { error: message });
+      } else json(res, status, { error: 'invalid-request' });
     }
   }
 

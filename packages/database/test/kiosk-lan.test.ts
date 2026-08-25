@@ -284,7 +284,7 @@ describe('kiosk LAN API', () => {
     expect(response.status).toBe(429);
   });
 
-  it('returns the invalid pairing code response for a wrong-length code', async () => {
+  it('rejects a wrong-length pairing code with a generic 400 response', async () => {
     const lan = await startLan();
     const code = lan.server.newPairingCode();
     const response = await api(lan, 'POST', '/api/pair', undefined, {
@@ -292,8 +292,9 @@ describe('kiosk LAN API', () => {
       name: 'Front table',
       adminPin: '1234',
     });
+    expect(response.status).not.toBe(500);
     expect(response.status).toBe(400);
-    expect(response.body).toEqual({ error: 'Invalid pairing code' });
+    expect(response.body).toEqual({ error: 'invalid-request' });
   });
 
   it('authorizes exactly once when the same charge is retried concurrently', async () => {
