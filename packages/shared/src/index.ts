@@ -34,6 +34,7 @@ export * from './customers.js';
 export * from './html-templates.js';
 export * from './labels.js';
 export * from './kiosk.js';
+export * from './kiosk-client.js';
 export * from './printing.js';
 export * from './secret-store.js';
 export * from './sync.js';
@@ -300,6 +301,7 @@ export interface StoreApi {
 declare global {
   interface Window {
     storeApi: StoreApi;
+    kioskApi: import('./kiosk-client.js').KioskApi;
   }
 }
 

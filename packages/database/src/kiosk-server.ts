@@ -4,13 +4,21 @@ import {
   randomBytes,
   randomInt,
   randomUUID,
+  scryptSync,
   timingSafeEqual,
 } from 'node:crypto';
 import {
   calculateCart,
+  encodeScryptPinHash,
+  kioskAdminVerifyRequestSchema,
   kioskChargeRequestSchema,
   kioskPairRequestSchema,
   kioskPriceRequestSchema,
+  SCRYPT_DK_LEN,
+  SCRYPT_N,
+  SCRYPT_P,
+  SCRYPT_R,
+  verifyScryptPinHash,
 } from '@shul-store/shared';
 import {
   PaymentError,
@@ -37,9 +45,47 @@ type PairCode = {
 
 const PAIR_IP_WINDOW_MS = 300000;
 const MAX_PAIR_ATTEMPTS_PER_IP = 10;
+const ADMIN_PIN_WINDOW_MS = 60000;
+const MAX_ADMIN_PIN_ATTEMPTS = 5;
 
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
+
+const derivePin = (pin: string, salt: Uint8Array, length: number) =>
+  new Uint8Array(
+    scryptSync(pin, salt, length, {
+      N: SCRYPT_N,
+      r: SCRYPT_R,
+      p: SCRYPT_P,
+    }),
+  );
+
+function encodeAdminPin(pin: string): string {
+  const salt = randomBytes(16);
+  return encodeScryptPinHash(salt, derivePin(pin, salt, SCRYPT_DK_LEN));
+}
+
+function verifyLegacyHash(stored: string, pin: string): boolean {
+  if (!/^[a-f0-9]{64}$/iu.test(stored)) return false;
+  const expected = Buffer.from(hash(pin), 'hex');
+  const actual = Buffer.from(stored, 'hex');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function verifyAdminPin(
+  stored: string,
+  pin: string,
+): {
+  valid: boolean;
+  upgraded: string | null;
+} {
+  if (verifyLegacyHash(stored, pin))
+    return { valid: true, upgraded: encodeAdminPin(pin) };
+  return {
+    valid: verifyScryptPinHash(stored, pin, derivePin),
+    upgraded: null,
+  };
+}
 
 const json = (res: http.ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -77,6 +123,7 @@ export class KioskServer {
   private server: http.Server | null = null;
   private code: PairCode | null = null;
   private readonly pairAttemptsByAddress = new Map<string, number[]>();
+  private readonly adminAttemptsByKiosk = new Map<string, number[]>();
   private readonly payments: PaymentService;
 
   constructor(private readonly db: StoreDatabase) {
@@ -107,6 +154,19 @@ export class KioskServer {
     if (attempts.length >= MAX_PAIR_ATTEMPTS_PER_IP) return false;
     attempts.push(timestamp);
     this.pairAttemptsByAddress.set(address, attempts);
+    return true;
+  }
+
+  private allowAdminAttempt(kioskId: string, timestamp = Date.now()): boolean {
+    const attempts = (this.adminAttemptsByKiosk.get(kioskId) ?? []).filter(
+      (attempt) => timestamp - attempt < ADMIN_PIN_WINDOW_MS,
+    );
+    if (attempts.length >= MAX_ADMIN_PIN_ATTEMPTS) {
+      this.adminAttemptsByKiosk.set(kioskId, attempts);
+      return false;
+    }
+    attempts.push(timestamp);
+    this.adminAttemptsByKiosk.set(kioskId, attempts);
     return true;
   }
 
@@ -252,12 +312,29 @@ export class KioskServer {
         this.code = null;
         const token = randomBytes(32).toString('base64url');
         const id = randomUUID();
-        this.db.createKiosk(id, input.name, hash(token), hash(input.adminPin));
+        this.db.createKiosk(
+          id,
+          input.name,
+          hash(token),
+          encodeAdminPin(input.adminPin),
+        );
         return json(res, 200, { token, kioskId: id });
       }
 
       const kiosk = this.auth(req);
       if (!kiosk) return json(res, 401, { error: 'Unauthorized' });
+
+      if (req.method === 'POST' && url.pathname === '/api/admin/verify') {
+        if (!this.allowAdminAttempt(kiosk.id))
+          return json(res, 429, { error: 'Too many attempts' });
+        const input = kioskAdminVerifyRequestSchema.parse(await readBody(req));
+        const stored = this.db.getKioskAdminPinHash(kiosk.id);
+        const result = stored ? verifyAdminPin(stored, input.pin) : null;
+        if (!result?.valid) return json(res, 401, { error: 'Invalid PIN' });
+        if (result.upgraded)
+          this.db.setKioskAdminPinHash(kiosk.id, result.upgraded);
+        return json(res, 200, { ok: true });
+      }
 
       if (req.method === 'GET' && url.pathname === '/api/catalog') {
         return json(res, 200, {
@@ -272,6 +349,7 @@ export class KioskServer {
             categoryId: product.categoryId,
             name: product.name,
             secondaryName: product.secondaryName,
+            priceCents: product.sellingPriceCents,
             barcodes: product.barcodes.map((barcode) => barcode.value),
           })),
         });

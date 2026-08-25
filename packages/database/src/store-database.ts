@@ -1170,6 +1170,19 @@ export class StoreDatabase {
       )
       .run(id, name, tokenHash, pinHash, now());
   }
+  getKioskAdminPinHash(id: string): string | null {
+    const row = this.connection
+      .prepare('SELECT admin_pin_hash FROM kiosks WHERE id=?')
+      .get(id) as { admin_pin_hash?: unknown } | undefined;
+    return row?.admin_pin_hash === undefined || row.admin_pin_hash === null
+      ? null
+      : String(row.admin_pin_hash);
+  }
+  setKioskAdminPinHash(id: string, pinHash: string): void {
+    this.connection
+      .prepare('UPDATE kiosks SET admin_pin_hash=? WHERE id=?')
+      .run(pinHash, id);
+  }
   findKioskByTokenHash(
     tokenHash: string,
   ): { id: string; name: string; last_seen_at: string | null } | undefined {
