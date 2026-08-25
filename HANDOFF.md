@@ -30,14 +30,30 @@ Electron + React + TypeScript monorepo, local SQLite (via `node:sqlite`, Node �
   - M4: "Pay now" processor-agnostic payment framework
   - Optional cloud backup/restore (outbox, safeStorage, restore to fresh install)
 - **Open PR #6 — "Milestone 7: LAN card-only kiosk"** on branch
-  `arena/01a03277-shul-store-manager` (head `e8e18cc`, 13 commits over main, mergeable, no reviews).
-  It contains the complete kiosk implementation:
+  `arena/01a03277-shul-store-manager` (head `e8e18cc`, 13 commits over main, no conflicts, **NOT merge-ready** — in progress).
+  What is implemented so far (foundation + rounds of narrow fixes):
   - LAN HTTP server in the manager (default port 3939), single-use 6-digit pairing codes, bearer-token auth (SHA-256 hash stored)
   - Kiosk Electron app skeleton (pairing screen → barcode scan → card-only checkout)
   - New schema/migration (kiosk pairs + tokens), strict request schemas (client never sends prices)
   - Inventory reservation for pending card charges, 10-minute reconciliation of outstanding processor work, idempotent charge recovery across kiosk/manager restarts
+  - Kiosk charge path now resolves + validates processor config BEFORE creating a transaction/reservation or any processor I/O (`apps/manager/electron/kiosk-server.ts`)
   - `docs/kiosk.md` with API description + a 5-step manual QA checklist
-  - **Remaining work: the manual QA checklist in `docs/kiosk.md` (pair → scan → kill/restart charge recovery → revoke), then review/merge.**
+  - Last verification run: `npm install` + `npm run typecheck` (all workspaces passed). The full command matrix was NOT re-run after the final fix.
+  - **Open requirements (from the last session's final report — the milestone is NOT done):**
+    1. Shared payment lifecycle/finalizer (orchestration service) — the kiosk charge path duplicates manager checkout logic instead of using one shared service
+    2. Frozen processor configuration identity (snapshot the processor config at transaction creation)
+    3. Isolated reconciliation (must not race live operations)
+    4. Snapshot-only completion (charge completion must use the frozen snapshot)
+    5. `needs-attention` state for failed/orphaned charges
+    6. Real LAN integration tests (HTTP regression tests against the kiosk server — none committed yet)
+    7. Scanner flow in the kiosk app
+    8. Secure kiosk main-process bridge (preload/IPC)
+    9. Kiosk + manager UX polish
+    10. Sync/restore coverage for kiosk data (outbox events, cloud restore)
+    11. PIN KDF for the kiosk local admin PIN
+    12. Bind/rebind (kiosk re-pairing)
+    13. `docs/kiosk.md` updated to reflect actual behavior
+    14. Windows QA
 
 ## Commands (repo root)
 
@@ -64,6 +80,10 @@ Before submitting changes, run: `format` → `lint` → `typecheck` → `test` �
 
 ## Suggested next steps for the new session
 
-1. Confirm PR #6 state (`gh pr view 6`). If it has been merged, continue from `main` and start the next milestone as a new branch/PR. If still open, decide whether to finish QA on top of it.
-2. If kiosk QA/fixes are next: work the 5 steps in `docs/kiosk.md`, fix what surfaces, keep the pre-submit checklist green.
-3. Any new milestone: follow the repo pattern — feature branch → `npm test`/`lint`/`typecheck`/`build` green → `gh pr create` → merge after review.
+1. **Get the command matrix green first:** `npm install` → `format:check`/`format` → `lint` → `typecheck` → `test` → `build` → `audit` (the last session only ran typecheck after its final fix).
+2. **Work through the open kiosk requirements above**, starting with the architectural gaps: (a) the shared payment lifecycle/finalizer so kiosk and manager checkout share one path, (b) frozen processor config + snapshot-only completion, (c) isolated reconciliation + `needs-attention` state.
+3. **Add real LAN HTTP integration tests** for pair / catalog / cart price / charges / charge lookup / revoke, including kill-and-restart charge recovery.
+4. Then the remaining items: scanner flow, secure preload bridge, UX polish, sync/restore coverage, PIN KDF, bind/rebind.
+5. Update `docs/kiosk.md` to match actual behavior, then work the manual QA checklist, then Windows QA.
+6. Only consider merging PR #6 after the above; otherwise keep pushing to `arena/01a03277-shul-store-manager` (no force-pushes — that branch is tracked by this session history).
+7. Any new milestone: feature branch → full command matrix green → `gh pr create` → merge after review.
