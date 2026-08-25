@@ -34,6 +34,7 @@ import {
   type PrinterInfo,
   type PrintResult,
   type ReceiptData,
+  type SecretStore,
 } from '@shul-store/shared';
 import {
   maskApiKey,
@@ -54,7 +55,7 @@ protocol.registerSchemesAsPrivileged([
 
 let database: StoreDatabase;
 let engine: SyncEngine | null = null;
-let secretStore: SyncSecretStore = new PlaintextSyncSecretStore();
+let secretStore: SecretStore = new PlaintextSyncSecretStore();
 let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -167,7 +168,7 @@ function registerIpc(): void {
     const p = z.number().int().min(1).max(65535).parse(port);
     database.setKioskServerSettings(z.boolean().parse(enabled), p);
     if (enabled) {
-      kioskServer ??= new KioskServer(database);
+      kioskServer ??= new KioskServer(database, secretStore);
       await kioskServer.start(p);
       kioskReconcileTimer ??= setInterval(
         () => void database.runStartupReconciliation(),
@@ -730,18 +731,21 @@ async function chooseImage() {
 app.whenReady().then(async () => {
   const dataDirectory = app.getPath('userData');
   await mkdir(dataDirectory, { recursive: true });
-  database = new StoreDatabase(path.join(dataDirectory, 'shul-store.sqlite'));
+  secretStore = new ElectronSafeStorageSyncSecretStore();
+  database = new StoreDatabase(
+    path.join(dataDirectory, 'shul-store.sqlite'),
+    secretStore,
+  );
   registerIpc();
   const kioskConfig = database.getKioskServerSettings();
   if (kioskConfig.enabled) {
-    kioskServer = new KioskServer(database);
+    kioskServer = new KioskServer(database, secretStore);
     await kioskServer.start(kioskConfig.port);
     kioskReconcileTimer = setInterval(
       () => void database.runStartupReconciliation(),
       600000,
     );
   }
-  secretStore = new ElectronSafeStorageSyncSecretStore();
   // Start the background sync loop immediately if cloud backup is enabled.
   recreateSyncEngine();
   protocol.handle('store-image', (request) => {

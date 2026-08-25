@@ -35,6 +35,7 @@ export * from './html-templates.js';
 export * from './labels.js';
 export * from './kiosk.js';
 export * from './printing.js';
+export * from './secret-store.js';
 export * from './sync.js';
 
 const name = z.string().trim().min(1).max(200);

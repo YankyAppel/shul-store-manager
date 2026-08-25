@@ -9,6 +9,7 @@ import {
   customerInputSchema,
   inventoryMovementInputSchema,
   productInputSchema,
+  PlaintextSecretStore,
   recordAccountPaymentInputSchema,
   statementOptionsSchema,
   storeSettingsSchema,
@@ -40,6 +41,7 @@ import {
   type SaleItemPayload,
   type SalePayload,
   type SalePaymentPayload,
+  type SecretStore,
   type SettingsPayload,
   type StatementEntry,
   type StatementOptions,
@@ -129,9 +131,14 @@ export interface SyncConfigRecord {
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
   private paymentService: PaymentService | null = null;
+  private readonly secretStore: SecretStore;
 
-  constructor(filename: string) {
+  constructor(
+    filename: string,
+    secretStore: SecretStore = new PlaintextSecretStore(),
+  ) {
     this.connection = new SqliteDatabase(filename);
+    this.secretStore = secretStore;
     this.connection.pragma('busy_timeout = 5000');
     runMigrations(this.connection);
   }
@@ -845,7 +852,7 @@ export class StoreDatabase {
    * usable without payments being wired up (tests, restores, migrations).
    */
   get payments(): PaymentService {
-    this.paymentService ??= new PaymentService(this);
+    this.paymentService ??= new PaymentService(this, this.secretStore);
     return this.paymentService;
   }
 
@@ -868,6 +875,7 @@ export class StoreDatabase {
     identity: {
       snapshotHash?: string | null;
       processorConfigHash?: string | null;
+      processorConfigSecret?: string | null;
       originChannel?: 'manager' | 'kiosk';
     } = {},
   ): void {
@@ -913,8 +921,8 @@ export class StoreDatabase {
           `INSERT INTO payment_transactions (
             id, charge_reference, processor_id, amount_cents, status,
             cart_snapshot_json, idempotency_key, kiosk_id, created_at, updated_at,
-            snapshot_hash, processor_config_hash, origin_channel
-          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?, ?, ?, ?)`,
+            snapshot_hash, processor_config_hash, processor_config_secret, origin_channel
+          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           randomUUID(),
@@ -928,6 +936,7 @@ export class StoreDatabase {
           timestamp,
           identity.snapshotHash ?? null,
           identity.processorConfigHash ?? null,
+          identity.processorConfigSecret ?? null,
           identity.originChannel ?? (kioskId ? 'kiosk' : 'manager'),
         );
 

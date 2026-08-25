@@ -4,8 +4,10 @@ import {
   calculateCart,
   cartSnapshotSchema,
   errorMessage,
+  PlaintextSecretStore,
   type CartSnapshot,
   type CartSnapshotLine,
+  type SecretStore,
   type Sale,
   type StoreSettings,
 } from '@shul-store/shared';
@@ -56,6 +58,7 @@ export const attentionReasons = [
   'amount-mismatch',
   'processor-changed',
   'processor-config-changed',
+  'frozen-config-unavailable',
   'finalization-failed',
   'reconciliation-failed',
 ] as const;
@@ -181,6 +184,7 @@ interface TransactionRow {
   kiosk_id: string | null;
   snapshot_hash: string | null;
   processor_config_hash: string | null;
+  processor_config_secret: string | null;
   origin_channel: string;
   attention_reason: string | null;
   created_at: string;
@@ -188,7 +192,10 @@ interface TransactionRow {
 }
 
 export class PaymentService {
-  constructor(private readonly db: StoreDatabase) {}
+  constructor(
+    private readonly db: StoreDatabase,
+    private readonly secretStore: SecretStore = new PlaintextSecretStore(),
+  ) {}
 
   // ---------------------------------------------------------------- validation
 
@@ -445,6 +452,9 @@ export class PaymentService {
         {
           snapshotHash: validation.snapshotHash,
           processorConfigHash: validation.processor.configHash,
+          processorConfigSecret: this.secretStore.encrypt(
+            canonicalJson(validation.processor.config ?? {}),
+          ),
           originChannel: actor.channel,
         },
       );
@@ -650,31 +660,45 @@ export class PaymentService {
       );
 
     let config: unknown;
-    let configHash: string;
-    try {
-      config = settings.cardProcessorConfigJson
-        ? processor.configSchema.parse(
-            JSON.parse(settings.cardProcessorConfigJson),
-          )
-        : processor.configSchema.parse({});
-      configHash = sha256(canonicalJson(config ?? {}));
-    } catch {
-      return this.block(
-        tx,
-        'processor-config-changed',
-        'Current processor configuration is invalid',
-      );
+    if (tx.processor_config_secret !== null) {
+      try {
+        config = processor.configSchema.parse(
+          JSON.parse(this.secretStore.decrypt(tx.processor_config_secret)),
+        );
+      } catch {
+        return this.block(
+          tx,
+          'frozen-config-unavailable',
+          'Frozen processor configuration could not be recovered',
+        );
+      }
+    } else {
+      let configHash: string;
+      try {
+        config = settings.cardProcessorConfigJson
+          ? processor.configSchema.parse(
+              JSON.parse(settings.cardProcessorConfigJson),
+            )
+          : processor.configSchema.parse({});
+        configHash = sha256(canonicalJson(config ?? {}));
+      } catch {
+        return this.block(
+          tx,
+          'processor-config-changed',
+          'Current processor configuration is invalid',
+        );
+      }
+      if (
+        tx.processor_config_hash &&
+        tx.processor_config_hash !== configHash &&
+        String(tx.status) !== 'needs-attention'
+      )
+        return this.block(
+          tx,
+          'processor-config-changed',
+          'Processor configuration changed after authorization',
+        );
     }
-    if (
-      tx.processor_config_hash &&
-      tx.processor_config_hash !== configHash &&
-      String(tx.status) !== 'needs-attention'
-    )
-      return this.block(
-        tx,
-        'processor-config-changed',
-        'Processor configuration changed after authorization',
-      );
 
     let result;
     try {

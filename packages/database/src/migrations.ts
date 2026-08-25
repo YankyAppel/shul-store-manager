@@ -629,6 +629,19 @@ export const migrations: Migration[] = [
       END;
     `,
   },
+  {
+    version: 16,
+    name: 'payment_transaction_frozen_processor_config',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN processor_config_secret TEXT;
+
+      -- Frozen processor configuration is encrypted at rest and may never be rewritten.
+      CREATE TRIGGER IF NOT EXISTS payment_transactions_no_update_frozen_processor_config
+      BEFORE UPDATE OF processor_config_secret ON payment_transactions
+      WHEN NEW.processor_config_secret IS NOT OLD.processor_config_secret
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction frozen processor config is immutable'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
