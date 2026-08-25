@@ -26,13 +26,16 @@ import type {
   SyncNowResult,
   SyncStatus,
 } from './sync.js';
+import type { KioskServerSettings } from './kiosk.js';
 
 export * from './barcode.js';
 export * from './checkout.js';
 export * from './customers.js';
 export * from './html-templates.js';
 export * from './labels.js';
+export * from './kiosk.js';
 export * from './printing.js';
+export * from './secret-store.js';
 export * from './sync.js';
 
 const name = z.string().trim().min(1).max(200);
@@ -159,7 +162,28 @@ export interface StoredImage {
   mimeType: string;
 }
 
+/** An approved card charge that could not be finalized from its frozen snapshot. */
+export interface NeedsAttentionCharge {
+  chargeReference: string;
+  status: string;
+  totalCents: number;
+  attentionReason: string | null;
+  processorId: string;
+  originChannel: 'manager' | 'kiosk';
+  kioskId: string | null;
+  kioskName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  reservations: { productId: string; quantity: number; status: string }[];
+}
+
 export interface StoreApi {
+  kiosk: {
+    getSettings(): Promise<KioskServerSettings>;
+    pairCode(): Promise<string>;
+    revoke(id: string): Promise<void>;
+    setServer(enabled: boolean, port: number): Promise<void>;
+  };
   payments: {
     initiateCharge(
       input: import('./checkout.js').InitiateChargeInput,
@@ -181,6 +205,17 @@ export interface StoreApi {
     }>;
     getPendingTransactions(): Promise<any[]>;
     reconcileTransactions(): Promise<void>;
+    listNeedsAttention(): Promise<NeedsAttentionCharge[]>;
+    resolveNeedsAttention(
+      chargeReference: string,
+      action: 'retry' | 'void',
+      note?: string,
+    ): Promise<{
+      chargeReference: string;
+      status: string;
+      totalCents: number;
+      attentionReason?: string;
+    } | null>;
   };
 
   categories: {

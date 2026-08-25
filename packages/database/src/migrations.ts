@@ -488,6 +488,160 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 8,
+    name: 'kiosk_pairing_and_sale_attribution',
+    sql: `
+      CREATE TABLE kiosks (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+        admin_pin_hash TEXT NOT NULL, last_seen_at TEXT, created_at TEXT NOT NULL
+      );
+      ALTER TABLE sales ADD COLUMN channel TEXT NOT NULL DEFAULT 'manager' CHECK (channel IN ('manager','kiosk'));
+      ALTER TABLE sales ADD COLUMN kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL;
+      CREATE INDEX sales_kiosk_idx ON sales(kiosk_id, completed_at DESC);
+      CREATE TABLE kiosk_server_settings (singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), enabled INTEGER NOT NULL DEFAULT 0, port INTEGER NOT NULL DEFAULT 3939);
+      INSERT INTO kiosk_server_settings (singleton_id) VALUES (1);
+    `,
+  },
+  {
+    version: 9,
+    name: 'payment_transaction_kiosk_attribution',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN kiosk_id TEXT REFERENCES kiosks(id) ON DELETE SET NULL;
+      CREATE INDEX payment_transactions_kiosk_idx ON payment_transactions(kiosk_id);
+      CREATE TRIGGER payment_transactions_no_update_kiosk
+      BEFORE UPDATE OF kiosk_id ON payment_transactions
+      WHEN NEW.kiosk_id IS NOT OLD.kiosk_id
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction kiosk attribution is immutable'); END;
+    `,
+  },
+  {
+    version: 10,
+    name: 'logical_kiosk_revocation',
+    sql: `
+      ALTER TABLE kiosks ADD COLUMN revoked_at TEXT;
+      CREATE INDEX kiosks_active_token_idx ON kiosks(token_hash) WHERE revoked_at IS NULL;
+    `,
+  },
+  {
+    version: 11,
+    name: 'payment_inventory_reservations',
+    sql: `
+      CREATE TABLE payment_inventory_reservations (
+        id TEXT PRIMARY KEY, charge_reference TEXT NOT NULL REFERENCES payment_transactions(charge_reference) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        quantity INTEGER NOT NULL CHECK(quantity > 0), status TEXT NOT NULL CHECK(status IN ('held','consumed','released')),
+        created_at TEXT NOT NULL, resolved_at TEXT,
+        UNIQUE(charge_reference, product_id)
+      );
+      CREATE INDEX payment_inventory_reservations_available_idx ON payment_inventory_reservations(product_id, status);
+      CREATE TRIGGER payment_inventory_reservations_integer_quantity
+      BEFORE INSERT ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
+    `,
+  },
+  {
+    version: 12,
+    name: 'reservation_immutability',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_integer_quantity_update
+      BEFORE UPDATE OF quantity ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_immutable_identity
+      BEFORE UPDATE OF charge_reference, product_id, quantity ON payment_inventory_reservations
+      WHEN NEW.charge_reference IS NOT OLD.charge_reference OR NEW.product_id IS NOT OLD.product_id OR NEW.quantity IS NOT OLD.quantity
+      BEGIN SELECT RAISE(ABORT, 'Reservation identity is immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_state_transition
+      BEFORE UPDATE OF status ON payment_inventory_reservations
+      WHEN OLD.status != NEW.status AND NOT (OLD.status='held' AND NEW.status IN ('consumed','released'))
+      BEGIN SELECT RAISE(ABORT, 'Invalid reservation status transition'); END;
+    `,
+  },
+  {
+    version: 13,
+    name: 'held_reservation_catalog_protection',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS payment_inventory_reservations_integer_quantity
+      BEFORE INSERT ON payment_inventory_reservations
+      WHEN typeof(NEW.quantity) != 'integer' OR NEW.quantity < 1
+      BEGIN SELECT RAISE(ABORT, 'Reservation quantity must be a positive integer'); END;
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_insert
+      BEFORE INSERT ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=NEW.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_delete
+      BEFORE DELETE ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=OLD.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+    `,
+  },
+  {
+    version: 14,
+    name: 'held_reservation_barcode_update_protection',
+    sql: `
+      CREATE TRIGGER IF NOT EXISTS product_barcodes_no_change_while_reserved_update
+      BEFORE UPDATE OF product_id, value, kind, position ON product_barcodes
+      WHEN EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=OLD.product_id AND status='held')
+        OR EXISTS (SELECT 1 FROM payment_inventory_reservations WHERE product_id=NEW.product_id AND status='held')
+      BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
+    `,
+  },
+  {
+    version: 15,
+    name: 'payment_transaction_frozen_identity',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN snapshot_hash TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN processor_config_hash TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN origin_channel TEXT NOT NULL DEFAULT 'manager' CHECK (origin_channel IN ('manager','kiosk'));
+      ALTER TABLE payment_transactions ADD COLUMN attention_reason TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN finalized_at TEXT;
+
+      -- Hard guarantee for exact-once: one idempotency key can only ever own one charge.
+      CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_idempotency_unique
+        ON payment_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS payment_transactions_attention_idx ON payment_transactions(status, updated_at);
+
+      -- Frozen identity: the canonical snapshot digest, the processor configuration the
+      -- authorization was issued under, and the originating channel may never be rewritten.
+      CREATE TRIGGER IF NOT EXISTS payment_transactions_no_update_frozen_identity
+      BEFORE UPDATE ON payment_transactions
+      WHEN NEW.snapshot_hash IS NOT OLD.snapshot_hash
+        OR NEW.processor_config_hash IS NOT OLD.processor_config_hash
+        OR NEW.origin_channel IS NOT OLD.origin_channel
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction frozen identity is immutable'); END;
+
+      -- Replaces the migration-7 transition trigger: an approved charge that cannot be
+      -- finalized moves to needs-attention, and an operator retry may promote it back to
+      -- approved so the sale link trigger still refuses to attach a sale to anything else.
+      DROP TRIGGER IF EXISTS payment_transactions_status_transitions;
+      CREATE TRIGGER payment_transactions_status_transitions
+      BEFORE UPDATE OF status ON payment_transactions
+      WHEN OLD.status != NEW.status AND NOT (
+        (OLD.status = 'initiated' AND NEW.status IN ('approved','declined','error','unknown','needs-attention')) OR
+        (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error','needs-attention')) OR
+        (OLD.status = 'approved' AND NEW.status = 'needs-attention') OR
+        (OLD.status = 'needs-attention' AND NEW.status = 'approved')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Invalid payment transaction status transition');
+      END;
+    `,
+  },
+  {
+    version: 16,
+    name: 'payment_transaction_frozen_processor_config',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN processor_config_secret TEXT;
+
+      -- Frozen processor configuration is encrypted at rest and may never be rewritten.
+      CREATE TRIGGER IF NOT EXISTS payment_transactions_no_update_frozen_processor_config
+      BEFORE UPDATE OF processor_config_secret ON payment_transactions
+      WHEN NEW.processor_config_secret IS NOT OLD.processor_config_secret
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction frozen processor config is immutable'); END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

@@ -194,6 +194,8 @@ export const salePayloadSchema = z.object({
   customerAccountNumber: z.string().nullable(),
   customerBalanceBeforeCents: cents.nullable(),
   customerBalanceAfterCents: cents.nullable(),
+  channel: z.enum(['manager', 'kiosk']).optional().default('manager'),
+  kioskId: uuidString.nullable().optional(),
   tenderType: z.enum([
     'cash',
     'external_terminal',
@@ -262,6 +264,10 @@ export const paymentTransactionPayloadSchema = z.object({
       }
     }),
   idempotencyKey: z.string().nullable(),
+  snapshotHash: z.string().nullable(),
+  processorConfigHash: z.string().nullable(),
+  originChannel: z.enum(['manager', 'kiosk']),
+  attentionReason: z.string().nullable(),
   createdAt: isoString,
   updatedAt: isoString,
 });

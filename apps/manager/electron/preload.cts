@@ -2,6 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { StoreApi } from '@shul-store/shared';
 
 const api: StoreApi = {
+  kiosk: {
+    getSettings: () => ipcRenderer.invoke('kiosk:getSettings'),
+    pairCode: () => ipcRenderer.invoke('kiosk:pairCode'),
+    revoke: (id) => ipcRenderer.invoke('kiosk:revoke', id),
+    setServer: (enabled, port) =>
+      ipcRenderer.invoke('kiosk:setServer', enabled, port),
+  },
   payments: {
     initiateCharge: (input) =>
       ipcRenderer.invoke('payments:initiateCharge', input),
@@ -11,6 +18,14 @@ const api: StoreApi = {
       ipcRenderer.invoke('payments:getPendingTransactions'),
     reconcileTransactions: () =>
       ipcRenderer.invoke('payments:reconcileTransactions'),
+    listNeedsAttention: () => ipcRenderer.invoke('payments:listNeedsAttention'),
+    resolveNeedsAttention: (chargeReference, action, note) =>
+      ipcRenderer.invoke(
+        'payments:resolveNeedsAttention',
+        chargeReference,
+        action,
+        note,
+      ),
   },
 
   categories: {

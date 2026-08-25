@@ -19,9 +19,10 @@ standard `fetch` API.
   `testConnection`, `listEvents`) and `SupabaseTransport`, a plain HTTPS /
   PostgREST implementation. Pushes are idempotent on `event_id`
   (`on_conflict=event_id` + `Prefer: resolution=ignore-duplicates`).
-- `src/secret-store.ts` — the `SyncSecretStore` interface and a
-  `PlaintextSyncSecretStore` fallback. The Electron main process supplies a
-  `safeStorage`-backed implementation.
+- `src/secret-store.ts` — the `SyncSecretStore` alias and a
+  `PlaintextSyncSecretStore` fallback backed by the shared secret-store
+  abstraction. The Electron main process supplies a `safeStorage`-backed
+  implementation shared with payment reconciliation.
 - `src/sync-engine.ts` — the background engine: pushes on start + every 5 min +
   manual trigger, bounded batches, strict sequence order, mark-after-ack,
   exponential backoff with jitter, single-flight.

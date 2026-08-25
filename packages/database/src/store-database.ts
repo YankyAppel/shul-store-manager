@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
-import { processors } from '@shul-store/payments';
+import { PaymentService } from './payment-service.js';
 import {
   calculateCart,
   calculateCashChange,
-  cartSnapshotSchema,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
   inventoryMovementInputSchema,
   productInputSchema,
+  PlaintextSecretStore,
   recordAccountPaymentInputSchema,
   statementOptionsSchema,
   storeSettingsSchema,
@@ -30,6 +30,7 @@ import {
   type InventoryMovement,
   type InventoryMovementInput,
   type InventoryMovementPayload,
+  type KioskSummary,
   type LedgerEntryPayload,
   type PaymentTransactionPayload,
   type Product,
@@ -40,6 +41,7 @@ import {
   type SaleItemPayload,
   type SalePayload,
   type SalePaymentPayload,
+  type SecretStore,
   type SettingsPayload,
   type StatementEntry,
   type StatementOptions,
@@ -128,9 +130,15 @@ export interface SyncConfigRecord {
 
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
+  private paymentService: PaymentService | null = null;
+  private readonly secretStore: SecretStore;
 
-  constructor(filename: string) {
+  constructor(
+    filename: string,
+    secretStore: SecretStore = new PlaintextSecretStore(),
+  ) {
     this.connection = new SqliteDatabase(filename);
+    this.secretStore = secretStore;
     this.connection.pragma('busy_timeout = 5000');
     runMigrations(this.connection);
   }
@@ -230,6 +238,7 @@ export class StoreDatabase {
             default_label_template=?,
             card_processing_enabled=?,
             card_processor_id=?,
+            card_processor_config_json=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -251,6 +260,7 @@ export class StoreDatabase {
           value.defaultLabelTemplate,
           value.cardProcessingEnabled ? 1 : 0,
           value.cardProcessorId,
+          value.cardProcessorConfigJson,
           now(),
         );
       this.enqueueEntity('settings', 'settings');
@@ -390,6 +400,21 @@ export class StoreDatabase {
     const value = productInputSchema.parse(input);
     try {
       this.connection.transaction(() => {
+        const currentBarcodes = this.getProduct(id)
+          .barcodes.map((b) => b.value.toLowerCase())
+          .sort();
+        const nextBarcodes = value.barcodes.map((b) => b.toLowerCase()).sort();
+        const barcodeSetChanged =
+          JSON.stringify(currentBarcodes) !== JSON.stringify(nextBarcodes);
+        const held = this.connection
+          .prepare(
+            "SELECT 1 FROM payment_inventory_reservations WHERE product_id=? AND status='held' LIMIT 1",
+          )
+          .get(id);
+        if (held && barcodeSetChanged)
+          throw new Error(
+            'Product barcode cannot change while card payment is pending',
+          );
         this.assertCategoryExists(value.categoryId);
         const result = this.connection
           .prepare(
@@ -408,10 +433,12 @@ export class StoreDatabase {
             id,
           );
         if (result.changes === 0) throw new Error('Product not found');
-        this.connection
-          .prepare('DELETE FROM product_barcodes WHERE product_id = ?')
-          .run(id);
-        this.insertBarcodes(id, value.barcodes, now());
+        if (barcodeSetChanged) {
+          this.connection
+            .prepare('DELETE FROM product_barcodes WHERE product_id = ?')
+            .run(id);
+          this.insertBarcodes(id, value.barcodes, now());
+        }
         this.enqueueEntity('product', id);
         this.addAudit('product.updated', 'product', id, { name: value.name });
       })();
@@ -423,6 +450,15 @@ export class StoreDatabase {
 
   setProductActive(id: string, active: boolean): void {
     this.connection.transaction(() => {
+      if (!active) {
+        const held = this.connection
+          .prepare(
+            "SELECT 1 FROM payment_inventory_reservations WHERE product_id=? AND status='held' LIMIT 1",
+          )
+          .get(id);
+        if (held)
+          throw new Error('Product has a pending card-payment reservation');
+      }
       const result = this.connection
         .prepare('UPDATE products SET active = ?, updated_at = ? WHERE id = ?')
         .run(active ? 1 : 0, now(), id);
@@ -811,90 +847,21 @@ export class StoreDatabase {
     };
   }
 
+  /**
+   * The shared Manager/Kiosk payment service. Created lazily so that the database stays
+   * usable without payments being wired up (tests, restores, migrations).
+   */
+  get payments(): PaymentService {
+    this.paymentService ??= new PaymentService(this, this.secretStore);
+    return this.paymentService;
+  }
+
+  /**
+   * Sweeps every unresolved charge through the shared payment service. Transactions that
+   * already need an operator are left alone; use `payments.resolveNeedsAttention`.
+   */
   async runStartupReconciliation() {
-    const pending = this.getPendingPaymentTransactions();
-    const settings = this.getSettings();
-    const processor = processors.find((p) => p.id === settings.cardProcessorId);
-    if (!processor) return;
-
-    for (const tx of pending) {
-      try {
-        let config = {};
-        if (settings.cardProcessorConfigJson && processor.configSchema) {
-          try {
-            config = processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            );
-          } catch {
-            console.error('Invalid processor configuration in reconciliation');
-          }
-        }
-        const result = await processor.getChargeStatus(
-          String(tx.charge_reference),
-          config,
-          this.getProcessorStorage(),
-        );
-
-        if (
-          result.status === 'approved' &&
-          !tx.sale_id &&
-          tx.cart_snapshot_json &&
-          tx.idempotency_key
-        ) {
-          this.updatePaymentTransactionStatus(
-            String(tx.charge_reference),
-            result.status,
-            result.processorTransactionId,
-            result.cardBrand,
-            result.cardLast4,
-          );
-
-          const parsed = cartSnapshotSchema.safeParse(
-            JSON.parse(String(tx.cart_snapshot_json)),
-          );
-          if (!parsed.success) {
-            console.error(
-              'Invalid cart snapshot for transaction, marking needs-attention',
-              tx.charge_reference,
-              parsed.error,
-            );
-            this.updatePaymentTransactionStatus(
-              String(tx.charge_reference),
-              'needs-attention',
-            );
-            continue;
-          }
-          const snapshot = parsed.data;
-
-          // Provide pre-calculated lines to avoid catalog changes blocking reconciliation
-          this.completeSale(
-            {
-              completionKey: String(tx.idempotency_key),
-              lines: snapshot.lines,
-              payment: {
-                method: 'integrated_card',
-                chargeReference: String(tx.charge_reference),
-              },
-            },
-            snapshot,
-          );
-        } else if (result.status === 'declined' || result.status === 'error') {
-          this.updatePaymentTransactionStatus(
-            String(tx.charge_reference),
-            result.status,
-            result.processorTransactionId,
-            result.cardBrand,
-            result.cardLast4,
-          );
-        }
-      } catch (e) {
-        console.error(
-          'Failed to reconcile transaction',
-          tx.charge_reference,
-          e,
-        );
-      }
-    }
+    await this.payments.reconcileAll();
   }
 
   createPaymentTransaction(
@@ -903,8 +870,31 @@ export class StoreDatabase {
     amountCents: number,
     cartSnapshotJson: string,
     idempotencyKey: string,
+    kioskId: string | null = null,
+    reservations: { productId: string; quantity: number }[] = [],
+    identity: {
+      snapshotHash?: string | null;
+      processorConfigHash?: string | null;
+      processorConfigSecret?: string | null;
+      originChannel?: 'manager' | 'kiosk';
+    } = {},
   ): void {
     const timestamp = now();
+    const normalizedReservations = new Map<string, number>();
+    for (const reservation of reservations) {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          reservation.productId,
+        ) ||
+        !Number.isSafeInteger(reservation.quantity) ||
+        reservation.quantity < 1 ||
+        reservation.quantity > 10000
+      )
+        throw new Error('Invalid inventory reservation');
+      if (normalizedReservations.has(reservation.productId))
+        throw new Error('Duplicate inventory reservation product');
+      normalizedReservations.set(reservation.productId, reservation.quantity);
+    }
     this.connection.transaction(() => {
       // Check finding 6: Nothing blocks re-charging while an 'unknown'/'initiated' transaction exists
       const existingActive = this.connection
@@ -917,12 +907,22 @@ export class StoreDatabase {
           'A payment is already in progress for this cart. Please check its status.',
         );
 
+      for (const [productId, quantity] of normalizedReservations) {
+        const product = this.getProduct(productId);
+        if (
+          !product.active ||
+          quantity >
+            product.stockQuantity - this.heldQuantityFor(productId, null)
+        )
+          throw new Error('Cart is no longer available');
+      }
       this.connection
         .prepare(
           `INSERT INTO payment_transactions (
             id, charge_reference, processor_id, amount_cents, status,
-            cart_snapshot_json, idempotency_key, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?)`,
+            cart_snapshot_json, idempotency_key, kiosk_id, created_at, updated_at,
+            snapshot_hash, processor_config_hash, processor_config_secret, origin_channel
+          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           randomUUID(),
@@ -931,8 +931,13 @@ export class StoreDatabase {
           amountCents,
           cartSnapshotJson,
           idempotencyKey,
+          kioskId,
           timestamp,
           timestamp,
+          identity.snapshotHash ?? null,
+          identity.processorConfigHash ?? null,
+          identity.processorConfigSecret ?? null,
+          identity.originChannel ?? (kioskId ? 'kiosk' : 'manager'),
         );
 
       const tx = this.connection
@@ -941,6 +946,13 @@ export class StoreDatabase {
         )
         .get(chargeReference) as { id: string };
 
+      for (const [productId, quantity] of normalizedReservations) {
+        this.connection
+          .prepare(
+            "INSERT INTO payment_inventory_reservations (id,charge_reference,product_id,quantity,status,created_at) VALUES (?, ?, ?, ?, 'held', ?)",
+          )
+          .run(randomUUID(), chargeReference, productId, quantity, timestamp);
+      }
       this.enqueueEntity('payment_transaction', tx.id);
     })();
   }
@@ -987,6 +999,13 @@ export class StoreDatabase {
           chargeReference,
         );
 
+      if (status === 'declined' || status === 'error') {
+        this.connection
+          .prepare(
+            "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
+          )
+          .run(timestamp, chargeReference);
+      }
       this.enqueueEntity('payment_transaction', tx.id);
     })();
   }
@@ -999,6 +1018,208 @@ export class StoreDatabase {
       .all() as Row[];
   }
 
+  /** Charges the automatic sweep may still resolve on its own. */
+  getReconcilablePaymentTransactions() {
+    return this.connection
+      .prepare(
+        `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown') AND sale_id IS NULL ORDER BY created_at`,
+      )
+      .all() as Row[];
+  }
+
+  /** Approved-but-unfinalizable charges waiting on an operator. */
+  getNeedsAttentionPaymentTransactions() {
+    return this.connection
+      .prepare(
+        `SELECT * FROM payment_transactions WHERE status = 'needs-attention' AND sale_id IS NULL ORDER BY updated_at`,
+      )
+      .all() as Row[];
+  }
+
+  /** Quantity currently held by card reservations, optionally ignoring one charge. */
+  heldQuantityFor(productId: string, excludeChargeReference: string | null) {
+    const row = this.connection
+      .prepare(
+        "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held' AND (? IS NULL OR charge_reference != ?)",
+      )
+      .get(productId, excludeChargeReference, excludeChargeReference) as Row;
+    return Number(row.quantity);
+  }
+
+  listReservations(
+    chargeReference: string,
+  ): { productId: string; quantity: number; status: string }[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT product_id, quantity, status FROM payment_inventory_reservations WHERE charge_reference=? ORDER BY product_id',
+        )
+        .all(chargeReference) as Row[]
+    ).map((row) => ({
+      productId: String(row.product_id),
+      quantity: Number(row.quantity),
+      status: String(row.status),
+    }));
+  }
+
+  releaseReservations(chargeReference: string): void {
+    this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
+        )
+        .run(now(), chargeReference);
+    })();
+  }
+
+  /**
+   * Records why an approved charge could not be finalized. `setStatus` promotes the row to
+   * `needs-attention`; pass false to only annotate a charge an operator already triaged.
+   */
+  markPaymentNeedsAttention(
+    chargeReference: string,
+    reason: string,
+    setStatus = true,
+  ): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id, status FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string; status: string } | undefined;
+      if (!tx) throw new Error('Payment transaction not found');
+      if (setStatus)
+        this.connection
+          .prepare(
+            `UPDATE payment_transactions SET status='needs-attention', attention_reason=?, updated_at=? WHERE id=?`,
+          )
+          .run(reason, timestamp, tx.id);
+      else
+        this.connection
+          .prepare(
+            'UPDATE payment_transactions SET attention_reason=?, updated_at=? WHERE id=?',
+          )
+          .run(reason, timestamp, tx.id);
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  /** Marks a charge as successfully finalized from its frozen snapshot. */
+  markPaymentFinalized(chargeReference: string): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string } | undefined;
+      if (!tx) throw new Error('Payment transaction not found');
+      this.connection
+        .prepare(
+          'UPDATE payment_transactions SET attention_reason=NULL, finalized_at=?, updated_at=? WHERE id=?',
+        )
+        .run(timestamp, timestamp, tx.id);
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  /** Active (non-revoked) kiosk identity, used to authorize kiosk-originated charges. */
+  getActiveKiosk(
+    id: string,
+  ): { id: string; name: string; lastSeenAt: string | null } | null {
+    const row = this.connection
+      .prepare(
+        'SELECT id,name,last_seen_at FROM kiosks WHERE id=? AND revoked_at IS NULL',
+      )
+      .get(id) as Row | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null,
+    };
+  }
+
+  getKioskServerSettings(): { enabled: boolean; port: number } {
+    const r = this.connection
+      .prepare(
+        'SELECT enabled,port FROM kiosk_server_settings WHERE singleton_id=1',
+      )
+      .get() as Row;
+    return { enabled: Boolean(r.enabled), port: Number(r.port) };
+  }
+  setKioskServerSettings(enabled: boolean, port: number): void {
+    this.connection
+      .prepare(
+        'UPDATE kiosk_server_settings SET enabled=?,port=? WHERE singleton_id=1',
+      )
+      .run(enabled ? 1 : 0, port);
+  }
+
+  // --- KIOSK PAIRING ---
+  createKiosk(
+    id: string,
+    name: string,
+    tokenHash: string,
+    pinHash: string,
+  ): void {
+    this.connection
+      .prepare(
+        'INSERT INTO kiosks (id,name,token_hash,admin_pin_hash,created_at) VALUES (?,?,?,?,?)',
+      )
+      .run(id, name, tokenHash, pinHash, now());
+  }
+  findKioskByTokenHash(
+    tokenHash: string,
+  ): { id: string; name: string; last_seen_at: string | null } | undefined {
+    return this.connection
+      .prepare(
+        'SELECT id,name,last_seen_at FROM kiosks WHERE token_hash=? AND revoked_at IS NULL',
+      )
+      .get(tokenHash) as
+      { id: string; name: string; last_seen_at: string | null } | undefined;
+  }
+  listKiosks(): KioskSummary[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT id,name,last_seen_at,revoked_at FROM kiosks ORDER BY name',
+        )
+        .all() as Row[]
+    ).map((r) => ({
+      id: String(r.id),
+      name: String(r.name),
+      lastSeenAt: r.last_seen_at ? String(r.last_seen_at) : null,
+      revokedAt: r.revoked_at ? String(r.revoked_at) : null,
+    }));
+  }
+  touchKiosk(id: string): void {
+    this.connection
+      .prepare('UPDATE kiosks SET last_seen_at=? WHERE id=?')
+      .run(now(), id);
+  }
+  revokeKiosk(id: string): void {
+    const result = this.connection
+      .prepare(
+        'UPDATE kiosks SET revoked_at=? WHERE id=? AND revoked_at IS NULL',
+      )
+      .run(now(), id);
+    if (result.changes === 0)
+      throw new Error('Kiosk not found or already revoked');
+  }
+  attributeKioskSale(saleId: string, kioskId: string): void {
+    this.connection
+      .prepare("UPDATE sales SET channel='kiosk', kiosk_id=? WHERE id=?")
+      .run(kioskId, saleId);
+  }
+
+  getPaymentTransactionByIdempotencyKey(idempotencyKey: string) {
+    return this.connection
+      .prepare(`SELECT * FROM payment_transactions WHERE idempotency_key = ?`)
+      .get(idempotencyKey) as Row | undefined;
+  }
+
   getPaymentTransaction(chargeReference: string) {
     return this.connection
       .prepare(`SELECT * FROM payment_transactions WHERE charge_reference = ?`)
@@ -1008,6 +1229,7 @@ export class StoreDatabase {
   completeSale(
     input: import('@shul-store/shared').CompleteSaleInput,
     snapshot?: import('@shul-store/shared').CartSnapshot,
+    kioskId: string | null = null,
   ): import('@shul-store/shared').Sale {
     const value = completeSaleInputSchema.parse(input);
     const settings = this.getSettings();
@@ -1017,6 +1239,18 @@ export class StoreDatabase {
       .prepare('SELECT id FROM sales WHERE completion_key = ?')
       .get(value.completionKey) as { id: string } | undefined;
     if (existingPre) {
+      // Exact-once: the shared payment service may already have finalized this charge
+      // from its frozen snapshot, so replaying the same completion returns the same sale.
+      if (value.payment.method === 'integrated_card') {
+        const linked = this.connection
+          .prepare(
+            'SELECT sale_id FROM payment_transactions WHERE charge_reference = ?',
+          )
+          .get(value.payment.chargeReference) as
+          { sale_id: string | null } | undefined;
+        if (linked?.sale_id === existingPre.id)
+          return this.getSale(existingPre.id);
+      }
       this.validateExistingSaleMatch(existingPre.id, value);
       if (value.payment.method === 'integrated_card') {
         const existingTx = this.connection
@@ -1044,6 +1278,15 @@ export class StoreDatabase {
           .prepare('SELECT id FROM sales WHERE completion_key = ?')
           .get(value.completionKey) as { id: string } | undefined;
         if (again) {
+          if (value.payment.method === 'integrated_card') {
+            const linked = this.connection
+              .prepare(
+                'SELECT sale_id FROM payment_transactions WHERE charge_reference = ?',
+              )
+              .get(value.payment.chargeReference) as
+              { sale_id: string | null } | undefined;
+            if (linked?.sale_id === again.id) return;
+          }
           this.validateExistingSaleMatch(again.id, value);
           if (value.payment.method === 'integrated_card') {
             const existingTx = this.connection
@@ -1098,9 +1341,20 @@ export class StoreDatabase {
           if (!product.active) {
             throw new Error(`${product.name} is inactive and cannot be sold.`);
           }
-          if (qty > product.stockQuantity) {
+          const held = this.connection
+            .prepare(
+              "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held' AND charge_reference != ?",
+            )
+            .get(
+              prodId,
+              value.payment.method === 'integrated_card'
+                ? value.payment.chargeReference
+                : '',
+            ) as Row;
+          const available = product.stockQuantity - Number(held.quantity);
+          if (qty > available) {
             throw new Error(
-              `Insufficient stock for ${product.name}. Available: ${product.stockQuantity}.`,
+              `Insufficient stock for ${product.name}. Available: ${available}.`,
             );
           }
         }
@@ -1218,8 +1472,8 @@ export class StoreDatabase {
             `INSERT INTO sales (
               id, receipt_number, completion_key, status, subtotal_cents, tax_cents, total_cents,
               created_at, customer_id, customer_name, customer_account_number, customer_balance_before_cents,
-              customer_balance_after_cents, tender_type
-            ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              customer_balance_after_cents, tender_type, channel, kiosk_id
+            ) VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             saleId,
@@ -1237,6 +1491,8 @@ export class StoreDatabase {
             value.payment.method === 'integrated_card'
               ? 'immediate_payment'
               : value.payment.method,
+            kioskId ? 'kiosk' : 'manager',
+            kioskId,
           );
 
         this.connection
@@ -1400,6 +1656,12 @@ export class StoreDatabase {
               `UPDATE payment_transactions SET sale_id = ?, updated_at = ? WHERE id = ?`,
             )
             .run(saleId, timestamp, txRow.id);
+
+          this.connection
+            .prepare(
+              "UPDATE payment_inventory_reservations SET status='consumed', resolved_at=? WHERE charge_reference=? AND status='held'",
+            )
+            .run(timestamp, value.payment.chargeReference);
 
           this.connection
             .prepare("UPDATE sales SET status='paid' WHERE id=?")
@@ -2713,6 +2975,15 @@ export class StoreDatabase {
         ? String(tx.cart_snapshot_json)
         : null,
       idempotencyKey: tx.idempotency_key ? String(tx.idempotency_key) : null,
+      snapshotHash: tx.snapshot_hash ? String(tx.snapshot_hash) : null,
+      processorConfigHash: tx.processor_config_hash
+        ? String(tx.processor_config_hash)
+        : null,
+      originChannel:
+        String(tx.origin_channel ?? 'manager') === 'kiosk'
+          ? 'kiosk'
+          : 'manager',
+      attentionReason: tx.attention_reason ? String(tx.attention_reason) : null,
       createdAt: String(tx.created_at),
       updatedAt: String(tx.updated_at),
     };
@@ -2876,6 +3147,13 @@ export class StoreDatabase {
         sale.customer_balance_after_cents,
         'customer_balance_after_cents',
       ),
+      channel: (sale.channel === 'kiosk'
+        ? 'kiosk'
+        : 'manager') as SalePayload['channel'],
+      kioskId:
+        sale.kiosk_id === null || sale.kiosk_id === undefined
+          ? null
+          : String(sale.kiosk_id),
       tenderType: String(sale.tender_type) as SalePayload['tenderType'],
       items: items.map((item): SaleItemPayload => ({
         id: String(item.id),
