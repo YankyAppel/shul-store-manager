@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { processors, simulatedProcessor } from '@shul-store/payments';
 import {
   canonicalJson,
   PaymentError,
@@ -189,6 +190,7 @@ describe('shared payment service', () => {
     for (const column of [
       'snapshot_hash',
       'processor_config_hash',
+      'processor_config_secret',
       'origin_channel',
       'cart_snapshot_json',
       'amount_cents',
@@ -494,7 +496,7 @@ describe('shared payment service', () => {
     expect(db.listSales()).toHaveLength(0);
   });
 
-  it('refuses to reconcile a charge under a different processor or configuration', async () => {
+  it('reconciles a legacy charge as needs-attention when its configuration changes', async () => {
     db.updateProduct(water.id, {
       categoryId: water.categoryId,
       name: water.name,
@@ -504,7 +506,25 @@ describe('shared payment service', () => {
       lowStockThreshold: water.lowStockThreshold,
     });
     const input = request(water.id);
-    await payments.charge(input, MANAGER);
+    const validation = payments.validate(input, MANAGER);
+    db.createPaymentTransaction(
+      input.chargeReference,
+      validation.processor.processorId,
+      validation.totalCents,
+      validation.snapshotJson,
+      input.idempotencyKey,
+      null,
+      validation.reservations,
+      {
+        processorConfigHash: validation.processor.configHash,
+        originChannel: 'manager',
+      },
+    );
+    await db.getProcessorStorage().set(input.chargeReference, {
+      status: 'approved',
+      processorTransactionId: 'legacy',
+    });
+    db.updatePaymentTransactionStatus(input.chargeReference, 'unknown');
     expect(
       String(db.getPaymentTransaction(input.chargeReference)!.status),
     ).toBe('unknown');
@@ -522,6 +542,9 @@ describe('shared payment service', () => {
       /^processor-config-changed:/,
     );
     expect(db.listSales()).toHaveLength(0);
+    expect(
+      db.listReservations(input.chargeReference).map((row) => row.status),
+    ).toEqual(['held']);
 
     // Processor changed after authorization. Soda is priced so the total also stays pending.
     db.updateProduct(soda.id, {
@@ -550,6 +573,135 @@ describe('shared payment service', () => {
         .attentionReason,
     ).toMatch(/^processor-changed:/);
     expect(db.listSales()).toHaveLength(0);
+  });
+
+  it('reconciles with the frozen processor configuration after settings change', async () => {
+    const calls: { kind: string; config: unknown }[] = [];
+    const recordingProcessor = {
+      ...simulatedProcessor,
+      id: 'recording',
+      createCharge: async (
+        _request: Parameters<typeof simulatedProcessor.createCharge>[0],
+        config: Parameters<typeof simulatedProcessor.createCharge>[1],
+      ) => {
+        calls.push({ kind: 'create', config });
+        return { status: 'pending' as const };
+      },
+      getChargeStatus: async (
+        chargeReference: string,
+        config: Parameters<typeof simulatedProcessor.getChargeStatus>[1],
+      ) => {
+        calls.push({ kind: 'status', config });
+        return {
+          status: 'approved' as const,
+          processorTransactionId: `recorded-${chargeReference}`,
+        };
+      },
+    };
+    processors.push(recordingProcessor);
+    try {
+      db.updateSettings({
+        ...db.getSettings(),
+        cardProcessingEnabled: true,
+        cardProcessorId: 'recording',
+        cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 1 }),
+      });
+      const input = request(water.id);
+      const pending = await payments.charge(input, MANAGER);
+      expect(pending.status).toBe('unknown');
+
+      db.updateSettings({
+        ...db.getSettings(),
+        cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 99 }),
+      });
+      const reconciled = await payments.reconcile(input.chargeReference);
+
+      expect(reconciled?.status).toBe('approved');
+      expect(calls).toEqual([
+        { kind: 'create', config: { simulateDelayMs: 1 } },
+        { kind: 'status', config: { simulateDelayMs: 1 } },
+      ]);
+      expect(db.listSales()).toHaveLength(1);
+      await payments.reconcile(input.chargeReference);
+      expect(calls).toHaveLength(2);
+      expect(payments.listNeedsAttention()).toHaveLength(0);
+    } finally {
+      processors.splice(processors.indexOf(recordingProcessor), 1);
+    }
+  });
+
+  it('holds reservations and records a safe attention reason when the frozen configuration is corrupt', async () => {
+    const input = request(water.id);
+    const validation = payments.validate(input, MANAGER);
+    db.createPaymentTransaction(
+      input.chargeReference,
+      validation.processor.processorId,
+      validation.totalCents,
+      validation.snapshotJson,
+      input.idempotencyKey,
+      null,
+      validation.reservations,
+      {
+        processorConfigHash: validation.processor.configHash,
+        processorConfigSecret: '%',
+        originChannel: 'manager',
+      },
+    );
+    await db.getProcessorStorage().set(input.chargeReference, {
+      status: 'approved',
+      processorTransactionId: 'corrupt',
+    });
+    db.updatePaymentTransactionStatus(input.chargeReference, 'unknown');
+
+    await expect(
+      payments.reconcile(input.chargeReference),
+    ).resolves.toMatchObject({ status: 'needs-attention' });
+    expect(db.listSales()).toHaveLength(0);
+    expect(
+      db.listReservations(input.chargeReference).map((row) => row.status),
+    ).toEqual(['held']);
+    expect(payments.listNeedsAttention()[0]!.attentionReason).toMatch(
+      /^frozen-config-unavailable:/,
+    );
+  });
+
+  it('keeps frozen processor configuration out of sync payloads and attention listings', async () => {
+    db.updateProduct(water.id, {
+      categoryId: water.categoryId,
+      name: water.name,
+      purchaseCostCents: water.purchaseCostCents,
+      sellingPriceCents: 1003,
+      taxable: false,
+      lowStockThreshold: water.lowStockThreshold,
+    });
+    db.updateSettings({
+      ...db.getSettings(),
+      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 5 }),
+    });
+    const input = request(water.id);
+    const pending = await payments.charge(input, MANAGER);
+    expect(pending.status).toBe('unknown');
+
+    const row = db.getPaymentTransaction(input.chargeReference)!;
+    const secret = String(row.processor_config_secret);
+    const paymentEvent = db
+      .exportOutboxSnapshot()
+      .filter((event) => event.entityType === 'payment_transaction')
+      .at(-1)!;
+    const payload = JSON.stringify(paymentEvent.payload);
+    expect(payload).not.toContain(secret);
+    expect(payload).not.toContain('simulateDelayMs');
+
+    db.addInventoryMovement({
+      productId: water.id,
+      quantityChange: -20,
+      reason: 'manual_decrease',
+      notes: 'Damaged in storage',
+    });
+    await payments.reconcile(input.chargeReference);
+    const attention = JSON.stringify(payments.listNeedsAttention());
+    expect(attention).not.toContain(secret);
+    expect(attention).not.toContain('simulateDelayMs');
   });
 
   it('enforces the documented status transitions in SQLite', () => {

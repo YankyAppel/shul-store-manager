@@ -405,7 +405,7 @@ describe('kiosk LAN API', () => {
     expect(restarted.db.getProduct(soda.id).stockQuantity).toBe(49);
   });
 
-  it('holds a pending charge for attention when the processor config changed', async () => {
+  it('reconciles a pending charge with its frozen processor config after settings change', async () => {
     const lan = await startLan();
     const { token } = await pair(lan);
     const body = chargeBody(soda.id, 1);
@@ -424,15 +424,10 @@ describe('kiosk LAN API', () => {
       `/api/charges/${body.chargeReference}`,
       token,
     );
-    expect(status.body.status).toBe('needs-attention');
-    expect(String(status.body.attentionReason)).toMatch(
-      /^processor-config-changed:/,
-    );
-    expect(lan.db.listSales()).toHaveLength(0);
-    expect(lan.db.payments.listNeedsAttention()).toHaveLength(1);
-
-    // The held reservation survives so the stock is not double sold.
-    expect(lan.db.heldQuantityFor(soda.id, null)).toBe(1);
+    expect(status.body.status).toBe('approved');
+    expect(lan.db.listSales()).toHaveLength(1);
+    expect(lan.db.payments.listNeedsAttention()).toHaveLength(0);
+    expect(lan.db.heldQuantityFor(soda.id, null)).toBe(0);
   });
 
   it('reports cart problems with a stable 409 marker and never charges', async () => {
