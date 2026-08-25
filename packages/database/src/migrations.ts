@@ -588,6 +588,47 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Product barcode cannot change while card payment is pending'); END;
     `,
   },
+  {
+    version: 15,
+    name: 'payment_transaction_frozen_identity',
+    sql: `
+      ALTER TABLE payment_transactions ADD COLUMN snapshot_hash TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN processor_config_hash TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN origin_channel TEXT NOT NULL DEFAULT 'manager' CHECK (origin_channel IN ('manager','kiosk'));
+      ALTER TABLE payment_transactions ADD COLUMN attention_reason TEXT;
+      ALTER TABLE payment_transactions ADD COLUMN finalized_at TEXT;
+
+      -- Hard guarantee for exact-once: one idempotency key can only ever own one charge.
+      CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_idempotency_unique
+        ON payment_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS payment_transactions_attention_idx ON payment_transactions(status, updated_at);
+
+      -- Frozen identity: the canonical snapshot digest, the processor configuration the
+      -- authorization was issued under, and the originating channel may never be rewritten.
+      CREATE TRIGGER IF NOT EXISTS payment_transactions_no_update_frozen_identity
+      BEFORE UPDATE ON payment_transactions
+      WHEN NEW.snapshot_hash IS NOT OLD.snapshot_hash
+        OR NEW.processor_config_hash IS NOT OLD.processor_config_hash
+        OR NEW.origin_channel IS NOT OLD.origin_channel
+      BEGIN SELECT RAISE(ABORT, 'Payment transaction frozen identity is immutable'); END;
+
+      -- Replaces the migration-7 transition trigger: an approved charge that cannot be
+      -- finalized moves to needs-attention, and an operator retry may promote it back to
+      -- approved so the sale link trigger still refuses to attach a sale to anything else.
+      DROP TRIGGER IF EXISTS payment_transactions_status_transitions;
+      CREATE TRIGGER payment_transactions_status_transitions
+      BEFORE UPDATE OF status ON payment_transactions
+      WHEN OLD.status != NEW.status AND NOT (
+        (OLD.status = 'initiated' AND NEW.status IN ('approved','declined','error','unknown','needs-attention')) OR
+        (OLD.status = 'unknown' AND NEW.status IN ('approved','declined','error','needs-attention')) OR
+        (OLD.status = 'approved' AND NEW.status = 'needs-attention') OR
+        (OLD.status = 'needs-attention' AND NEW.status = 'approved')
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'Invalid payment transaction status transition');
+      END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

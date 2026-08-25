@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
-import { processors } from '@shul-store/payments';
+import { PaymentService } from './payment-service.js';
 import {
   calculateCart,
   calculateCashChange,
-  cartSnapshotSchema,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
@@ -128,6 +127,7 @@ export interface SyncConfigRecord {
 
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
+  private paymentService: PaymentService | null = null;
 
   constructor(filename: string) {
     this.connection = new SqliteDatabase(filename);
@@ -839,91 +839,21 @@ export class StoreDatabase {
     };
   }
 
+  /**
+   * The shared Manager/Kiosk payment service. Created lazily so that the database stays
+   * usable without payments being wired up (tests, restores, migrations).
+   */
+  get payments(): PaymentService {
+    this.paymentService ??= new PaymentService(this);
+    return this.paymentService;
+  }
+
+  /**
+   * Sweeps every unresolved charge through the shared payment service. Transactions that
+   * already need an operator are left alone; use `payments.resolveNeedsAttention`.
+   */
   async runStartupReconciliation() {
-    const pending = this.getPendingPaymentTransactions();
-    const settings = this.getSettings();
-    const processor = processors.find((p) => p.id === settings.cardProcessorId);
-    if (!processor) return;
-
-    for (const tx of pending) {
-      try {
-        let config = {};
-        if (settings.cardProcessorConfigJson && processor.configSchema) {
-          try {
-            config = processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            );
-          } catch {
-            console.error('Invalid processor configuration in reconciliation');
-          }
-        }
-        const result = await processor.getChargeStatus(
-          String(tx.charge_reference),
-          config,
-          this.getProcessorStorage(),
-        );
-
-        if (
-          result.status === 'approved' &&
-          !tx.sale_id &&
-          tx.cart_snapshot_json &&
-          tx.idempotency_key
-        ) {
-          this.updatePaymentTransactionStatus(
-            String(tx.charge_reference),
-            result.status,
-            result.processorTransactionId,
-            result.cardBrand,
-            result.cardLast4,
-          );
-
-          const parsed = cartSnapshotSchema.safeParse(
-            JSON.parse(String(tx.cart_snapshot_json)),
-          );
-          if (!parsed.success) {
-            console.error(
-              'Invalid cart snapshot for transaction, marking needs-attention',
-              tx.charge_reference,
-              parsed.error,
-            );
-            this.updatePaymentTransactionStatus(
-              String(tx.charge_reference),
-              'needs-attention',
-            );
-            continue;
-          }
-          const snapshot = parsed.data;
-
-          // Provide pre-calculated lines to avoid catalog changes blocking reconciliation
-          this.completeSale(
-            {
-              completionKey: String(tx.idempotency_key),
-              lines: snapshot.lines,
-              payment: {
-                method: 'integrated_card',
-                chargeReference: String(tx.charge_reference),
-              },
-            },
-            snapshot,
-            tx.kiosk_id ? String(tx.kiosk_id) : null,
-          );
-        } else if (result.status === 'declined' || result.status === 'error') {
-          this.updatePaymentTransactionStatus(
-            String(tx.charge_reference),
-            result.status,
-            result.processorTransactionId,
-            result.cardBrand,
-            result.cardLast4,
-          );
-        }
-      } catch (e) {
-        console.error(
-          'Failed to reconcile transaction',
-          tx.charge_reference,
-          e,
-        );
-      }
-    }
+    await this.payments.reconcileAll();
   }
 
   createPaymentTransaction(
@@ -934,6 +864,11 @@ export class StoreDatabase {
     idempotencyKey: string,
     kioskId: string | null = null,
     reservations: { productId: string; quantity: number }[] = [],
+    identity: {
+      snapshotHash?: string | null;
+      processorConfigHash?: string | null;
+      originChannel?: 'manager' | 'kiosk';
+    } = {},
   ): void {
     const timestamp = now();
     const normalizedReservations = new Map<string, number>();
@@ -965,14 +900,10 @@ export class StoreDatabase {
 
       for (const [productId, quantity] of normalizedReservations) {
         const product = this.getProduct(productId);
-        const held = this.connection
-          .prepare(
-            "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held'",
-          )
-          .get(productId) as Row;
         if (
           !product.active ||
-          quantity > product.stockQuantity - Number(held.quantity)
+          quantity >
+            product.stockQuantity - this.heldQuantityFor(productId, null)
         )
           throw new Error('Cart is no longer available');
       }
@@ -980,8 +911,9 @@ export class StoreDatabase {
         .prepare(
           `INSERT INTO payment_transactions (
             id, charge_reference, processor_id, amount_cents, status,
-            cart_snapshot_json, idempotency_key, kiosk_id, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?)`,
+            cart_snapshot_json, idempotency_key, kiosk_id, created_at, updated_at,
+            snapshot_hash, processor_config_hash, origin_channel
+          ) VALUES (?, ?, ?, ?, 'initiated', ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           randomUUID(),
@@ -993,6 +925,9 @@ export class StoreDatabase {
           kioskId,
           timestamp,
           timestamp,
+          identity.snapshotHash ?? null,
+          identity.processorConfigHash ?? null,
+          identity.originChannel ?? (kioskId ? 'kiosk' : 'manager'),
         );
 
       const tx = this.connection
@@ -1071,6 +1006,129 @@ export class StoreDatabase {
         `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown', 'needs-attention') AND sale_id IS NULL`,
       )
       .all() as Row[];
+  }
+
+  /** Charges the automatic sweep may still resolve on its own. */
+  getReconcilablePaymentTransactions() {
+    return this.connection
+      .prepare(
+        `SELECT * FROM payment_transactions WHERE status IN ('initiated', 'unknown') AND sale_id IS NULL ORDER BY created_at`,
+      )
+      .all() as Row[];
+  }
+
+  /** Approved-but-unfinalizable charges waiting on an operator. */
+  getNeedsAttentionPaymentTransactions() {
+    return this.connection
+      .prepare(
+        `SELECT * FROM payment_transactions WHERE status = 'needs-attention' AND sale_id IS NULL ORDER BY updated_at`,
+      )
+      .all() as Row[];
+  }
+
+  /** Quantity currently held by card reservations, optionally ignoring one charge. */
+  heldQuantityFor(productId: string, excludeChargeReference: string | null) {
+    const row = this.connection
+      .prepare(
+        "SELECT COALESCE(SUM(quantity),0) AS quantity FROM payment_inventory_reservations WHERE product_id=? AND status='held' AND (? IS NULL OR charge_reference != ?)",
+      )
+      .get(productId, excludeChargeReference, excludeChargeReference) as Row;
+    return Number(row.quantity);
+  }
+
+  listReservations(
+    chargeReference: string,
+  ): { productId: string; quantity: number; status: string }[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT product_id, quantity, status FROM payment_inventory_reservations WHERE charge_reference=? ORDER BY product_id',
+        )
+        .all(chargeReference) as Row[]
+    ).map((row) => ({
+      productId: String(row.product_id),
+      quantity: Number(row.quantity),
+      status: String(row.status),
+    }));
+  }
+
+  releaseReservations(chargeReference: string): void {
+    this.connection.transaction(() => {
+      this.connection
+        .prepare(
+          "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
+        )
+        .run(now(), chargeReference);
+    })();
+  }
+
+  /**
+   * Records why an approved charge could not be finalized. `setStatus` promotes the row to
+   * `needs-attention`; pass false to only annotate a charge an operator already triaged.
+   */
+  markPaymentNeedsAttention(
+    chargeReference: string,
+    reason: string,
+    setStatus = true,
+  ): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id, status FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string; status: string } | undefined;
+      if (!tx) throw new Error('Payment transaction not found');
+      if (setStatus)
+        this.connection
+          .prepare(
+            `UPDATE payment_transactions SET status='needs-attention', attention_reason=?, updated_at=? WHERE id=?`,
+          )
+          .run(reason, timestamp, tx.id);
+      else
+        this.connection
+          .prepare(
+            'UPDATE payment_transactions SET attention_reason=?, updated_at=? WHERE id=?',
+          )
+          .run(reason, timestamp, tx.id);
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  /** Marks a charge as successfully finalized from its frozen snapshot. */
+  markPaymentFinalized(chargeReference: string): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as { id: string } | undefined;
+      if (!tx) throw new Error('Payment transaction not found');
+      this.connection
+        .prepare(
+          'UPDATE payment_transactions SET attention_reason=NULL, finalized_at=?, updated_at=? WHERE id=?',
+        )
+        .run(timestamp, timestamp, tx.id);
+      this.enqueueEntity('payment_transaction', tx.id);
+    })();
+  }
+
+  /** Active (non-revoked) kiosk identity, used to authorize kiosk-originated charges. */
+  getActiveKiosk(
+    id: string,
+  ): { id: string; name: string; lastSeenAt: string | null } | null {
+    const row = this.connection
+      .prepare(
+        'SELECT id,name,last_seen_at FROM kiosks WHERE id=? AND revoked_at IS NULL',
+      )
+      .get(id) as Row | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      lastSeenAt: row.last_seen_at ? String(row.last_seen_at) : null,
+    };
   }
 
   getKioskServerSettings(): { enabled: boolean; port: number } {
@@ -1168,6 +1226,18 @@ export class StoreDatabase {
       .prepare('SELECT id FROM sales WHERE completion_key = ?')
       .get(value.completionKey) as { id: string } | undefined;
     if (existingPre) {
+      // Exact-once: the shared payment service may already have finalized this charge
+      // from its frozen snapshot, so replaying the same completion returns the same sale.
+      if (value.payment.method === 'integrated_card') {
+        const linked = this.connection
+          .prepare(
+            'SELECT sale_id FROM payment_transactions WHERE charge_reference = ?',
+          )
+          .get(value.payment.chargeReference) as
+          { sale_id: string | null } | undefined;
+        if (linked?.sale_id === existingPre.id)
+          return this.getSale(existingPre.id);
+      }
       this.validateExistingSaleMatch(existingPre.id, value);
       if (value.payment.method === 'integrated_card') {
         const existingTx = this.connection
@@ -1195,6 +1265,15 @@ export class StoreDatabase {
           .prepare('SELECT id FROM sales WHERE completion_key = ?')
           .get(value.completionKey) as { id: string } | undefined;
         if (again) {
+          if (value.payment.method === 'integrated_card') {
+            const linked = this.connection
+              .prepare(
+                'SELECT sale_id FROM payment_transactions WHERE charge_reference = ?',
+              )
+              .get(value.payment.chargeReference) as
+              { sale_id: string | null } | undefined;
+            if (linked?.sale_id === again.id) return;
+          }
           this.validateExistingSaleMatch(again.id, value);
           if (value.payment.method === 'integrated_card') {
             const existingTx = this.connection
@@ -2883,6 +2962,15 @@ export class StoreDatabase {
         ? String(tx.cart_snapshot_json)
         : null,
       idempotencyKey: tx.idempotency_key ? String(tx.idempotency_key) : null,
+      snapshotHash: tx.snapshot_hash ? String(tx.snapshot_hash) : null,
+      processorConfigHash: tx.processor_config_hash
+        ? String(tx.processor_config_hash)
+        : null,
+      originChannel:
+        String(tx.origin_channel ?? 'manager') === 'kiosk'
+          ? 'kiosk'
+          : 'manager',
+      attentionReason: tx.attention_reason ? String(tx.attention_reason) : null,
       createdAt: String(tx.created_at),
       updatedAt: String(tx.updated_at),
     };

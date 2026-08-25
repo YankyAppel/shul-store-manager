@@ -264,6 +264,10 @@ export const paymentTransactionPayloadSchema = z.object({
       }
     }),
   idempotencyKey: z.string().nullable(),
+  snapshotHash: z.string().nullable(),
+  processorConfigHash: z.string().nullable(),
+  originChannel: z.enum(['manager', 'kiosk']),
+  attentionReason: z.string().nullable(),
   createdAt: isoString,
   updatedAt: isoString,
 });

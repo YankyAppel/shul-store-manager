@@ -446,8 +446,9 @@ function applyPaymentTransaction(
         id, charge_reference, processor_id, amount_cents, status,
         processor_transaction_id, card_brand, card_last4,
         sale_id, cart_snapshot_json, idempotency_key,
+        snapshot_hash, processor_config_hash, origin_channel, attention_reason,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         processor_transaction_id = excluded.processor_transaction_id,
@@ -469,6 +470,10 @@ function applyPaymentTransaction(
       payload.saleId ? String(payload.saleId) : null,
       payload.cartSnapshotJson ? String(payload.cartSnapshotJson) : null,
       payload.idempotencyKey ? String(payload.idempotencyKey) : null,
+      payload.snapshotHash ? String(payload.snapshotHash) : null,
+      payload.processorConfigHash ? String(payload.processorConfigHash) : null,
+      payload.originChannel === 'kiosk' ? 'kiosk' : 'manager',
+      payload.attentionReason ? String(payload.attentionReason) : null,
       payload.createdAt,
       payload.updatedAt,
     );
