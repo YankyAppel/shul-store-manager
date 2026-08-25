@@ -113,9 +113,14 @@ export class KioskServer {
   async start(port = 3939, host = '0.0.0.0'): Promise<number> {
     if (this.server) return this.port();
     this.server = http.createServer((q, s) => void this.handle(q, s));
-    await new Promise<void>((ok, bad) =>
-      this.server!.listen(port, host, ok).once('error', bad),
-    );
+    try {
+      await new Promise<void>((ok, bad) =>
+        this.server!.listen(port, host, ok).once('error', bad),
+      );
+    } catch (error) {
+      this.server = null;
+      throw error;
+    }
     return this.port();
   }
 
@@ -123,6 +128,10 @@ export class KioskServer {
   port(): number {
     const address = this.server?.address();
     return address && typeof address === 'object' ? address.port : 0;
+  }
+
+  isRunning(): boolean {
+    return this.server?.listening ?? false;
   }
 
   async stop(): Promise<void> {

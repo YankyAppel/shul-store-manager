@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import { describePrintResult, type Sale } from '@shul-store/shared';
-import { formatMoney } from '../utils/formatters';
+import {
+  describeAttentionReason,
+  describePrintResult,
+  type NeedsAttentionCharge,
+  type Product,
+  type Sale,
+} from '@shul-store/shared';
+import { formatMoney, messageFrom } from '../utils/formatters';
 
 export function SalesHistory({
   onViewCustomer,
@@ -8,25 +14,206 @@ export function SalesHistory({
   onViewCustomer?: ((customerId: string) => void) | undefined;
 }) {
   const [sales, setSales] = useState<Sale[]>([]);
+  const [needsAttention, setNeedsAttention] = useState<NeedsAttentionCharge[]>(
+    [],
+  );
+  const [pendingCount, setPendingCount] = useState(0);
+  const [productNames, setProductNames] = useState<Record<string, string>>({});
+  const [kioskNames, setKioskNames] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Sale>();
   const [message, setMessage] = useState('');
+  const [busyReference, setBusyReference] = useState('');
+  const [checking, setChecking] = useState(false);
+  const [notes, setNotes] = useState<Record<string, string>>({});
+
+  async function refreshData() {
+    try {
+      const [nextSales, nextAttention, pending, products, kioskSettings] =
+        await Promise.all([
+          window.storeApi.sales.list(),
+          window.storeApi.payments.listNeedsAttention(),
+          window.storeApi.payments.getPendingTransactions(),
+          window.storeApi.products.list(true),
+          window.storeApi.kiosk.getSettings(),
+        ]);
+      setSales(nextSales);
+      setNeedsAttention(nextAttention);
+      setPendingCount(pending.length);
+      setProductNames(
+        Object.fromEntries(
+          (products as Product[]).map((product) => [product.id, product.name]),
+        ),
+      );
+      setKioskNames(
+        Object.fromEntries(
+          kioskSettings.kiosks.map((kiosk) => [kiosk.id, kiosk.name]),
+        ),
+      );
+    } catch (reason) {
+      setMessage(messageFrom(reason));
+    }
+  }
 
   useEffect(() => {
-    void window.storeApi.sales.list().then(setSales);
+    void refreshData();
   }, []);
 
   async function print(sale: Sale) {
-    const result = await window.storeApi.sales.print(sale.id);
-    setMessage(
-      result.success
-        ? describePrintResult(result, 'Receipt')
-        : `Printing failed; the sale is unchanged. ${result.error ?? ''}`,
-    );
+    try {
+      const result = await window.storeApi.sales.print(sale.id);
+      setMessage(
+        result.success
+          ? describePrintResult(result, 'Receipt')
+          : `Printing failed; the sale is unchanged. ${result.error ?? ''}`,
+      );
+    } catch (reason) {
+      setMessage(messageFrom(reason));
+    }
+  }
+
+  async function resolveAttention(
+    charge: NeedsAttentionCharge,
+    action: 'retry' | 'void',
+  ) {
+    const note = notes[charge.chargeReference]?.trim() || undefined;
+    if (
+      action === 'void' &&
+      !window.confirm(
+        'Void this charge? This releases the held stock but does not refund the customer’s card. Any refund must be handled by a person at the payment terminal.',
+      )
+    )
+      return;
+    setMessage('');
+    setBusyReference(charge.chargeReference);
+    try {
+      await window.storeApi.payments.resolveNeedsAttention(
+        charge.chargeReference,
+        action,
+        note,
+      );
+      await refreshData();
+    } catch (reason) {
+      setMessage(messageFrom(reason));
+    } finally {
+      setBusyReference('');
+    }
+  }
+
+  async function checkPending() {
+    setChecking(true);
+    setMessage('');
+    try {
+      await window.storeApi.payments.reconcileTransactions();
+      await refreshData();
+    } catch (reason) {
+      setMessage(messageFrom(reason));
+    } finally {
+      setChecking(false);
+    }
   }
 
   return (
     <div className="sales-history">
       {message && <div className="alert">{message}</div>}
+      {(needsAttention.length > 0 || pendingCount > 0) && (
+        <section className="attention-panel">
+          <div className="attention-header">
+            <div>
+              <h2>Card charges needing attention</h2>
+              <p>
+                Held stock stays reserved until each charge is retried or
+                voided.
+              </p>
+            </div>
+            {pendingCount > 0 && (
+              <div className="pending-status">
+                <strong>{pendingCount}</strong> pending charge
+                {pendingCount === 1 ? '' : 's'}
+                <button
+                  type="button"
+                  disabled={checking}
+                  onClick={() => void checkPending()}
+                >
+                  {checking ? 'Checking…' : 'Check now'}
+                </button>
+              </div>
+            )}
+          </div>
+          {needsAttention.map((charge) => {
+            const origin =
+              charge.originChannel === 'kiosk'
+                ? `Kiosk: ${charge.kioskName ?? charge.kioskId ?? 'Unknown kiosk'}`
+                : 'Manager';
+            const heldItems = charge.reservations.filter(
+              (reservation) => reservation.status === 'held',
+            );
+            return (
+              <article
+                className="attention-charge"
+                key={charge.chargeReference}
+              >
+                <div className="attention-charge-header">
+                  <div>
+                    <strong>{formatMoney(charge.totalCents)}</strong>
+                    <span>
+                      {new Date(charge.createdAt).toLocaleString()} · {origin}
+                    </span>
+                  </div>
+                  <span className="badge badge-charge">Needs attention</span>
+                </div>
+                <p>{describeAttentionReason(charge.attentionReason)}</p>
+                <div className="held-items">
+                  <strong>Held inventory:</strong>
+                  {heldItems.length > 0 ? (
+                    <ul>
+                      {heldItems.map((reservation) => (
+                        <li key={reservation.productId}>
+                          {productNames[reservation.productId] ??
+                            reservation.productId}{' '}
+                          × {reservation.quantity}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <span> No held item rows reported.</span>
+                  )}
+                </div>
+                <label>
+                  Operator note (optional)
+                  <textarea
+                    rows={2}
+                    maxLength={400}
+                    value={notes[charge.chargeReference] ?? ''}
+                    onChange={(event) =>
+                      setNotes({
+                        ...notes,
+                        [charge.chargeReference]: event.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <div className="attention-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={busyReference !== ''}
+                    onClick={() => void resolveAttention(charge, 'retry')}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busyReference !== ''}
+                    onClick={() => void resolveAttention(charge, 'void')}
+                  >
+                    Void and release held stock
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      )}
       <div className="table-wrap">
         <table>
           <thead>
@@ -34,6 +221,7 @@ export function SalesHistory({
               <th>Receipt</th>
               <th>Date</th>
               <th>Customer</th>
+              <th>Channel</th>
               <th>Total</th>
               <th>Payment Tender</th>
               <th>Status</th>
@@ -50,6 +238,15 @@ export function SalesHistory({
                     {new Date(
                       sale.completedAt ?? sale.createdAt,
                     ).toLocaleString()}
+                  </td>
+                  <td>
+                    {sale.channel === 'kiosk'
+                      ? `Kiosk: ${
+                          (sale.kioskId && kioskNames[sale.kioskId]) ??
+                          sale.kioskId ??
+                          'Unknown kiosk'
+                        }`
+                      : 'Manager'}
                   </td>
                   <td>
                     {isAccount ? (

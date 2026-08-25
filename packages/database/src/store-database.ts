@@ -2004,6 +2004,8 @@ export class StoreDatabase {
       totalCents: readSafeCents(sale.total_cents, 'total_cents'),
       createdAt: String(sale.created_at),
       completedAt: sale.completed_at ? String(sale.completed_at) : null,
+      channel: sale.channel === 'kiosk' ? 'kiosk' : 'manager',
+      kioskId: sale.kiosk_id ? String(sale.kiosk_id) : null,
       items: items.map((row) => ({
         id: String(row.id),
         productId: String(row.product_id),

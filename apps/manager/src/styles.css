@@ -387,6 +387,167 @@ code {
 .empty p {
   margin-bottom: 0;
 }
+.kiosk-screen {
+  display: grid;
+  gap: 18px;
+}
+.kiosk-section {
+  overflow: hidden;
+}
+.kiosk-section .card-body {
+  display: block;
+}
+.kiosk-section h2 {
+  margin: 0 0 6px;
+  font-family: Georgia, serif;
+  color: #173526;
+}
+.kiosk-section p {
+  color: #66766d;
+  margin: 0 0 14px;
+}
+.kiosk-section label:not(.toggle) {
+  display: block;
+  max-width: 420px;
+  margin-top: 14px;
+  color: #42544a;
+  font-size: 13px;
+  font-weight: 650;
+}
+.kiosk-section label input:not([type='checkbox']),
+.kiosk-section label textarea {
+  display: block;
+  width: 100%;
+  padding: 10px 11px;
+  margin-top: 6px;
+  border: 1px solid #ced7d2;
+  border-radius: 7px;
+  background: #fff;
+  color: #263a30;
+}
+.field-error {
+  display: block;
+  color: #87352a;
+  font-weight: normal;
+  margin-top: 4px;
+}
+.kiosk-status {
+  margin-top: 16px !important;
+}
+.kiosk-addresses {
+  background: #edf5f0;
+  border-radius: 8px;
+  padding: 13px;
+  margin-top: 16px;
+}
+.kiosk-addresses ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.kiosk-warning {
+  color: #87352a !important;
+  background: #fff0ed;
+  border: 1px solid #e7b7ad;
+  border-radius: 8px;
+  padding: 11px 13px;
+  margin-top: 16px !important;
+}
+.muted {
+  display: block;
+  color: #77847d;
+  margin-top: 10px;
+  font-weight: normal;
+}
+.pairing-code {
+  display: inline-grid;
+  gap: 3px;
+  margin: 18px 0 0 18px;
+  vertical-align: middle;
+}
+.pairing-code strong {
+  font-family: ui-monospace, monospace;
+  font-size: 34px;
+  letter-spacing: 0.15em;
+  color: #173526;
+}
+.pairing-code span,
+.pairing-code small {
+  color: #66766d;
+}
+.attention-panel {
+  border: 1px solid #e7b7ad;
+  background: #fffaf8;
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 18px;
+}
+.attention-header,
+.attention-charge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+}
+.attention-header h2 {
+  margin: 0 0 4px;
+  font-family: Georgia, serif;
+  color: #87352a;
+}
+.attention-header p {
+  margin: 0;
+  color: #765e58;
+}
+.pending-status {
+  white-space: nowrap;
+  color: #765e58;
+}
+.pending-status strong {
+  font-size: 20px;
+  color: #87352a;
+}
+.pending-status button {
+  display: block;
+  margin-top: 7px;
+}
+.attention-charge {
+  border-top: 1px solid #efd8d2;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+.attention-charge-header strong {
+  display: block;
+  font-size: 18px;
+  color: #173526;
+}
+.attention-charge-header span:not(.badge) {
+  display: block;
+  color: #765e58;
+  font-size: 13px;
+  margin-top: 3px;
+}
+.attention-charge > p {
+  color: #4d3d39;
+  margin: 12px 0;
+}
+.held-items {
+  color: #4d3d39;
+  margin-bottom: 12px;
+}
+.held-items ul {
+  margin: 5px 0 0;
+  padding-left: 20px;
+}
+.attention-charge label {
+  max-width: 600px !important;
+}
+.attention-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.attention-actions button:last-child {
+  color: #87352a;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;
