@@ -168,7 +168,7 @@ function registerIpc(): void {
     const p = z.number().int().min(1).max(65535).parse(port);
     database.setKioskServerSettings(z.boolean().parse(enabled), p);
     if (enabled) {
-      kioskServer ??= new KioskServer(database, secretStore);
+      kioskServer ??= new KioskServer(database);
       await kioskServer.start(p);
       kioskReconcileTimer ??= setInterval(
         () => void database.runStartupReconciliation(),
@@ -739,7 +739,7 @@ app.whenReady().then(async () => {
   registerIpc();
   const kioskConfig = database.getKioskServerSettings();
   if (kioskConfig.enabled) {
-    kioskServer = new KioskServer(database, secretStore);
+    kioskServer = new KioskServer(database);
     await kioskServer.start(kioskConfig.port);
     kioskReconcileTimer = setInterval(
       () => void database.runStartupReconciliation(),

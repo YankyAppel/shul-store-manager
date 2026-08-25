@@ -11,7 +11,6 @@ import {
   kioskChargeRequestSchema,
   kioskPairRequestSchema,
   kioskPriceRequestSchema,
-  type SecretStore,
 } from '@shul-store/shared';
 import {
   PaymentError,
@@ -80,13 +79,8 @@ export class KioskServer {
   private readonly pairAttemptsByAddress = new Map<string, number[]>();
   private readonly payments: PaymentService;
 
-  constructor(
-    private readonly db: StoreDatabase,
-    secretStore?: SecretStore,
-  ) {
-    this.payments = secretStore
-      ? new PaymentService(db, secretStore)
-      : db.payments;
+  constructor(private readonly db: StoreDatabase) {
+    this.payments = db.payments;
   }
 
   newPairingCode(): string {
