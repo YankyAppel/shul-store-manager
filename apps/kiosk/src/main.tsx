@@ -1,154 +1,617 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import {
+  type KioskCartLine,
+  type KioskPriceQuote,
+  type KioskPublicState,
+} from '@shul-store/shared';
 import './style.css';
-type Config = { host: string; port: string; token: string; storeName: string };
-const key = 'kiosk-config';
-function App() {
-  const [config, setConfig] = useState<Config>(() =>
-    JSON.parse(
-      localStorage.getItem(key) ||
-        '{"host":"","port":"3939","token":"","storeName":""}',
-    ),
-  );
-  const [paired, setPaired] = useState(!!config.token);
-  const [form, setForm] = useState({ code: '', name: 'Kiosk', adminPin: '' });
-  const [cart, setCart] = useState<
-    { productId?: string; barcode?: string; quantity: number }[]
-  >([]);
-  const [code, setCode] = useState('');
-  const [total, setTotal] = useState<number>();
-  const api = (path: string, opt?: RequestInit) =>
-    fetch(`http://${config.host}:${config.port}${path}`, {
-      ...opt,
-      headers: {
-        Authorization: `Bearer ${config.token}`,
-        'content-type': 'application/json',
-        ...(opt?.headers || {}),
-      },
-    });
-  useEffect(() => {
-    if (!paired || !cart.length) return;
-    void api('/api/cart/price', {
-      method: 'POST',
-      body: JSON.stringify({ lines: cart }),
-    })
-      .then((r) => r.json())
-      .then((x) => setTotal(x.totalCents))
-      .catch(() => setPaired(false));
-  }, [cart, paired]);
-  if (!paired)
-    return (
-      <main>
-        <h1>Pair this kiosk</h1>
-        <input
-          placeholder="Manager IP or host"
-          value={config.host}
-          onChange={(e) => setConfig({ ...config, host: e.target.value })}
-        />
-        <input
-          placeholder="Port"
-          value={config.port}
-          onChange={(e) => setConfig({ ...config, port: e.target.value })}
-        />
-        <input
-          placeholder="6 digit code"
-          value={form.code}
-          onChange={(e) => setForm({ ...form, code: e.target.value })}
-        />
-        <input
-          placeholder="Kiosk name"
-          value={form.name}
-          onChange={(e) => setForm({ ...form, name: e.target.value })}
-        />
-        <input
-          placeholder="Admin PIN"
-          type="password"
-          value={form.adminPin}
-          onChange={(e) => setForm({ ...form, adminPin: e.target.value })}
-        />
-        <button
-          onClick={async () => {
-            const r = await fetch(
-              `http://${config.host}:${config.port}/api/pair`,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(form),
-              },
-            );
-            const x = await r.json();
-            if (x.token) {
-              const c = { ...config, token: x.token };
-              setConfig(c);
-              localStorage.setItem(key, JSON.stringify(c));
-              setPaired(true);
-            } else alert(x.error);
-          }}
-        >
-          Pair
-        </button>
-      </main>
-    );
+
+const IDLE_RESET_MS = 60000;
+const PAIRING_CODE_LENGTH = 6;
+const ADMIN_PIN_LENGTH = 12;
+
+type Screen =
+  | 'attract'
+  | 'shopping'
+  | 'paying'
+  | 'approved'
+  | 'declined'
+  | 'recovery'
+  | 'unreachable';
+
+function money(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function Keypad({
+  value,
+  onChange,
+  maxLength,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  maxLength: number;
+}) {
+  const press = (key: string) => {
+    if (key === 'clear') return onChange('');
+    if (key === 'back') return onChange(value.slice(0, -1));
+    if (value.length < maxLength) onChange(`${value}${key}`);
+  };
   return (
-    <main>
-      <h1>{config.storeName || 'Self checkout'}</h1>
-      <h2>
-        {cart.length ? 'Scan another item' : 'Touch to start / scan an item'}
-      </h2>
-      <input
-        autoFocus
-        value={code}
-        onChange={(e) => setCode(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && code) {
-            setCart([...cart, { barcode: code, quantity: 1 }]);
-            setCode('');
-          }
-        }}
-        placeholder="Scan or type barcode"
-      />
-      <ul>
-        {cart.map((x, i) => (
-          <li key={i}>
-            {x.barcode || x.productId} × {x.quantity}{' '}
-            <button onClick={() => setCart(cart.filter((_, j) => j !== i))}>
-              Remove
-            </button>
-          </li>
-        ))}
-      </ul>
-      <h2>{total === undefined ? '…' : `$${(total / 100).toFixed(2)}`}</h2>
+    <div className="keypad">
+      {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'back'].map(
+        (key) => (
+          <button
+            type="button"
+            className={key === 'clear' || key === 'back' ? 'secondary' : ''}
+            key={key}
+            onClick={() => press(key)}
+          >
+            {key === 'clear' ? 'Clear' : key === 'back' ? '⌫' : key}
+          </button>
+        ),
+      )}
+    </div>
+  );
+}
+
+function PairingScreen({
+  state,
+  onPaired,
+}: {
+  state: KioskPublicState;
+  onPaired: (next: KioskPublicState) => void;
+}) {
+  const [host, setHost] = useState(state.host);
+  const [port, setPort] = useState(String(state.port || 3939));
+  const [code, setCode] = useState('');
+  const [name, setName] = useState(state.kioskName || 'Kiosk');
+  const [pin, setPin] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function pair() {
+    setBusy(true);
+    setMessage('');
+    try {
+      const next = await window.kioskApi.pair({
+        host: host.trim(),
+        port: Number(port),
+        code,
+        name: name.trim(),
+        adminPin: pin,
+      });
+      onPaired(next);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Pairing failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <main className="setup-screen">
+      <h1>Set up this self-checkout</h1>
+      <p>Enter the address shown by the shames, then enter the pairing code.</p>
+      <label>
+        Manager host
+        <input value={host} onChange={(event) => setHost(event.target.value)} />
+      </label>
+      <label>
+        Port
+        <input
+          inputMode="numeric"
+          value={port}
+          onChange={(event) => setPort(event.target.value)}
+        />
+      </label>
+      <label>
+        Kiosk name
+        <input value={name} onChange={(event) => setName(event.target.value)} />
+      </label>
+      <label>
+        Six-digit pairing code
+        <output className="pin-display">
+          {code || '—'.repeat(PAIRING_CODE_LENGTH)}
+        </output>
+      </label>
+      <Keypad value={code} onChange={setCode} maxLength={PAIRING_CODE_LENGTH} />
+      <label>
+        Admin PIN for this kiosk
+        <output className="pin-display">
+          {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
+        </output>
+      </label>
+      <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
+      {message && <p className="error-message">{message}</p>}
       <button
-        disabled={!cart.length}
-        onClick={async () => {
-          const id = crypto.randomUUID();
-          localStorage.setItem('inflight', id);
-          const lines = cart.map((x) => ({
-            productId: x.productId!,
-            quantity: x.quantity,
-            barcodeUsed: x.barcode || null,
-          }));
-          alert(
-            JSON.stringify(
-              await (
-                await api('/api/charges', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    chargeReference: id,
-                    idempotencyKey: id,
-                    lines,
-                  }),
-                })
-              ).json(),
-            ),
-          );
-          localStorage.removeItem('inflight');
-          setCart([]);
-        }}
+        type="button"
+        className="primary wide-button"
+        disabled={busy || code.length !== 6 || pin.length < 4 || !host.trim()}
+        onClick={() => void pair()}
       >
-        Pay with card
+        {busy ? 'Pairing…' : 'Pair this kiosk'}
       </button>
     </main>
   );
 }
+
+function AdminOverlay({ onClose }: { onClose: () => void }) {
+  const [pin, setPin] = useState('');
+  const [message, setMessage] = useState('');
+  const [unlocked, setUnlocked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function verify() {
+    setBusy(true);
+    const result = await window.kioskApi.verifyAdminPin(pin);
+    setBusy(false);
+    if (result.ok) setUnlocked(true);
+    else setMessage(result.message);
+  }
+  return (
+    <div className="admin-overlay">
+      <section className="admin-dialog">
+        <h2>Shames controls</h2>
+        {!unlocked ? (
+          <>
+            <p>Enter the kiosk admin PIN.</p>
+            <output className="pin-display">
+              {pin ? '•'.repeat(pin.length) : '—'}
+            </output>
+            <Keypad
+              value={pin}
+              onChange={setPin}
+              maxLength={ADMIN_PIN_LENGTH}
+            />
+            {message && <p className="error-message">{message}</p>}
+            <button
+              type="button"
+              className="primary wide-button"
+              disabled={busy || pin.length < 4}
+              onClick={() => void verify()}
+            >
+              {busy ? 'Checking…' : 'Unlock'}
+            </button>
+          </>
+        ) : (
+          <div className="admin-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void window.kioskApi.exitKiosk()}
+            >
+              Exit to desktop
+            </button>
+            <button
+              type="button"
+              onClick={() => void window.kioskApi.restart()}
+            >
+              Restart kiosk
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          className="secondary wide-button"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function App() {
+  const [state, setState] = useState<KioskPublicState>();
+  const [screen, setScreen] = useState<Screen>('unreachable');
+  const [cart, setCart] = useState<KioskCartLine[]>([]);
+  const [quote, setQuote] = useState<KioskPriceQuote>();
+  const [message, setMessage] = useState('');
+  const [categoryId, setCategoryId] = useState<string>();
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [rePairing, setRePairing] = useState(false);
+  const scannerBuffer = useRef('');
+  const scannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const storeNameTaps = useRef<number[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    void window.kioskApi.getState().then((next) => {
+      if (active) setState(next);
+    });
+    const unsubscribe = window.kioskApi.subscribe((next) => {
+      if (active) setState(next);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!state) return;
+    if (state.connection === 'revoked') setScreen('unreachable');
+    else if (state.inFlightCharge) setScreen('recovery');
+    else if (state.connection === 'unpaired') setScreen('unreachable');
+    else if (!state.catalog && state.connection === 'manager-unreachable')
+      setScreen('unreachable');
+    else if (screen === 'unreachable') setScreen('attract');
+  }, [state, screen]);
+
+  useEffect(() => {
+    if (screen !== 'shopping' || cart.length === 0) return;
+    const timer = setTimeout(() => {
+      setCart([]);
+      setQuote(undefined);
+      setMessage('');
+      setScreen('attract');
+    }, IDLE_RESET_MS);
+    return () => clearTimeout(timer);
+  }, [cart, screen]);
+
+  useEffect(() => {
+    if (screen !== 'shopping') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        const barcode = scannerBuffer.current;
+        scannerBuffer.current = '';
+        if (barcode) void addBarcode(barcode);
+        return;
+      }
+      if (event.key.length === 1) {
+        scannerBuffer.current += event.key;
+        if (scannerTimer.current) clearTimeout(scannerTimer.current);
+        scannerTimer.current = setTimeout(() => {
+          scannerBuffer.current = '';
+        }, 250);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [screen, cart]);
+
+  useEffect(() => {
+    if (screen !== 'shopping' || cart.length === 0) {
+      setQuote(undefined);
+      return;
+    }
+    void window.kioskApi.priceCart(cart).then((result) => {
+      if (result.ok) {
+        setQuote(result.quote);
+        setMessage('');
+      } else setMessage(result.message);
+    });
+  }, [cart, screen]);
+
+  const products = state?.catalog?.products ?? [];
+  const categories = state?.catalog?.categories ?? [];
+  const visibleProducts = useMemo(
+    () =>
+      products.filter(
+        (product) => !categoryId || product.categoryId === categoryId,
+      ),
+    [categoryId, products],
+  );
+  const productFor = (line: KioskCartLine) =>
+    products.find((product) => product.id === line.productId);
+
+  function startShopping() {
+    setMessage('');
+    setScreen('shopping');
+  }
+
+  async function addBarcode(barcode: string) {
+    const result = await window.kioskApi.priceCart([{ barcode, quantity: 1 }]);
+    if (!result.ok) {
+      setMessage(result.message);
+      return;
+    }
+    const productId = result.quote.lines[0]?.productId;
+    if (!productId) return;
+    setCart((current) => {
+      const existing = current.find((line) => line.productId === productId);
+      if (existing)
+        return current.map((line) =>
+          line.productId === productId
+            ? { ...line, quantity: line.quantity + 1 }
+            : line,
+        );
+      return [...current, { productId, quantity: 1 }];
+    });
+    setMessage('');
+  }
+
+  function changeQuantity(productId: string, amount: number) {
+    setCart((current) =>
+      current
+        .map((line) =>
+          line.productId === productId
+            ? { ...line, quantity: line.quantity + amount }
+            : line,
+        )
+        .filter((line) => line.quantity > 0),
+    );
+  }
+
+  async function pay() {
+    if (!cart.length) return;
+    setScreen('paying');
+    setMessage('');
+    const result = await window.kioskApi.charge(cart);
+    if (!result.ok) {
+      setMessage(result.message);
+      setScreen(
+        result.code === 'manager-unreachable' ? 'recovery' : 'unreachable',
+      );
+      return;
+    }
+    if (result.outcome.status === 'approved') {
+      setCart([]);
+      setScreen('approved');
+    } else if (result.outcome.status === 'declined') {
+      setScreen('declined');
+    } else {
+      setScreen('recovery');
+    }
+  }
+
+  function tapStoreName() {
+    const now = Date.now();
+    storeNameTaps.current = [
+      ...storeNameTaps.current.filter((tap) => now - tap < 3000),
+      now,
+    ];
+    if (storeNameTaps.current.length >= 5) {
+      storeNameTaps.current = [];
+      setAdminOpen(true);
+    }
+  }
+
+  if (!state) return <main className="center-screen">Starting kiosk…</main>;
+  if (state.connection === 'revoked' && !rePairing)
+    return (
+      <main className="center-screen">
+        <h1>This kiosk was turned off by the shames</h1>
+        <p>It must be paired again before it can be used.</p>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => setRePairing(true)}
+        >
+          Pair again
+        </button>
+      </main>
+    );
+  if (state.connection === 'unpaired' || rePairing)
+    return (
+      <PairingScreen
+        state={state}
+        onPaired={(next) => {
+          setState(next);
+          setRePairing(false);
+          setScreen('attract');
+        }}
+      />
+    );
+  if (screen === 'unreachable' && !state.catalog)
+    return (
+      <main className="center-screen">
+        <h1>Manager unreachable</h1>
+        <p>Ask the shames to check the manager computer and network.</p>
+        <button
+          type="button"
+          onClick={() => void window.kioskApi.refreshCatalog()}
+        >
+          Try again
+        </button>
+      </main>
+    );
+  if (screen === 'recovery' || state.inFlightCharge)
+    return (
+      <main className="center-screen recovery-screen">
+        <h1>Checking the card charge</h1>
+        <p>
+          The manager is checking whether the card was approved. Please do not
+          try the payment again.
+        </p>
+        <p className="warning-message">
+          If this stays unresolved, please see the shames.
+        </p>
+        {state.connection === 'manager-unreachable' && (
+          <button
+            type="button"
+            onClick={() => void window.kioskApi.refreshCatalog()}
+          >
+            Retry connection
+          </button>
+        )}
+      </main>
+    );
+  if (screen === 'paying')
+    return (
+      <main className="center-screen">
+        <h1>Processing payment…</h1>
+        <p>Please wait. Do not remove your card until the terminal says so.</p>
+      </main>
+    );
+  if (screen === 'approved')
+    return (
+      <main className="center-screen success-screen">
+        <h1>Payment approved</h1>
+        <p>Thank you. Your purchase is complete.</p>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => setScreen('attract')}
+        >
+          Done
+        </button>
+      </main>
+    );
+  if (screen === 'declined')
+    return (
+      <main className="center-screen">
+        <h1>Payment was declined</h1>
+        <p>Please try another card or ask the shames for help.</p>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => setScreen('shopping')}
+        >
+          Back to cart
+        </button>
+      </main>
+    );
+  if (screen === 'attract')
+    return (
+      <main className="attract-screen">
+        {adminOpen && <AdminOverlay onClose={() => setAdminOpen(false)} />}
+        <button type="button" className="store-name" onClick={tapStoreName}>
+          {state.storeName || 'Self-checkout'}
+        </button>
+        {state.tokenPersistenceWarning && (
+          <p className="warning-message">
+            This kiosk must be paired again if it restarts.
+          </p>
+        )}
+        <h1>Touch to begin</h1>
+        <p>Scan an item or choose one on the next screen.</p>
+        <button
+          type="button"
+          className="primary start-button"
+          onClick={startShopping}
+        >
+          Start shopping
+        </button>
+      </main>
+    );
+  return (
+    <main className="shopping-screen">
+      {adminOpen && <AdminOverlay onClose={() => setAdminOpen(false)} />}
+      <header className="kiosk-header">
+        <button type="button" className="store-name" onClick={tapStoreName}>
+          {state.storeName || 'Self-checkout'}
+        </button>
+        <span
+          className={
+            state.connection === 'online' ? 'online-dot' : 'offline-dot'
+          }
+        >
+          {state.connection === 'online' ? 'Connected' : 'Manager offline'}
+        </span>
+      </header>
+      <div className="shopping-layout">
+        <section className="catalog-panel">
+          <div className="category-tabs">
+            <button
+              type="button"
+              className={!categoryId ? 'active' : ''}
+              onClick={() => setCategoryId(undefined)}
+            >
+              All
+            </button>
+            {categories.map((category) => (
+              <button
+                type="button"
+                className={category.id === categoryId ? 'active' : ''}
+                key={category.id}
+                onClick={() => setCategoryId(category.id)}
+              >
+                {category.name}
+              </button>
+            ))}
+          </div>
+          <div className="product-grid">
+            {visibleProducts.map((product) => (
+              <button
+                type="button"
+                className="product-tile"
+                key={product.id}
+                onClick={() =>
+                  setCart((current) => {
+                    const existing = current.find(
+                      (line) => line.productId === product.id,
+                    );
+                    if (existing)
+                      return current.map((line) =>
+                        line.productId === product.id
+                          ? { ...line, quantity: line.quantity + 1 }
+                          : line,
+                      );
+                    return [...current, { productId: product.id, quantity: 1 }];
+                  })
+                }
+              >
+                <strong>{product.name}</strong>
+                {product.secondaryName && (
+                  <small>{product.secondaryName}</small>
+                )}
+                <b>{money(product.priceCents)}</b>
+              </button>
+            ))}
+          </div>
+        </section>
+        <aside className="cart-panel">
+          <h2>Your cart</h2>
+          {cart.length === 0 ? (
+            <p>Scan an item or touch a product to begin.</p>
+          ) : (
+            <ul className="cart-list">
+              {cart.map((line) => {
+                const product = productFor(line);
+                const productId = line.productId ?? '';
+                return (
+                  <li key={productId}>
+                    <div>
+                      <strong>{product?.name ?? 'Item'}</strong>
+                      <span>{money(product?.priceCents ?? 0)} each</span>
+                    </div>
+                    <div className="quantity-controls">
+                      <button
+                        type="button"
+                        onClick={() => changeQuantity(productId, -1)}
+                      >
+                        −
+                      </button>
+                      <b>{line.quantity}</b>
+                      <button
+                        type="button"
+                        onClick={() => changeQuantity(productId, 1)}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          <div className="cart-total">
+            <span>Total</span>
+            <strong>{quote ? money(quote.totalCents) : '—'}</strong>
+          </div>
+          {message && <p className="error-message">{message}</p>}
+          <button
+            type="button"
+            className="primary pay-button"
+            disabled={!quote || !cart.length}
+            onClick={() => void pay()}
+          >
+            Pay with card
+          </button>
+          <button
+            type="button"
+            className="secondary wide-button"
+            onClick={() => setScreen('attract')}
+          >
+            Cancel
+          </button>
+        </aside>
+      </div>
+    </main>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(<App />);

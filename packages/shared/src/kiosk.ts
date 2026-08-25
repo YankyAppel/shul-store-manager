@@ -39,6 +39,9 @@ export const kioskChargeRequestSchema = z
       .max(500),
   })
   .strict();
+export const kioskAdminVerifyRequestSchema = z
+  .object({ pin: z.string().regex(/^\d{4,12}$/) })
+  .strict();
 export const kioskCatalogResponseSchema = z.object({
   storeName: z.string(),
   categories: z.array(
@@ -54,12 +57,14 @@ export const kioskCatalogResponseSchema = z.object({
       categoryId: z.string().uuid(),
       name: z.string(),
       secondaryName: z.string().nullable(),
+      priceCents: z.number().int().nonnegative(),
       barcodes: z.array(z.string()),
     }),
   ),
 });
 export type KioskPriceRequest = z.infer<typeof kioskPriceRequestSchema>;
 export type KioskChargeRequest = z.infer<typeof kioskChargeRequestSchema>;
+export type KioskCatalog = z.infer<typeof kioskCatalogResponseSchema>;
 
 export interface KioskSummary {
   id: string;

@@ -2,8 +2,12 @@ import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  kioskCatalogResponseSchema,
+  resolveKioskBarcode,
+} from '@shul-store/shared';
 import { KioskServer, StoreDatabase } from '../src/index.js';
 
 /**
@@ -144,6 +148,10 @@ function chargeBody(productId: string, quantity = 1) {
   };
 }
 
+function adminVerify(lan: Lan, token: string, pin: string) {
+  return api(lan, 'POST', '/api/admin/verify', token, { pin });
+}
+
 describe('kiosk LAN API', () => {
   let water: { id: string };
   let soda: { id: string };
@@ -203,6 +211,9 @@ describe('kiosk LAN API', () => {
     const catalog = await api(lan, 'GET', '/api/catalog', token);
     expect(catalog.status).toBe(200);
     expect((catalog.body.products as unknown[]).length).toBe(2);
+    expect(
+      (catalog.body.products as Array<{ priceCents: number }>)[0]!.priceCents,
+    ).toEqual(expect.any(Number));
 
     const quote = await api(lan, 'POST', '/api/cart/price', token, {
       lines: [{ productId: water.id, quantity: 2 }],
@@ -238,6 +249,57 @@ describe('kiosk LAN API', () => {
     expect(String(row.kiosk_id)).toBe(kioskId);
     expect(row.snapshot_hash).toBeTruthy();
     expect(row.processor_config_hash).toBeTruthy();
+  });
+
+  it('verifies an admin PIN and throttles repeated attempts', async () => {
+    const lan = await startLan();
+    const { token } = await pair(lan);
+
+    expect((await adminVerify(lan, token, '1234')).body).toEqual({ ok: true });
+    for (let attempt = 0; attempt < 4; attempt += 1)
+      expect((await adminVerify(lan, token, '9999')).status).toBe(401);
+    expect((await adminVerify(lan, token, '9999')).body).toEqual({
+      error: 'Too many attempts',
+    });
+    expect((await adminVerify(lan, token, '1234')).status).toBe(429);
+  });
+
+  it('upgrades a legacy SHA-256 admin PIN hash after successful verification', async () => {
+    const lan = await startLan();
+    const { token, kioskId } = await pair(lan);
+    const legacy = createHash('sha256').update('1234').digest('hex');
+    lan.db.connection
+      .prepare('UPDATE kiosks SET admin_pin_hash=? WHERE id=?')
+      .run(legacy, kioskId);
+
+    expect((await adminVerify(lan, token, '1234')).body).toEqual({ ok: true });
+    const upgraded = (
+      lan.db.connection
+        .prepare('SELECT admin_pin_hash FROM kiosks WHERE id=?')
+        .get(kioskId) as { admin_pin_hash: string }
+    ).admin_pin_hash;
+    expect(upgraded.startsWith('scrypt$16384$8$1$')).toBe(true);
+    expect(upgraded).not.toBe(legacy);
+  });
+
+  it('resolves a scanned barcode from the cached catalog and completes the sale', async () => {
+    const lan = await startLan();
+    const { token } = await pair(lan);
+    const response = await api(lan, 'GET', '/api/catalog', token);
+    const parsed = kioskCatalogResponseSchema.parse(response.body);
+    const resolved = resolveKioskBarcode(parsed, 'WATER-1', 2);
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error('Expected barcode to resolve');
+
+    const charge = await api(lan, 'POST', '/api/charges', token, {
+      chargeReference: randomUUID(),
+      idempotencyKey: randomUUID(),
+      lines: [resolved.line],
+    });
+    expect(charge.status).toBe(200);
+    expect(charge.body.status).toBe('approved');
+    expect(lan.db.listSales()).toHaveLength(1);
+    expect(lan.db.getProduct(water.id).stockQuantity).toBe(48);
   });
 
   it('surfaces revocation state and rejects a revoked kiosk bearer token', async () => {
