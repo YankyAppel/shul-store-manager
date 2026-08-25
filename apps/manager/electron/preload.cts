@@ -125,6 +125,23 @@ const api: StoreApi = {
     restore: (filename, confirmation) =>
       ipcRenderer.invoke('backups:restore', filename, confirmation),
   },
+  reports: {
+    daily: (businessDate, openingFloatCents) =>
+      ipcRenderer.invoke('reports:daily', {
+        businessDate,
+        openingFloatCents,
+      }),
+    close: (businessDate, openingFloatCents, countedCashCents, notes) =>
+      ipcRenderer.invoke('reports:close', {
+        businessDate,
+        openingFloatCents,
+        countedCashCents,
+        notes,
+      }),
+    listCloses: (limit) => ipcRenderer.invoke('reports:listCloses', limit),
+    print: (businessDate, report) =>
+      ipcRenderer.invoke('reports:print', { businessDate, report }),
+  },
 };
 
 contextBridge.exposeInMainWorld('storeApi', api);

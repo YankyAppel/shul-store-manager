@@ -1,6 +1,7 @@
 import type {
   AccountPaymentReceiptData,
   CustomerStatementData,
+  DailyReport,
   ReceiptData,
 } from './index.js';
 
@@ -250,6 +251,78 @@ export function statementHtml(data: CustomerStatementData): string {
   </div>
 
   ${settings.statementFooter ? `<div class="footer">${escapeHtml(settings.statementFooter)}</div>` : ''}
+</body>
+</html>`;
+}
+
+export function dailyReportHtml(data: {
+  businessDate: string;
+  report: DailyReport;
+  storeName: string;
+}): string {
+  const report = data.report;
+  const money = (cents: number) => formatCents(cents);
+  const rows = (items: string[]) => items.join('');
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Daily Report - ${escapeHtml(data.businessDate)}</title>
+  <style>
+    body{font:13px system-ui,-apple-system,BlinkMacSystemFont,sans-serif;max-width:760px;margin:auto;padding:30px;color:#111}
+    .header{display:flex;justify-content:space-between;border-bottom:2px solid #333;padding-bottom:14px;margin-bottom:16px}
+    .section{border:1px solid #ddd;border-radius:6px;padding:12px;margin:12px 0}
+    h2{font-size:16px;margin:0 0 8px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:5px 4px;border-bottom:1px solid #eee;text-align:left}
+    th:last-child,td:last-child{text-align:right}
+    .total{font-weight:700;border-top:2px solid #333}
+    .cash{background:#f8f9fa}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div><h1>${escapeHtml(data.storeName)}</h1><div>Daily Report</div></div>
+    <div><b>Business date:</b> ${escapeHtml(data.businessDate)}<br><small>Generated ${escapeHtml(new Date().toLocaleString())}</small></div>
+  </div>
+  <div class="section">
+    <h2>Sales</h2>
+    <table>
+      <tr><td>Sales</td><td>${report.sales.saleCount}</td></tr>
+      <tr><td>Subtotal</td><td>${money(report.sales.subtotalCents)}</td></tr>
+      <tr><td>Tax</td><td>${money(report.sales.taxCents)}</td></tr>
+      <tr class="total"><td>Total</td><td>${money(report.sales.totalCents)}</td></tr>
+    </table>
+  </div>
+  <div class="section">
+    <h2>Tenders</h2>
+    <table>${rows(report.tenders.map((item) => `<tr><td>${escapeHtml(item.tender)} (${item.saleCount})</td><td>${money(item.totalCents)}</td></tr>`))}</table>
+  </div>
+  <div class="section cash">
+    <h2>Cash reconciliation</h2>
+    <table>
+      <tr><td>Opening float</td><td>${money(report.openingFloatCents)}</td></tr>
+      <tr><td>Cash sales</td><td>${money(report.cash.salesCents)}</td></tr>
+      <tr><td>Cash account payments</td><td>${money(report.accountPayments.filter((item) => item.method === 'cash').reduce((sum, item) => sum + item.amountCents, 0))}</td></tr>
+      <tr class="total"><td>Expected cash</td><td>${money(report.expectedCashCents)}</td></tr>
+    </table>
+  </div>
+  <div class="section">
+    <h2>Refunds, voids, and cards</h2>
+    <table>
+      <tr><td>Refunded sales (${report.refunded.count})</td><td>${money(report.refunded.totalCents)}</td></tr>
+      <tr><td>Voided sales (${report.voided.count})</td><td>${money(report.voided.totalCents)}</td></tr>
+      <tr><td>Unresolved card charges (${report.unresolvedCard.count})</td><td>${money(report.unresolvedCard.amountCents)}</td></tr>
+    </table>
+  </div>
+  <div class="section">
+    <h2>Gross profit</h2>
+    <table>
+      <tr><td>Net sales</td><td>${money(report.profit.netSalesCents)}</td></tr>
+      <tr><td>Cost</td><td>${money(report.profit.costCents)}</td></tr>
+      <tr class="total"><td>Gross profit</td><td>${money(report.profit.grossProfitCents)}</td></tr>
+    </table>
+  </div>
 </body>
 </html>`;
 }

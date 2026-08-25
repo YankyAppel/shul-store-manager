@@ -27,6 +27,9 @@ import {
   type CustomerLedgerEntry,
   type CustomerPayload,
   type CustomerStatementData,
+  businessDayRange,
+  type DailyClose,
+  type DailyReport,
   type InventoryMovement,
   type InventoryMovementInput,
   type InventoryMovementPayload,
@@ -77,6 +80,7 @@ import {
   type RestoreOutcome,
   type ValidatedRestoreEvent,
 } from './sync-restore.js';
+import { dailyReport as buildDailyReport } from './reports.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
@@ -246,6 +250,164 @@ export class StoreDatabase {
 
   getBackupDirectory(): string | null {
     return this.backupDirectory;
+  }
+
+  dailyReport(businessDate: string, openingFloatCents: number): DailyReport {
+    const range = businessDayRange(businessDate);
+    return buildDailyReport(this.connection, {
+      from: range.from,
+      to: range.to,
+      openingFloatCents,
+    });
+  }
+
+  recordDailyClose(
+    businessDate: string,
+    openingFloatCents: number,
+    countedCashCents: number,
+    notes = '',
+  ): DailyClose {
+    const range = businessDayRange(businessDate);
+    const report = buildDailyReport(this.connection, {
+      from: range.from,
+      to: range.to,
+      openingFloatCents,
+    });
+    const closedAt = now();
+    const id = randomUUID();
+    try {
+      this.connection
+        .prepare(
+          `INSERT INTO daily_closes
+           (id, business_date, range_start, range_end, opening_float_cents,
+            counted_cash_cents, expected_cash_cents, over_short_cents,
+            report_json, notes, closed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          id,
+          businessDate,
+          range.from,
+          range.to,
+          openingFloatCents,
+          countedCashCents,
+          report.expectedCashCents,
+          countedCashCents - report.expectedCashCents,
+          JSON.stringify(report),
+          notes,
+          closedAt,
+        );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /UNIQUE constraint failed: daily_closes\.business_date/.test(
+          error.message,
+        )
+      )
+        throw new Error(`Day ${businessDate} has already been closed.`);
+      throw error;
+    }
+    return {
+      id,
+      businessDate,
+      rangeStart: range.from,
+      rangeEnd: range.to,
+      openingFloatCents,
+      countedCashCents,
+      expectedCashCents: report.expectedCashCents,
+      overShortCents: countedCashCents - report.expectedCashCents,
+      report,
+      notes,
+      closedAt,
+    };
+  }
+
+  getDailyClose(businessDate: string): DailyClose | null {
+    businessDayRange(businessDate);
+    const row = this.connection
+      .prepare(
+        `SELECT id, business_date, range_start, range_end,
+                opening_float_cents, counted_cash_cents, expected_cash_cents,
+                over_short_cents, report_json, notes, closed_at
+         FROM daily_closes WHERE business_date = ?`,
+      )
+      .get(businessDate) as
+      | {
+          id: string;
+          business_date: string;
+          range_start: string;
+          range_end: string;
+          opening_float_cents: number;
+          counted_cash_cents: number;
+          expected_cash_cents: number;
+          over_short_cents: number;
+          report_json: string;
+          notes: string;
+          closed_at: string;
+        }
+      | undefined;
+    return row ? this.mapDailyClose(row) : null;
+  }
+
+  listDailyCloses(limit = 30): DailyClose[] {
+    const rows = this.connection
+      .prepare(
+        `SELECT id, business_date, range_start, range_end,
+                opening_float_cents, counted_cash_cents, expected_cash_cents,
+                over_short_cents, report_json, notes, closed_at
+         FROM daily_closes ORDER BY business_date DESC LIMIT ?`,
+      )
+      .all(limit) as unknown as Array<{
+      id: string;
+      business_date: string;
+      range_start: string;
+      range_end: string;
+      opening_float_cents: number;
+      counted_cash_cents: number;
+      expected_cash_cents: number;
+      over_short_cents: number;
+      report_json: string;
+      notes: string;
+      closed_at: string;
+    }>;
+    return rows.map((value) => this.mapDailyClose(value));
+  }
+
+  private mapDailyClose(row: {
+    id: string;
+    business_date: string;
+    range_start: string;
+    range_end: string;
+    opening_float_cents: number;
+    counted_cash_cents: number;
+    expected_cash_cents: number;
+    over_short_cents: number;
+    report_json: string;
+    notes: string;
+    closed_at: string;
+  }): DailyClose {
+    return {
+      id: row.id,
+      businessDate: row.business_date,
+      rangeStart: row.range_start,
+      rangeEnd: row.range_end,
+      openingFloatCents: readSafeCents(
+        row.opening_float_cents,
+        'opening_float_cents',
+      ),
+      countedCashCents: readSafeCents(
+        row.counted_cash_cents,
+        'counted_cash_cents',
+      ),
+      expectedCashCents: readSafeCents(
+        row.expected_cash_cents,
+        'expected_cash_cents',
+      ),
+      overShortCents: Number(row.over_short_cents),
+      report: JSON.parse(row.report_json) as DailyReport,
+      notes: row.notes,
+      closedAt: row.closed_at,
+    };
   }
 
   recordRestoreResult(result: LocalRestoreResult): void {

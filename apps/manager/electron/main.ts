@@ -29,10 +29,15 @@ import {
 } from '@shul-store/database';
 import {
   accountPaymentReceiptHtml,
+  businessDayRange,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
   customerStatementDataSchema,
+  dailyCloseInputSchema,
+  dailyReportHtml,
+  dailyReportInputSchema,
+  dailyReportPrintInputSchema,
   inventoryMovementInputSchema,
   labelPrintRequestSchema,
   labelsHtml,
@@ -611,6 +616,39 @@ function registerIpc(): void {
       app.exit(0);
     },
   );
+  ipcMain.handle('reports:daily', (_event, input) => {
+    const value = dailyReportInputSchema.parse(input);
+    businessDayRange(value.businessDate);
+    return database.dailyReport(value.businessDate, value.openingFloatCents);
+  });
+  ipcMain.handle('reports:close', (_event, input) => {
+    const value = dailyCloseInputSchema.parse(input);
+    businessDayRange(value.businessDate);
+    return database.recordDailyClose(
+      value.businessDate,
+      value.openingFloatCents,
+      value.countedCashCents,
+      value.notes,
+    );
+  });
+  ipcMain.handle('reports:listCloses', (_event, limit) =>
+    database.listDailyCloses(
+      z.number().int().min(1).max(100).optional().parse(limit),
+    ),
+  );
+  ipcMain.handle('reports:print', (_event, input) => {
+    const value = dailyReportPrintInputSchema.parse(input);
+    businessDayRange(value.businessDate);
+    const settings = database.getSettings();
+    return printHtmlDocument(
+      dailyReportHtml({
+        businessDate: value.businessDate,
+        report: value.report,
+        storeName: settings.storeName,
+      }),
+      settings.receiptPrinterName,
+    );
+  });
 }
 
 function buildLabelsHtml(request: LabelPrintRequest): string {

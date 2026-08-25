@@ -421,7 +421,7 @@ describe('local SQLite backups', () => {
     const upgraded = new StoreDatabase(filename, undefined, {
       backupDirectory: backups,
     });
-    expect(upgraded.schemaVersion()).toBe(17);
+    expect(upgraded.schemaVersion()).toBe(migrations.at(-1)?.version);
     expect(
       upgraded
         .listBackups()
