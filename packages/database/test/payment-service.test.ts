@@ -652,6 +652,10 @@ describe('shared payment service', () => {
       processorTransactionId: 'corrupt',
     });
     db.updatePaymentTransactionStatus(input.chargeReference, 'unknown');
+    db.updateSettings({
+      ...db.getSettings(),
+      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 5 }),
+    });
 
     await expect(
       payments.reconcile(input.chargeReference),
@@ -663,6 +667,37 @@ describe('shared payment service', () => {
     expect(payments.listNeedsAttention()[0]!.attentionReason).toMatch(
       /^frozen-config-unavailable:/,
     );
+  });
+
+  it('recovers a corrupt frozen configuration when the current configuration hash matches', async () => {
+    const input = request(water.id);
+    const validation = payments.validate(input, MANAGER);
+    db.createPaymentTransaction(
+      input.chargeReference,
+      validation.processor.processorId,
+      validation.totalCents,
+      validation.snapshotJson,
+      input.idempotencyKey,
+      null,
+      validation.reservations,
+      {
+        processorConfigHash: validation.processor.configHash,
+        processorConfigSecret: '%',
+        originChannel: 'manager',
+      },
+    );
+    await db.getProcessorStorage().set(input.chargeReference, {
+      status: 'approved',
+      processorTransactionId: 'recoverable',
+    });
+    db.updatePaymentTransactionStatus(input.chargeReference, 'unknown');
+
+    const reconciled = await payments.reconcile(input.chargeReference);
+
+    expect(reconciled?.status).toBe('approved');
+    expect(db.listSales()).toHaveLength(1);
+    expect(payments.listNeedsAttention()).toHaveLength(0);
+    expect(db.heldQuantityFor(water.id, null)).toBe(0);
   });
 
   it('keeps frozen processor configuration out of sync payloads and attention listings', async () => {

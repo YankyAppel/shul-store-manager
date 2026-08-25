@@ -666,11 +666,30 @@ export class PaymentService {
           JSON.parse(this.secretStore.decrypt(tx.processor_config_secret)),
         );
       } catch {
-        return this.block(
-          tx,
-          'frozen-config-unavailable',
-          'Frozen processor configuration could not be recovered',
-        );
+        try {
+          const currentConfig = settings.cardProcessorConfigJson
+            ? processor.configSchema.parse(
+                JSON.parse(settings.cardProcessorConfigJson),
+              )
+            : processor.configSchema.parse({});
+          const currentConfigHash = sha256(canonicalJson(currentConfig ?? {}));
+          if (
+            !tx.processor_config_hash ||
+            tx.processor_config_hash !== currentConfigHash
+          )
+            return this.block(
+              tx,
+              'frozen-config-unavailable',
+              'Frozen processor configuration could not be recovered',
+            );
+          config = currentConfig;
+        } catch {
+          return this.block(
+            tx,
+            'frozen-config-unavailable',
+            'Frozen processor configuration could not be recovered',
+          );
+        }
       }
     } else {
       let configHash: string;

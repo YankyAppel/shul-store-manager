@@ -85,6 +85,7 @@ At startup (and when the user clicks 'Retry' on a pending charge alert), `runSta
 
 - The system calls the adapter's `getChargeStatus` using the durable storage.
 - When a transaction has an encrypted frozen processor configuration, that configuration is decrypted and validated with the transaction's processor schema and is used regardless of current store settings. If the secret cannot be recovered, reconciliation records `frozen-config-unavailable` and retains the held reservation.
+- If the encrypted secret cannot be recovered but the current configuration for the same processor parses and has the same `processor_config_hash`, reconciliation safely uses that current configuration because it is provably identical to the frozen one.
 - Legacy transactions with no frozen configuration secret compare `processor_config_hash` with the current parsed settings; a mismatch records `processor-config-changed` and does not query the processor.
 - If the status resolves to `approved`, the system parses the JSON `cart_snapshot_json`.
 - A missing or corrupt snapshot forces the status to `needs-attention` (to avoid inventing financial line items).
