@@ -1,3 +1,4 @@
+import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -61,6 +62,49 @@ async function api(
   return {
     status: response.status,
     body: text ? (JSON.parse(text) as Record<string, unknown>) : {},
+  };
+}
+
+async function apiFromAddress(
+  lan: Lan,
+  localAddress: string,
+  route: string,
+  body: unknown,
+) {
+  const payload = JSON.stringify(body);
+  const response = await new Promise<{
+    status: number;
+    text: string;
+  }>((resolve, reject) => {
+    const request = http.request(
+      `${lan.origin}${route}`,
+      {
+        method: 'POST',
+        localAddress,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+        },
+      },
+      (incoming) => {
+        let text = '';
+        incoming.setEncoding('utf8');
+        incoming.on('data', (chunk) => {
+          text += chunk;
+        });
+        incoming.on('end', () =>
+          resolve({ status: incoming.statusCode ?? 0, text }),
+        );
+      },
+    );
+    request.on('error', reject);
+    request.end(payload);
+  });
+  return {
+    status: response.status,
+    body: response.text
+      ? (JSON.parse(response.text) as Record<string, unknown>)
+      : {},
   };
 }
 
@@ -168,7 +212,7 @@ describe('kiosk LAN API', () => {
     expect(row.processor_config_hash).toBeTruthy();
   });
 
-  it('rejects an unpaired and a revoked kiosk', async () => {
+  it('surfaces revocation state and rejects a revoked kiosk bearer token', async () => {
     const lan = await startLan();
     const { token } = await pair(lan);
 
@@ -178,13 +222,79 @@ describe('kiosk LAN API', () => {
     );
 
     const [kiosk] = lan.db.listKiosks();
+    expect(kiosk!.revokedAt).toBeNull();
     lan.db.revokeKiosk(kiosk!.id);
+    expect(lan.db.listKiosks()[0]!.revokedAt).toEqual(expect.any(String));
     expect((await api(lan, 'GET', '/api/catalog', token)).status).toBe(401);
     expect(
       (await api(lan, 'POST', '/api/charges', token, chargeBody(water.id)))
         .status,
     ).toBe(401);
     expect(lan.db.listSales()).toHaveLength(0);
+  });
+
+  it('limits pairing attempts per address while allowing another address in the same window', async () => {
+    const lan = await startLan();
+    const wrongCode = (code: string) =>
+      code === '100000' ? '200000' : '100000';
+    const attempt = async () => {
+      const code = lan.server.newPairingCode();
+      return api(lan, 'POST', '/api/pair', undefined, {
+        code: wrongCode(code),
+        name: 'Front table',
+        adminPin: '1234',
+      });
+    };
+
+    for (let index = 0; index < 10; index += 1)
+      expect((await attempt()).status).toBe(400);
+    expect((await attempt()).status).toBe(429);
+
+    const code = lan.server.newPairingCode();
+    const otherAddress = await apiFromAddress(
+      lan,
+      '127.0.0.2',
+      '/api/pair',
+      { code: wrongCode(code), name: 'Side table', adminPin: '1234' },
+    );
+    expect(otherAddress.status).toBe(400);
+    expect(otherAddress.body.error).toBe('Invalid pairing code');
+  });
+
+  it('keeps the per-address pairing budget when a new code is generated', async () => {
+    const lan = await startLan();
+    const wrongCode = (code: string) =>
+      code === '100000' ? '200000' : '100000';
+
+    for (let index = 0; index < 10; index += 1) {
+      const code = lan.server.newPairingCode();
+      const response = await api(lan, 'POST', '/api/pair', undefined, {
+        code: wrongCode(code),
+        name: 'Front table',
+        adminPin: '1234',
+      });
+      expect(response.status).toBe(400);
+    }
+
+    const newCode = lan.server.newPairingCode();
+    const response = await api(lan, 'POST', '/api/pair', undefined, {
+      code: newCode,
+      name: 'Front table',
+      adminPin: '1234',
+    });
+    expect(response.status).toBe(429);
+  });
+
+  it('returns the invalid pairing code response for a wrong-length code', async () => {
+    const lan = await startLan();
+    const code = lan.server.newPairingCode();
+    const response = await api(lan, 'POST', '/api/pair', undefined, {
+      code: code.slice(0, -1),
+      name: 'Front table',
+      adminPin: '1234',
+    });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Invalid pairing code' });
   });
 
   it('authorizes exactly once when the same charge is retried concurrently', async () => {
