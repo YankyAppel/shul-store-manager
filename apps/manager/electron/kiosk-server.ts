@@ -195,6 +195,20 @@ export class KioskServer {
         const settings = this.db.getSettings();
         if (!settings.cardProcessingEnabled || !settings.cardProcessorId)
           throw new Error('Card processing is not enabled');
+        const processor = processors.find(
+          (p) => p.id === settings.cardProcessorId,
+        );
+        if (!processor) throw new Error('Processor not found');
+        let config: unknown;
+        try {
+          config = settings.cardProcessorConfigJson
+            ? processor.configSchema.parse(
+                JSON.parse(settings.cardProcessorConfigJson),
+              )
+            : processor.configSchema.parse({});
+        } catch {
+          throw new Error('Invalid processor configuration');
+        }
         const snapshot = {
           lines: input.lines.map((l, i) => {
             const p = this.db.getProduct(l.productId);
@@ -237,15 +251,6 @@ export class KioskServer {
             ),
           ].map(([productId, quantity]) => ({ productId, quantity })),
         );
-        const processor = processors.find(
-          (p) => p.id === settings.cardProcessorId,
-        );
-        if (!processor) throw new Error('Processor not found');
-        const config = settings.cardProcessorConfigJson
-          ? processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            )
-          : {};
         const result = await processor.createCharge(
           {
             chargeReference: input.chargeReference,
