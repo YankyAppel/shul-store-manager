@@ -71,5 +71,7 @@ export interface KioskSummary {
 export interface KioskServerSettings {
   enabled: boolean;
   port: number;
+  running: boolean;
+  addresses: string[];
   kiosks: KioskSummary[];
 }

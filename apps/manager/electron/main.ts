@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, stat, unlink } from 'node:fs/promises';
+import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
@@ -112,6 +113,16 @@ function recreateSyncEngine(): void {
   engine.start();
 }
 const idSchema = z.string().uuid();
+function lanIpv4Addresses(): string[] {
+  return [
+    ...new Set(
+      Object.values(networkInterfaces())
+        .flatMap((entries) => entries ?? [])
+        .filter((entry) => !entry.internal && entry.family === 'IPv4')
+        .map((entry) => entry.address),
+    ),
+  ];
+}
 const imageTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -153,10 +164,15 @@ async function createWindow(): Promise<void> {
 import { initiateChargeInputSchema } from '@shul-store/shared';
 
 function registerIpc(): void {
-  ipcMain.handle('kiosk:getSettings', () => ({
-    ...database.getKioskServerSettings(),
-    kiosks: database.listKiosks(),
-  }));
+  ipcMain.handle('kiosk:getSettings', () => {
+    const settings = database.getKioskServerSettings();
+    return {
+      ...settings,
+      running: kioskServer?.isRunning() ?? false,
+      addresses: lanIpv4Addresses(),
+      kiosks: database.listKiosks(),
+    };
+  });
   ipcMain.handle('kiosk:pairCode', () => {
     if (!kioskServer) throw new Error('Enable Kiosk server first');
     return kioskServer.newPairingCode();
@@ -169,6 +185,8 @@ function registerIpc(): void {
     database.setKioskServerSettings(z.boolean().parse(enabled), p);
     if (enabled) {
       kioskServer ??= new KioskServer(database);
+      if (kioskServer.isRunning() && kioskServer.port() !== p)
+        await kioskServer.stop();
       await kioskServer.start(p);
       kioskReconcileTimer ??= setInterval(
         () => void database.runStartupReconciliation(),

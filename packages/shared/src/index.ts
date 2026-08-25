@@ -37,6 +37,7 @@ export * from './kiosk.js';
 export * from './printing.js';
 export * from './secret-store.js';
 export * from './sync.js';
+export * from './ui-helpers.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();

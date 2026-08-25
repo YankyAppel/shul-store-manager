@@ -301,6 +301,8 @@ export interface Sale {
   totalCents: number;
   createdAt: string;
   completedAt: string | null;
+  channel: 'manager' | 'kiosk';
+  kioskId: string | null;
   items: SaleItem[];
   payment: SalePayment;
   customer: SaleCustomerSnapshot | null;

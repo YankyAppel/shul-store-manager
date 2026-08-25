@@ -10,6 +10,7 @@ import { CheckoutScreen } from './features/CheckoutScreen';
 import { LabelPrintModal } from './features/labels/LabelPrintModal';
 import { SalesHistory } from './features/SalesHistory';
 import { SettingsScreen } from './features/SettingsScreen';
+import { KioskScreen } from './features/KioskScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
 
 type View =
@@ -19,7 +20,8 @@ type View =
   | 'inventory'
   | 'customers'
   | 'sales'
-  | 'settings';
+  | 'settings'
+  | 'kiosk';
 
 const imageUrl = (id: string | null) =>
   id ? `store-image://local/${id}` : undefined;
@@ -167,6 +169,12 @@ export function App() {
           >
             ⚙ <span>Settings</span>
           </button>
+          <button
+            className={view === 'kiosk' ? 'active' : ''}
+            onClick={() => setView('kiosk')}
+          >
+            ▣ <span>Kiosk</span>
+          </button>
         </nav>
         <div className="offline">
           <i /> Local database
@@ -187,6 +195,7 @@ export function App() {
                   customers: 'Customers & Accounts',
                   sales: 'Sales history',
                   settings: 'Store settings',
+                  kiosk: 'Kiosk',
                 }[view]
               }
             </h1>
@@ -199,9 +208,11 @@ export function App() {
                     ? 'Customer balances, credit limits, account payments, and statements.'
                     : view === 'settings'
                       ? 'Local checkout, tax, customer credit, printers, and receipt configuration.'
-                      : view === 'inventory'
-                        ? 'Receive stock and record append-only adjustments.'
-                        : `Manage your store ${view}.`}
+                      : view === 'kiosk'
+                        ? 'Configure and monitor LAN self-checkout kiosks.'
+                        : view === 'inventory'
+                          ? 'Receive stock and record append-only adjustments.'
+                          : `Manage your store ${view}.`}
             </p>
           </div>
           {(view === 'products' || view === 'categories') && (
@@ -265,6 +276,7 @@ export function App() {
           <SalesHistory onViewCustomer={handleNavigateToCustomer} />
         )}
         {view === 'settings' && <SettingsScreen />}
+        {view === 'kiosk' && <KioskScreen />}
         {view === 'categories' && (
           <div className="category-grid">
             {visibleCategories.map((category) => (

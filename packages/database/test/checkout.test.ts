@@ -234,6 +234,28 @@ describe('sale completion', () => {
     });
     expect(store.getSale(sale.id).items[0]?.productName).toBe('Cookie');
   });
+  it('maps sale origin metadata and defaults legacy values to manager', () => {
+    const sale = store.completeSale(cash());
+    expect(sale).toMatchObject({ channel: 'manager', kioskId: null });
+
+    const kioskId = randomUUID();
+    store.createKiosk(kioskId, 'Front kiosk', 'token-hash', 'pin-hash');
+    store.connection
+      .prepare("UPDATE sales SET channel='kiosk', kiosk_id=? WHERE id=?")
+      .run(kioskId, sale.id);
+    expect(store.getSale(sale.id)).toMatchObject({
+      channel: 'kiosk',
+      kioskId,
+    });
+
+    store.connection
+      .prepare("UPDATE sales SET channel='manager', kiosk_id=NULL WHERE id=?")
+      .run(sale.id);
+    expect(store.getSale(sale.id)).toMatchObject({
+      channel: 'manager',
+      kioskId: null,
+    });
+  });
   it('rejects insufficient cash without writes', () => {
     expect(() => store.completeSale(cash(key(), 100))).toThrow(/less than/);
     expect(store.listSales()).toHaveLength(0);
