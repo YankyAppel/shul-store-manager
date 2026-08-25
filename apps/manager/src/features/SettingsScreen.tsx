@@ -6,6 +6,7 @@ import {
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 import { CloudBackupSection } from './CloudBackupSection';
+import { LocalBackupSection } from './LocalBackupSection';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
@@ -403,6 +404,7 @@ export function SettingsScreen() {
       />
 
       <CloudBackupSection />
+      <LocalBackupSection />
     </>
   );
 }

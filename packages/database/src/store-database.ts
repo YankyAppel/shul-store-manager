@@ -51,7 +51,15 @@ import {
   type SyncEntityType,
   type SyncStatus,
 } from '@shul-store/shared';
-import { runMigrations } from './migrations.js';
+import { migrations, runMigrations } from './migrations.js';
+import {
+  createBackup as createBackupFile,
+  listBackups as listBackupFiles,
+  recordBackupAttempt,
+  type BackupAttempt,
+  type BackupKind,
+  type BackupListing,
+} from './backup.js';
 import {
   enqueueOutboxEvent,
   listAllOutboxEvents,
@@ -129,19 +137,68 @@ export interface SyncConfigRecord {
   backfillCompleted: boolean;
 }
 
+export interface StoreDatabaseOptions {
+  backupDirectory?: string;
+}
+
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
   private paymentService: PaymentService | null = null;
   private readonly secretStore: SecretStore;
+  private readonly backupDirectory: string | null;
 
   constructor(
     filename: string,
-    secretStore: SecretStore = new PlaintextSecretStore(),
+    secretStoreOrOptions:
+      SecretStore | StoreDatabaseOptions = new PlaintextSecretStore(),
+    options: StoreDatabaseOptions = {},
   ) {
+    const isSecretStore = 'encrypt' in secretStoreOrOptions;
+    this.secretStore = isSecretStore
+      ? secretStoreOrOptions
+      : new PlaintextSecretStore();
+    this.backupDirectory =
+      (isSecretStore
+        ? options.backupDirectory
+        : secretStoreOrOptions.backupDirectory) ?? null;
     this.connection = new SqliteDatabase(filename);
-    this.secretStore = secretStore;
     this.connection.pragma('busy_timeout = 5000');
-    runMigrations(this.connection);
+    const currentVersion = this.schemaVersion();
+    const latestVersion = migrations.at(-1)?.version ?? currentVersion;
+    let preMigrationAttempt: BackupAttempt | null = null;
+    if (
+      this.backupDirectory &&
+      currentVersion > 0 &&
+      currentVersion < latestVersion &&
+      !isBusinessDataEmpty(this.connection)
+    ) {
+      preMigrationAttempt = createBackupFile(
+        this.connection,
+        this.backupDirectory,
+        'premigration',
+        currentVersion,
+      );
+      if (!preMigrationAttempt.ok) {
+        this.connection.close();
+        throw new Error(
+          `Pre-migration backup failed: ${preMigrationAttempt.message}`,
+        );
+      }
+    }
+    try {
+      runMigrations(this.connection);
+      if (preMigrationAttempt) {
+        try {
+          recordBackupAttempt(this.connection, preMigrationAttempt);
+        } catch {
+          // A migration must not be rolled back because its history row could
+          // not be written after the verified snapshot was created.
+        }
+      }
+    } catch (error) {
+      this.connection.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -150,6 +207,41 @@ export class StoreDatabase {
 
   schemaVersion(): number {
     return this.connection.pragma('user_version', { simple: true }) as number;
+  }
+
+  createBackup(kind: BackupKind): BackupAttempt {
+    if (!this.backupDirectory)
+      return {
+        attemptedAt: now(),
+        kind,
+        filename: '',
+        bytes: 0,
+        ok: false,
+        message: 'A backup directory is not configured.',
+      };
+    const attempt = createBackupFile(
+      this.connection,
+      this.backupDirectory,
+      kind,
+      this.schemaVersion(),
+    );
+    try {
+      recordBackupAttempt(this.connection, attempt);
+    } catch {
+      // Backup failures are surfaced through the returned attempt and should
+      // never crash the manager process.
+    }
+    return attempt;
+  }
+
+  listBackups(): BackupListing[] {
+    return this.backupDirectory
+      ? listBackupFiles(this.connection, this.backupDirectory)
+      : [];
+  }
+
+  getBackupDirectory(): string | null {
+    return this.backupDirectory;
   }
 
   // --- SETTINGS ---

@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, stat, unlink } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  stat,
+  unlink,
+} from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -11,9 +18,14 @@ import {
   net,
   protocol,
   safeStorage,
+  shell,
 } from 'electron';
 import { z } from 'zod';
-import { KioskServer, StoreDatabase } from '@shul-store/database';
+import {
+  KioskServer,
+  parseBackupName,
+  StoreDatabase,
+} from '@shul-store/database';
 import {
   accountPaymentReceiptHtml,
   categoryInputSchema,
@@ -59,6 +71,11 @@ let engine: SyncEngine | null = null;
 let secretStore: SecretStore = new PlaintextSyncSecretStore();
 let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
+let databasePath = '';
+let backupDirectory = '';
+let backupTimer: ReturnType<typeof setInterval> | null = null;
+const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
+const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Electron safeStorage-backed secret store for the Supabase API key. When the OS
@@ -513,6 +530,59 @@ function registerIpc(): void {
     }
     return result;
   });
+  ipcMain.handle('backups:list', () => database.listBackups());
+  ipcMain.handle('backups:create', () => database.createBackup('scheduled'));
+  ipcMain.handle('backups:revealFolder', () => {
+    shell.showItemInFolder(backupDirectory);
+  });
+  ipcMain.handle(
+    'backups:restore',
+    async (_event, filename: unknown, confirmation: unknown) => {
+      const selected = z.string().max(200).parse(filename);
+      if (!parseBackupName(selected)) throw new Error('Invalid backup name.');
+      const expectedConfirmation = `RESTORE ${selected}`;
+      if (confirmation !== expectedConfirmation)
+        throw new Error(`Type "${expectedConfirmation}" to confirm restore.`);
+      const available = database
+        .listBackups()
+        .find(
+          (backup) =>
+            backup.filename === selected && backup.ok && backup.available,
+        );
+      if (!available) throw new Error('That backup is not available.');
+
+      const safety = database.createBackup('prerestore');
+      if (!safety.ok)
+        throw new Error(`Pre-restore backup failed: ${safety.message}`);
+      const temporary = `${databasePath}.restore-${randomUUID()}`;
+      await copyFile(path.join(backupDirectory, selected), temporary);
+      database.close();
+      try {
+        for (const staleFile of [
+          `${databasePath}-wal`,
+          `${databasePath}-shm`,
+        ]) {
+          try {
+            await unlink(staleFile);
+          } catch (error) {
+            if (!(
+              typeof error === 'object' &&
+              error !== null &&
+              'code' in error &&
+              error.code === 'ENOENT'
+            ))
+              throw error;
+          }
+        }
+        await rename(temporary, databasePath);
+      } catch (error) {
+        await unlink(temporary).catch(() => undefined);
+        throw error;
+      }
+      app.relaunch();
+      app.exit(0);
+    },
+  );
 }
 
 function buildLabelsHtml(request: LabelPrintRequest): string {
@@ -749,12 +819,31 @@ async function chooseImage() {
 app.whenReady().then(async () => {
   const dataDirectory = app.getPath('userData');
   await mkdir(dataDirectory, { recursive: true });
+  backupDirectory = path.join(dataDirectory, 'backups');
+  databasePath = path.join(dataDirectory, 'shul-store.sqlite');
   secretStore = new ElectronSafeStorageSyncSecretStore();
-  database = new StoreDatabase(
-    path.join(dataDirectory, 'shul-store.sqlite'),
-    secretStore,
-  );
+  database = new StoreDatabase(databasePath, secretStore, { backupDirectory });
   registerIpc();
+  const newestScheduled = () =>
+    database
+      .listBackups()
+      .filter(
+        (backup) =>
+          backup.kind === 'scheduled' && backup.ok && backup.available,
+      )
+      .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
+  const scheduledBackupDue = () => {
+    const latest = newestScheduled();
+    return (
+      !latest ||
+      Date.now() - Date.parse(latest.attemptedAt) >= SCHEDULED_BACKUP_MAX_AGE_MS
+    );
+  };
+  const runScheduledBackup = () => {
+    if (scheduledBackupDue()) database.createBackup('scheduled');
+  };
+  runScheduledBackup();
+  backupTimer = setInterval(runScheduledBackup, SCHEDULED_BACKUP_INTERVAL_MS);
   const kioskConfig = database.getKioskServerSettings();
   if (kioskConfig.enabled) {
     kioskServer = new KioskServer(database);
@@ -789,5 +878,27 @@ app.on('window-all-closed', () => {
 });
 app.on('before-quit', () => {
   engine?.stop();
+  if (database) {
+    void Promise.resolve()
+      .then(() => {
+        const latest = database
+          .listBackups()
+          .filter(
+            (backup) =>
+              backup.kind === 'scheduled' && backup.ok && backup.available,
+          )
+          .sort((a, b) => b.attemptedAt.localeCompare(a.attemptedAt))[0];
+        if (
+          !latest ||
+          new Date(latest.attemptedAt).toDateString() !==
+            new Date().toDateString()
+        )
+          database.createBackup('scheduled');
+      })
+      .catch(() => undefined);
+  }
+  if (backupTimer) clearInterval(backupTimer);
+});
+app.on('will-quit', () => {
   database?.close();
 });

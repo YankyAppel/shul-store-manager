@@ -116,6 +116,13 @@ const api: StoreApi = {
     restore: (input) => ipcRenderer.invoke('sync:restore', input),
     isRestoreAvailable: () => ipcRenderer.invoke('sync:isRestoreAvailable'),
   },
+  backups: {
+    list: () => ipcRenderer.invoke('backups:list'),
+    create: () => ipcRenderer.invoke('backups:create'),
+    revealFolder: () => ipcRenderer.invoke('backups:revealFolder'),
+    restore: (filename, confirmation) =>
+      ipcRenderer.invoke('backups:restore', filename, confirmation),
+  },
 };
 
 contextBridge.exposeInMainWorld('storeApi', api);

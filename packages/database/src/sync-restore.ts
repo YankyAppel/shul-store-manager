@@ -73,8 +73,14 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
     'inventory_movements',
     'customer_ledger',
     'audit_events',
+    'payment_transactions',
+    'kiosks',
   ];
   for (const table of tables) {
+    const exists = connection
+      .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`)
+      .get(table);
+    if (!exists) continue;
     const row = connection
       .prepare(`SELECT COUNT(*) AS count FROM ${table}`)
       .get() as { count: number } | undefined;

@@ -3,6 +3,7 @@ export {
   readSafeCents,
   readNullableSafeCents,
   type SyncConfigRecord,
+  type StoreDatabaseOptions,
 } from './store-database.js';
 export {
   PaymentError,
@@ -25,6 +26,19 @@ export {
 } from './payment-service.js';
 export { KioskServer, paymentFailureStatus } from './kiosk-server.js';
 export { migrations, runMigrations } from './migrations.js';
+export {
+  createBackup,
+  formatBackupName,
+  listBackups,
+  parseBackupName,
+  recordBackupAttempt,
+  selectBackupsToDelete,
+  verifyBackup,
+  type BackupAttempt,
+  type BackupKind,
+  type BackupListing,
+  type ParsedBackupName,
+} from './backup.js';
 export {
   enqueueOutboxEvent,
   listAllOutboxEvents,
