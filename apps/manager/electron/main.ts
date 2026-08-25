@@ -185,6 +185,8 @@ function registerIpc(): void {
     database.setKioskServerSettings(z.boolean().parse(enabled), p);
     if (enabled) {
       kioskServer ??= new KioskServer(database);
+      if (kioskServer.isRunning() && kioskServer.port() !== p)
+        await kioskServer.stop();
       await kioskServer.start(p);
       kioskReconcileTimer ??= setInterval(
         () => void database.runStartupReconciliation(),

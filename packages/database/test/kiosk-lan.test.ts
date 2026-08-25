@@ -36,6 +36,34 @@ async function startLan(): Promise<Lan> {
   return lan;
 }
 
+describe('kiosk server lifecycle', () => {
+  beforeEach(() => {
+    directory = mkdtempSync(path.join(tmpdir(), 'shul-kiosk-lifecycle-'));
+    databaseFile = path.join(directory, 'store.sqlite');
+  });
+
+  afterEach(async () => {
+    for (const lan of active) {
+      await lan.server.stop();
+      lan.db.close();
+    }
+    active = [];
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('keeps the bound port until explicitly stopped, then accepts a new port', async () => {
+    const lan = openLan();
+    const firstPort = await lan.server.start(0, '127.0.0.1');
+    expect(await lan.server.start(firstPort + 1, '127.0.0.1')).toBe(firstPort);
+    expect(lan.server.isRunning()).toBe(true);
+
+    await lan.server.stop();
+    const restartedPort = await lan.server.start(firstPort + 1, '127.0.0.1');
+    expect(restartedPort).toBe(firstPort + 1);
+    expect(lan.server.isRunning()).toBe(true);
+  });
+});
+
 async function pair(lan: Lan, name = 'Front table') {
   const code = lan.server.newPairingCode();
   const response = await fetch(`${lan.origin}/api/pair`, {

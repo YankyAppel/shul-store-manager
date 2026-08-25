@@ -18,6 +18,13 @@ export function describeAttentionReason(reason: string | null): string {
   return attentionReasonLabels[key] ?? 'This charge needs manager attention.';
 }
 
+export function extractAttentionDetail(reason: string | null): string | null {
+  const separator = reason?.indexOf(':') ?? -1;
+  if (separator < 0) return null;
+  const detail = reason!.slice(separator + 1).trim();
+  return detail || null;
+}
+
 export function formatRelativeTime(
   timestamp: string,
   now = Date.now(),

@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   describeAttentionReason,
   describePrintResult,
+  extractAttentionDetail,
   type NeedsAttentionCharge,
-  type Product,
   type Sale,
 } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../utils/formatters';
@@ -41,7 +41,7 @@ export function SalesHistory({
       setPendingCount(pending.length);
       setProductNames(
         Object.fromEntries(
-          (products as Product[]).map((product) => [product.id, product.name]),
+          products.map((product) => [product.id, product.name]),
         ),
       );
       setKioskNames(
@@ -162,6 +162,11 @@ export function SalesHistory({
                   <span className="badge badge-charge">Needs attention</span>
                 </div>
                 <p>{describeAttentionReason(charge.attentionReason)}</p>
+                {extractAttentionDetail(charge.attentionReason) && (
+                  <small className="muted">
+                    {extractAttentionDetail(charge.attentionReason)}
+                  </small>
+                )}
                 <div className="held-items">
                   <strong>Held inventory:</strong>
                   {heldItems.length > 0 ? (

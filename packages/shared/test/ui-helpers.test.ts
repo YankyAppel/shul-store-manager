@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeAttentionReason,
+  extractAttentionDetail,
   formatKioskAddress,
   formatRelativeTime,
   validatePort,
@@ -17,6 +18,11 @@ describe('manager UI helpers', () => {
     expect(describeAttentionReason('unknown-reason: detail')).toBe(
       'This charge needs manager attention.',
     );
+    expect(extractAttentionDetail('finalization-failed: database detail')).toBe(
+      'database detail',
+    );
+    expect(extractAttentionDetail('finalization-failed:')).toBeNull();
+    expect(extractAttentionDetail('finalization-failed')).toBeNull();
   });
 
   it('formats relative times and kiosk addresses', () => {
