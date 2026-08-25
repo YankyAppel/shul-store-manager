@@ -51,10 +51,10 @@ See [Cloud sync](docs/cloud-sync.md) for architecture, the outbox design, cloud-
 
 ## Requirements
 
-- Node.js 22.12 or newer (use the version declared in `.nvmrc`)
+- Node.js 22.13 or newer (use the version declared in `.nvmrc`)
 - npm 10 or newer
 
-Electron ships its own compatible Node runtime for the desktop application. Repository commands—tests, migrations, type checking, and builds—run in the host Node.js runtime and require Node 22.12+ because the database package uses `node:sqlite`.
+Electron ships its own compatible Node runtime for the desktop application. Repository commands—tests, migrations, type checking, and builds—run in the host Node.js runtime and require Node 22.13+ because the database package uses `node:sqlite`.
 
 ## Local development
 
