@@ -343,7 +343,10 @@ function App() {
     if (!result.ok) {
       setMessage(result.message);
       setScreen(
-        result.code === 'manager-unreachable' ? 'recovery' : 'unreachable',
+        result.code === 'manager-unreachable' ||
+          result.code === 'in-flight-charge'
+          ? 'recovery'
+          : 'unreachable',
       );
       return;
     }
@@ -353,6 +356,12 @@ function App() {
     } else if (result.outcome.status === 'declined') {
       setScreen('declined');
     } else {
+      setMessage(
+        result.outcome.status === 'needs-attention' ||
+          result.outcome.status === 'voided'
+          ? 'The manager must resolve this payment. Please see the shames.'
+          : '',
+      );
       setScreen('recovery');
     }
   }
@@ -413,8 +422,8 @@ function App() {
       <main className="center-screen recovery-screen">
         <h1>Checking the card charge</h1>
         <p>
-          The manager is checking whether the card was approved. Please do not
-          try the payment again.
+          {message ||
+            'The manager is checking whether the card was approved. Please do not try the payment again.'}
         </p>
         <p className="warning-message">
           If this stays unresolved, please see the shames.
@@ -425,6 +434,19 @@ function App() {
             onClick={() => void window.kioskApi.refreshCatalog()}
           >
             Retry connection
+          </button>
+        )}
+        {!state.inFlightCharge && (
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              setMessage('');
+              setCart([]);
+              setScreen('attract');
+            }}
+          >
+            Start a new purchase
           </button>
         )}
       </main>

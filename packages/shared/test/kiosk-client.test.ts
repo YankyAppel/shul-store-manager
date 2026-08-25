@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   encodeScryptPinHash,
+  isTerminalKioskChargeStatus,
   parseKioskStateFile,
+  refuseKioskCharge,
   resolveKioskBarcode,
   SCRYPT_DK_LEN,
   transitionChargeState,
@@ -92,5 +94,49 @@ describe('kiosk client helpers', () => {
         status: 'approved',
       }).phase,
     ).toBe('approved');
+    expect(
+      transitionChargeState(submitting, {
+        type: 'poll',
+        status: 'needs-attention',
+      }),
+    ).toEqual({
+      phase: 'error',
+      reference: submitting.reference,
+      message: 'Please see the shames about this payment.',
+    });
+    expect(
+      transitionChargeState(submitting, {
+        type: 'poll',
+        status: 'voided',
+      }).phase,
+    ).toBe('error');
+  });
+
+  it('refuses a new charge while a charge is in flight', () => {
+    const inFlight = {
+      chargeReference: '33333333-3333-4333-8333-333333333333',
+      idempotencyKey: '44444444-4444-4444-8444-444444444444',
+      lines: [
+        {
+          productId: catalog.products[0]!.id,
+          quantity: 1,
+          barcodeUsed: 'water-1',
+        },
+      ],
+      startedAt: '2025-01-01T00:00:00.000Z',
+    };
+    expect(refuseKioskCharge(null)).toEqual({ ok: true });
+    expect(refuseKioskCharge(inFlight)).toEqual({
+      ok: false,
+      code: 'in-flight-charge',
+      message:
+        'The previous payment is still being confirmed — please see the shames.',
+    });
+    expect(isTerminalKioskChargeStatus('approved')).toBe(true);
+    expect(isTerminalKioskChargeStatus('declined')).toBe(true);
+    expect(isTerminalKioskChargeStatus('error')).toBe(true);
+    expect(isTerminalKioskChargeStatus('needs-attention')).toBe(true);
+    expect(isTerminalKioskChargeStatus('voided')).toBe(true);
+    expect(isTerminalKioskChargeStatus('unknown')).toBe(false);
   });
 });

@@ -74,7 +74,12 @@ export type KioskChargeResult =
   | { ok: true; outcome: KioskChargeOutcome }
   | {
       ok: false;
-      code: 'unknown-barcode' | 'manager-unreachable' | 'revoked' | 'error';
+      code:
+        | 'unknown-barcode'
+        | 'manager-unreachable'
+        | 'revoked'
+        | 'in-flight-charge'
+        | 'error';
       message: string;
     };
 
@@ -108,6 +113,28 @@ export const kioskInFlightChargeSchema = z.object({
   startedAt: z.string().datetime(),
 });
 export type KioskInFlightCharge = z.infer<typeof kioskInFlightChargeSchema>;
+
+export function refuseKioskCharge(
+  inFlightCharge: KioskInFlightCharge | null,
+): { ok: true } | { ok: false; code: 'in-flight-charge'; message: string } {
+  if (!inFlightCharge) return { ok: true };
+  return {
+    ok: false,
+    code: 'in-flight-charge',
+    message:
+      'The previous payment is still being confirmed — please see the shames.',
+  };
+}
+
+export function isTerminalKioskChargeStatus(status: string): boolean {
+  return [
+    'approved',
+    'declined',
+    'error',
+    'needs-attention',
+    'voided',
+  ].includes(status);
+}
 
 export const kioskStateFileSchema = z.object({
   version: z.literal(1),
@@ -145,7 +172,7 @@ export interface KioskPublicState {
 
 export type KioskAdminResult = { ok: true } | { ok: false; message: string };
 
-export interface KioskApi {
+export interface KioskMainHandlers {
   getState(): Promise<KioskPublicState>;
   pair(input: KioskPairInput): Promise<KioskPublicState>;
   refreshCatalog(): Promise<KioskPublicState>;
@@ -154,6 +181,9 @@ export interface KioskApi {
   verifyAdminPin(pin: string): Promise<KioskAdminResult>;
   exitKiosk(): Promise<void>;
   restart(): Promise<void>;
+}
+
+export interface KioskApi extends KioskMainHandlers {
   subscribe(listener: (state: KioskPublicState) => void): () => void;
 }
 
@@ -232,8 +262,26 @@ export interface ChargeState {
 
 export type ChargeEvent =
   | { type: 'begin'; reference: string }
-  | { type: 'submitted'; status: 'approved' | 'declined' | 'error' | 'unknown' }
-  | { type: 'poll'; status: 'approved' | 'declined' | 'error' | 'unknown' }
+  | {
+      type: 'submitted';
+      status:
+        | 'approved'
+        | 'declined'
+        | 'error'
+        | 'unknown'
+        | 'needs-attention'
+        | 'voided';
+    }
+  | {
+      type: 'poll';
+      status:
+        | 'approved'
+        | 'declined'
+        | 'error'
+        | 'unknown'
+        | 'needs-attention'
+        | 'voided';
+    }
   | { type: 'unreachable' }
   | { type: 'reset' };
 
@@ -259,6 +307,12 @@ export function transitionChargeState(
           phase: 'error',
           reference: state.reference,
           message: 'The charge could not be completed.',
+        };
+      if (event.status === 'needs-attention' || event.status === 'voided')
+        return {
+          phase: 'error',
+          reference: state.reference,
+          message: 'Please see the shames about this payment.',
         };
       return { phase: 'recovering', reference: state.reference, message: null };
     case 'unreachable':

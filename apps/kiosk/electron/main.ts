@@ -1,7 +1,13 @@
 import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  powerMonitor,
+  safeStorage,
+} from 'electron';
 import { z } from 'zod';
 import {
   encodeScryptPinHash,
@@ -11,22 +17,24 @@ import {
   kioskPairRequestSchema,
   kioskPriceResponseSchema,
   parseKioskStateFile,
+  refuseKioskCharge,
   resolveKioskBarcode,
   SCRYPT_DK_LEN,
   SCRYPT_N,
   SCRYPT_P,
   SCRYPT_R,
   type KioskAdminResult,
-  type KioskApi,
   type KioskCartLine,
   type KioskChargeResult,
   type KioskConnection,
   type KioskInFlightCharge,
+  type KioskMainHandlers,
   type KioskPairInput,
   type KioskPriceResult,
   type KioskPublicState,
   type KioskResolvedLine,
   type KioskStateFile,
+  isTerminalKioskChargeStatus,
   verifyScryptPinHash,
 } from '@shul-store/shared';
 
@@ -47,6 +55,7 @@ let encryptionAvailable = false;
 let connection: KioskConnection = 'unpaired';
 let unlocked = false;
 let allowQuit = false;
+let sessionEnding = false;
 let chargePollTimer: ReturnType<typeof setTimeout> | null = null;
 let catalogTimer: ReturnType<typeof setInterval> | null = null;
 let writeQueue = Promise.resolve();
@@ -283,14 +292,10 @@ async function refreshCatalog(): Promise<KioskPublicState> {
   return publicState();
 }
 
-function terminalStatus(status: string): boolean {
-  return ['approved', 'declined', 'error'].includes(status);
-}
-
 async function finishCharge(
   outcome: ReturnType<typeof kioskChargeOutcomeSchema.parse>,
 ): Promise<void> {
-  if (terminalStatus(outcome.status)) {
+  if (isTerminalKioskChargeStatus(outcome.status)) {
     state.inFlightCharge = null;
     await persist();
     publish();
@@ -320,7 +325,7 @@ async function pollInFlight(): Promise<void> {
     connection = 'online';
     chargeRetryDelay = CHARGE_RETRY_MS;
     await finishCharge(outcome);
-    if (!terminalStatus(outcome.status)) {
+    if (!isTerminalKioskChargeStatus(outcome.status)) {
       await persist();
       publish();
       scheduleChargePoll();
@@ -368,6 +373,9 @@ async function pair(input: KioskPairInput): Promise<KioskPublicState> {
   state.kioskName = input.name.trim();
   state.storeName = '';
   state.localAdminPinHash = localPinHash(input.adminPin);
+  state.adminAttempts = [];
+  state.adminLockedUntil = null;
+  state.inFlightCharge = null;
   token = body.token;
   connection = 'online';
   await persist();
@@ -409,6 +417,8 @@ async function priceCart(lines: KioskCartLine[]): Promise<KioskPriceResult> {
 }
 
 async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
+  const canStart = refuseKioskCharge(state.inFlightCharge);
+  if (!canStart.ok) return canStart;
   const resolved = resolveLines(lines);
   if (!resolved.ok)
     return {
@@ -449,7 +459,7 @@ async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
     connection = 'online';
     chargeRetryDelay = CHARGE_RETRY_MS;
     await finishCharge(outcome);
-    if (!terminalStatus(outcome.status)) scheduleChargePoll();
+    if (!isTerminalKioskChargeStatus(outcome.status)) scheduleChargePoll();
     return { ok: true, outcome };
   } catch (error) {
     if (error instanceof RevokedError)
@@ -541,7 +551,7 @@ function verifyLocalPin(stored: string, pin: string): boolean {
 }
 
 function registerIpc(): void {
-  const api: KioskApi = {
+  const handlers: KioskMainHandlers = {
     getState: async () => publicState(),
     pair,
     refreshCatalog,
@@ -559,24 +569,23 @@ function registerIpc(): void {
       app.relaunch();
       app.exit(0);
     },
-    subscribe: () => () => undefined,
   };
-  ipcMain.handle('kiosk:getState', () => api.getState());
+  ipcMain.handle('kiosk:getState', () => handlers.getState());
   ipcMain.handle('kiosk:pair', (_event, input: KioskPairInput) =>
-    api.pair(input),
+    handlers.pair(input),
   );
-  ipcMain.handle('kiosk:refreshCatalog', () => api.refreshCatalog());
+  ipcMain.handle('kiosk:refreshCatalog', () => handlers.refreshCatalog());
   ipcMain.handle('kiosk:priceCart', (_event, lines: KioskCartLine[]) =>
-    api.priceCart(lines),
+    handlers.priceCart(lines),
   );
   ipcMain.handle('kiosk:charge', (_event, lines: KioskCartLine[]) =>
-    api.charge(lines),
+    handlers.charge(lines),
   );
   ipcMain.handle('kiosk:verifyAdminPin', (_event, pin: string) =>
-    api.verifyAdminPin(pin),
+    handlers.verifyAdminPin(pin),
   );
-  ipcMain.handle('kiosk:exit', () => api.exitKiosk());
-  ipcMain.handle('kiosk:restart', () => api.restart());
+  ipcMain.handle('kiosk:exit', () => handlers.exitKiosk());
+  ipcMain.handle('kiosk:restart', () => handlers.restart());
 }
 
 async function createWindow(): Promise<void> {
@@ -593,14 +602,47 @@ async function createWindow(): Promise<void> {
   });
   window.setMenu(null);
   window.on('close', (event) => {
-    if (!allowQuit) event.preventDefault();
+    if (!allowQuit && !sessionEnding) event.preventDefault();
   });
+  if (process.platform === 'win32')
+    window.on('session-end', () => {
+      sessionEnding = true;
+      allowQuit = true;
+    });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
+  window.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    const key = input.key.toLowerCase();
+    const blockedKey =
+      input.key === 'F5' ||
+      input.key === 'F12' ||
+      ((input.control || input.meta) &&
+        (key === 'r' ||
+          input.key === '+' ||
+          input.key === '=' ||
+          input.key === '-' ||
+          key === '0')) ||
+      ((input.control || input.meta) &&
+        input.shift &&
+        ['i', 'j', 'c'].includes(key));
+    if (blockedKey) event.preventDefault();
+  });
   if (process.env.VITE_DEV_SERVER_URL)
     await window.loadURL(process.env.VITE_DEV_SERVER_URL);
   else
     await window.loadFile(path.join(import.meta.dirname, '../dist/index.html'));
+}
+
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) {
+  app.exit(0);
+} else {
+  app.on('second-instance', () => window?.focus());
+  powerMonitor.on('shutdown', () => {
+    sessionEnding = true;
+    allowQuit = true;
+  });
 }
 
 app.whenReady().then(async () => {
@@ -617,5 +659,5 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', (event) => {
-  if (!allowQuit) event.preventDefault();
+  if (!allowQuit && !sessionEnding) event.preventDefault();
 });
