@@ -552,6 +552,39 @@ describe('shared payment service', () => {
     expect(db.listSales()).toHaveLength(0);
   });
 
+  it('enforces the documented status transitions in SQLite', () => {
+    const reference = randomUUID();
+    db.createPaymentTransaction(
+      reference,
+      'simulated',
+      100,
+      '{}',
+      randomUUID(),
+    );
+
+    // initiated -> needs-attention is allowed (a charge can be blocked before it resolves).
+    db.updatePaymentTransactionStatus(reference, 'needs-attention');
+    expect(String(db.getPaymentTransaction(reference)!.status)).toBe(
+      'needs-attention',
+    );
+
+    // needs-attention -> approved is allowed, but only for an operator retry.
+    db.updatePaymentTransactionStatus(reference, 'approved');
+    expect(String(db.getPaymentTransaction(reference)!.status)).toBe(
+      'approved',
+    );
+
+    // approved -> declined is not a legal transition.
+    expect(() =>
+      db.updatePaymentTransactionStatus(reference, 'declined'),
+    ).toThrow('Invalid payment transaction status transition');
+
+    // approved -> reconciled is not written by any code path and is not permitted.
+    expect(() =>
+      db.updatePaymentTransactionStatus(reference, 'reconciled'),
+    ).toThrow('Invalid payment transaction status transition');
+  });
+
   it('requires a paired kiosk identity for kiosk-originated charges', async () => {
     const input = request(water.id);
     await expect(
