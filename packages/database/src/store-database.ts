@@ -29,6 +29,7 @@ import {
   type InventoryMovement,
   type InventoryMovementInput,
   type InventoryMovementPayload,
+  type KioskSummary,
   type LedgerEntryPayload,
   type PaymentTransactionPayload,
   type Product,
@@ -1170,15 +1171,18 @@ export class StoreDatabase {
       .get(tokenHash) as
       { id: string; name: string; last_seen_at: string | null } | undefined;
   }
-  listKiosks(): { id: string; name: string; lastSeenAt: string | null }[] {
+  listKiosks(): KioskSummary[] {
     return (
       this.connection
-        .prepare('SELECT id,name,last_seen_at FROM kiosks ORDER BY name')
+        .prepare(
+          'SELECT id,name,last_seen_at,revoked_at FROM kiosks ORDER BY name',
+        )
         .all() as Row[]
     ).map((r) => ({
       id: String(r.id),
       name: String(r.name),
       lastSeenAt: r.last_seen_at ? String(r.last_seen_at) : null,
+      revokedAt: r.revoked_at ? String(r.revoked_at) : null,
     }));
   }
   touchKiosk(id: string): void {

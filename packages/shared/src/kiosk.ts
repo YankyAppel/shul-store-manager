@@ -13,7 +13,7 @@ const line = z
   );
 export const kioskPairRequestSchema = z
   .object({
-    code: z.string().regex(/^\d{6}$/),
+    code: z.string().regex(/^\d+$/).max(100),
     name: z.string().trim().min(1).max(100),
     adminPin: z.string().regex(/^\d{4,12}$/),
   })
@@ -60,3 +60,16 @@ export const kioskCatalogResponseSchema = z.object({
 });
 export type KioskPriceRequest = z.infer<typeof kioskPriceRequestSchema>;
 export type KioskChargeRequest = z.infer<typeof kioskChargeRequestSchema>;
+
+export interface KioskSummary {
+  id: string;
+  name: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface KioskServerSettings {
+  enabled: boolean;
+  port: number;
+  kiosks: KioskSummary[];
+}

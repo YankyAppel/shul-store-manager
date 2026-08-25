@@ -26,6 +26,7 @@ import type {
   SyncNowResult,
   SyncStatus,
 } from './sync.js';
+import type { KioskServerSettings } from './kiosk.js';
 
 export * from './barcode.js';
 export * from './checkout.js';
@@ -176,6 +177,12 @@ export interface NeedsAttentionCharge {
 }
 
 export interface StoreApi {
+  kiosk: {
+    getSettings(): Promise<KioskServerSettings>;
+    pairCode(): Promise<string>;
+    revoke(id: string): Promise<void>;
+    setServer(enabled: boolean, port: number): Promise<void>;
+  };
   payments: {
     initiateCharge(
       input: import('./checkout.js').InitiateChargeInput,

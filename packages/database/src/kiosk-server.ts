@@ -36,6 +36,9 @@ type PairCode = {
   window: number;
 };
 
+const PAIR_IP_WINDOW_MS = 300000;
+const MAX_PAIR_ATTEMPTS_PER_IP = 10;
+
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
@@ -74,6 +77,7 @@ export function paymentFailureStatus(code: PaymentFailureCode): number {
 export class KioskServer {
   private server: http.Server | null = null;
   private code: PairCode | null = null;
+  private readonly pairAttemptsByAddress = new Map<string, number[]>();
   private readonly payments: PaymentService;
 
   constructor(private readonly db: StoreDatabase) {
@@ -89,6 +93,22 @@ export class KioskServer {
       window: Date.now(),
     };
     return code;
+  }
+
+  private allowPairAttempt(address: string, timestamp = Date.now()): boolean {
+    for (const [key, attempts] of this.pairAttemptsByAddress) {
+      const active = attempts.filter(
+        (attempt) => timestamp - attempt < PAIR_IP_WINDOW_MS,
+      );
+      if (active.length === 0) this.pairAttemptsByAddress.delete(key);
+      else this.pairAttemptsByAddress.set(key, active);
+    }
+
+    const attempts = this.pairAttemptsByAddress.get(address) ?? [];
+    if (attempts.length >= MAX_PAIR_ATTEMPTS_PER_IP) return false;
+    attempts.push(timestamp);
+    this.pairAttemptsByAddress.set(address, attempts);
+    return true;
   }
 
   async start(port = 3939, host = '0.0.0.0'): Promise<number> {
@@ -201,6 +221,9 @@ export class KioskServer {
     try {
       const url = new URL(req.url ?? '/', 'http://x');
       if (req.method === 'POST' && url.pathname === '/api/pair') {
+        const address = req.socket.remoteAddress ?? 'unknown';
+        if (!this.allowPairAttempt(address))
+          return json(res, 429, { error: 'Too many attempts' });
         const input = kioskPairRequestSchema.parse(await readBody(req));
         const pending = this.code;
         if (!pending || Date.now() > pending.expires)
@@ -211,8 +234,11 @@ export class KioskServer {
         }
         if (++pending.attempts > 5)
           return json(res, 429, { error: 'Too many attempts' });
+        const inputCode = Buffer.from(input.code);
+        const pendingCode = Buffer.from(pending.code);
         if (
-          !timingSafeEqual(Buffer.from(input.code), Buffer.from(pending.code))
+          inputCode.length !== pendingCode.length ||
+          !timingSafeEqual(inputCode, pendingCode)
         )
           return json(res, 400, { error: 'Invalid pairing code' });
         this.code = null;
