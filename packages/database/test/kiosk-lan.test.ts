@@ -251,12 +251,11 @@ describe('kiosk LAN API', () => {
     expect((await attempt()).status).toBe(429);
 
     const code = lan.server.newPairingCode();
-    const otherAddress = await apiFromAddress(
-      lan,
-      '127.0.0.2',
-      '/api/pair',
-      { code: wrongCode(code), name: 'Side table', adminPin: '1234' },
-    );
+    const otherAddress = await apiFromAddress(lan, '127.0.0.2', '/api/pair', {
+      code: wrongCode(code),
+      name: 'Side table',
+      adminPin: '1234',
+    });
     expect(otherAddress.status).toBe(400);
     expect(otherAddress.body.error).toBe('Invalid pairing code');
   });
