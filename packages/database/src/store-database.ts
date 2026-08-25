@@ -30,6 +30,7 @@ import {
   type InventoryMovement,
   type InventoryMovementInput,
   type InventoryMovementPayload,
+  type KioskPayload,
   type KioskSummary,
   type LedgerEntryPayload,
   type PaymentTransactionPayload,
@@ -1169,6 +1170,7 @@ export class StoreDatabase {
         'INSERT INTO kiosks (id,name,token_hash,admin_pin_hash,created_at) VALUES (?,?,?,?,?)',
       )
       .run(id, name, tokenHash, pinHash, now());
+    this.enqueueEntity('kiosk', id);
   }
   getKioskAdminPinHash(id: string): string | null {
     const row = this.connection
@@ -1208,9 +1210,10 @@ export class StoreDatabase {
     }));
   }
   touchKiosk(id: string): void {
-    this.connection
+    const result = this.connection
       .prepare('UPDATE kiosks SET last_seen_at=? WHERE id=?')
       .run(now(), id);
+    if (result.changes > 0) this.enqueueEntity('kiosk', id);
   }
   revokeKiosk(id: string): void {
     const result = this.connection
@@ -1220,6 +1223,7 @@ export class StoreDatabase {
       .run(now(), id);
     if (result.changes === 0)
       throw new Error('Kiosk not found or already revoked');
+    this.enqueueEntity('kiosk', id);
   }
   attributeKioskSale(saleId: string, kioskId: string): void {
     this.connection
@@ -2712,6 +2716,14 @@ export class StoreDatabase {
         'SELECT id FROM account_payments ORDER BY receipt_number',
       );
       enqueued += this.backfillRows(
+        'payment_transaction',
+        'SELECT id FROM payment_transactions ORDER BY created_at',
+      );
+      enqueued += this.backfillRows(
+        'kiosk',
+        'SELECT id FROM kiosks ORDER BY created_at, name',
+      );
+      enqueued += this.backfillRows(
         'audit_event',
         'SELECT id FROM audit_events ORDER BY occurred_at, rowid',
       );
@@ -2944,6 +2956,7 @@ export class StoreDatabase {
     | SalePayload
     | AccountPaymentPayload
     | PaymentTransactionPayload
+    | KioskPayload
     | null {
     switch (entityType) {
       case 'settings':
@@ -2962,6 +2975,8 @@ export class StoreDatabase {
         return this.buildAccountPaymentPayload(entityId);
       case 'payment_transaction':
         return this.buildPaymentTransactionPayload(entityId);
+      case 'kiosk':
+        return this.buildKioskPayload(entityId);
       default:
         return null;
     }
@@ -2994,6 +3009,7 @@ export class StoreDatabase {
       processorConfigHash: tx.processor_config_hash
         ? String(tx.processor_config_hash)
         : null,
+      kioskId: tx.kiosk_id != null ? String(tx.kiosk_id) : null,
       originChannel:
         String(tx.origin_channel ?? 'manager') === 'kiosk'
           ? 'kiosk'
@@ -3001,6 +3017,22 @@ export class StoreDatabase {
       attentionReason: tx.attention_reason ? String(tx.attention_reason) : null,
       createdAt: String(tx.created_at),
       updatedAt: String(tx.updated_at),
+    };
+  }
+
+  private buildKioskPayload(id: string): KioskPayload | null {
+    const row = this.connection
+      .prepare(
+        'SELECT id,name,last_seen_at,created_at,revoked_at FROM kiosks WHERE id = ?',
+      )
+      .get(id) as Row | undefined;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      lastSeenAt: row.last_seen_at === null ? null : String(row.last_seen_at),
+      createdAt: String(row.created_at),
+      revokedAt: row.revoked_at === null ? null : String(row.revoked_at),
     };
   }
 

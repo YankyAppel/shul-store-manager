@@ -11,6 +11,7 @@ export {
   restoreFromCloud,
   parseRestoreEvent,
   parseRestoreEvents,
+  PAYLOAD_SCHEMA_BY_TYPE,
 } from './restore.js';
 export {
   PlaintextSyncSecretStore,

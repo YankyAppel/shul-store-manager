@@ -8,6 +8,7 @@ import {
 import './style.css';
 
 const IDLE_RESET_MS = 60000;
+const APPROVED_SCREEN_TIMEOUT_MS = 15000;
 const PAIRING_CODE_LENGTH = 6;
 const ADMIN_PIN_LENGTH = 12;
 
@@ -252,6 +253,17 @@ function App() {
   }, [cart, screen]);
 
   useEffect(() => {
+    if (screen !== 'approved') return;
+    const timer = setTimeout(() => {
+      setCart([]);
+      setQuote(undefined);
+      setMessage('');
+      setScreen('attract');
+    }, APPROVED_SCREEN_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [screen]);
+
+  useEffect(() => {
     if (screen !== 'shopping') return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Enter') {
@@ -420,7 +432,11 @@ function App() {
   if (screen === 'recovery' || state.inFlightCharge)
     return (
       <main className="center-screen recovery-screen">
-        <h1>Checking the card charge</h1>
+        <h1>
+          {state.inFlightCharge
+            ? 'Checking the card charge'
+            : 'Please see the shames'}
+        </h1>
         <p>
           {message ||
             'The manager is checking whether the card was approved. Please do not try the payment again.'}

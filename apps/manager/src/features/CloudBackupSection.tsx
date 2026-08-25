@@ -420,7 +420,7 @@ function formatRestoreSummary(result: RestoreResult): string {
     result.message,
     `Events replayed: ${s.eventsReplayed}`,
     `Categories: ${s.categories} · Products: ${s.products} · Customers: ${s.customers}`,
-    `Sales: ${s.sales} · Account payments: ${s.accountPayments}`,
+    `Sales: ${s.sales} · Kiosks: ${s.kiosks} · Account payments: ${s.accountPayments}`,
     `Inventory movements: ${s.inventoryMovements} · Ledger entries: ${s.ledgerEntries}`,
     `Integrity: ${s.integrityChecks.join('; ')}`,
   ];

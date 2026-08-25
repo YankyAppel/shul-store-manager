@@ -27,6 +27,7 @@ export const syncEntityTypeSchema = z.enum([
   'sale',
   'account_payment',
   'payment_transaction',
+  'kiosk',
   'audit_event',
 ]);
 export type SyncEntityType = z.infer<typeof syncEntityTypeSchema>;
@@ -266,6 +267,7 @@ export const paymentTransactionPayloadSchema = z.object({
   idempotencyKey: z.string().nullable(),
   snapshotHash: z.string().nullable(),
   processorConfigHash: z.string().nullable(),
+  kioskId: uuidString.nullable().optional(),
   originChannel: z.enum(['manager', 'kiosk']),
   attentionReason: z.string().nullable(),
   createdAt: isoString,
@@ -274,6 +276,15 @@ export const paymentTransactionPayloadSchema = z.object({
 export type PaymentTransactionPayload = z.infer<
   typeof paymentTransactionPayloadSchema
 >;
+
+export const kioskPayloadSchema = z.object({
+  id: uuidString,
+  name: z.string().min(1).max(200),
+  lastSeenAt: isoString.nullable(),
+  createdAt: isoString,
+  revokedAt: isoString.nullable(),
+});
+export type KioskPayload = z.infer<typeof kioskPayloadSchema>;
 
 export const auditEventPayloadSchema = z.object({
   id: uuidString,
@@ -331,6 +342,11 @@ export const cloudPayloadSchema = z.discriminatedUnion('entityType', [
     payload: paymentTransactionPayloadSchema,
   }),
   z.object({
+    entityType: z.literal('kiosk'),
+    entityId: uuidString,
+    payload: kioskPayloadSchema,
+  }),
+  z.object({
     entityType: z.literal('audit_event'),
     entityId: uuidString,
     payload: auditEventPayloadSchema,
@@ -344,6 +360,7 @@ export const syncOperationFor = (entityType: SyncEntityType): SyncOperation => {
     case 'product':
     case 'customer':
     case 'settings':
+    case 'kiosk':
       return 'upsert';
     default:
       return 'append';
@@ -401,6 +418,7 @@ export interface RestoreSummary {
   products: number;
   customers: number;
   sales: number;
+  kiosks: number;
   accountPayments: number;
   inventoryMovements: number;
   ledgerEntries: number;
