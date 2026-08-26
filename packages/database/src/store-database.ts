@@ -1418,9 +1418,7 @@ export class StoreDatabase {
         .prepare(
           'SELECT id, status FROM payment_transactions WHERE charge_reference = ?',
         )
-        .get(chargeReference) as
-        | { id: string; status: string }
-        | undefined;
+        .get(chargeReference) as { id: string; status: string } | undefined;
       if (!tx) throw new Error('Payment transaction not found');
       if (tx.status === 'voided') return;
       if (!['needs-attention', 'unknown'].includes(tx.status))
@@ -1636,14 +1634,8 @@ export class StoreDatabase {
         quantity: number;
         barcodeUsed: string | null;
       }) => `${line.productId}::${line.barcodeUsed ?? ''}::${line.quantity}`;
-      const requestedLines = value.lines
-        .map(lineKey)
-        .sort()
-        .join('|');
-      const frozenLines = frozenSnapshot.lines
-        .map(lineKey)
-        .sort()
-        .join('|');
+      const requestedLines = value.lines.map(lineKey).sort().join('|');
+      const frozenLines = frozenSnapshot.lines.map(lineKey).sort().join('|');
       if (requestedLines !== frozenLines)
         throw new Error(
           'Integrated-card sale lines do not match the frozen payment snapshot.',
@@ -2596,9 +2588,7 @@ export class StoreDatabase {
     return intent;
   }
 
-  listRefundIntentsByState(
-    state: RefundIntent['state'],
-  ): RefundIntent[] {
+  listRefundIntentsByState(state: RefundIntent['state']): RefundIntent[] {
     return (
       this.connection
         .prepare(
@@ -2678,9 +2668,9 @@ export class StoreDatabase {
                WHERE ri.sale_item_id = ?`,
             )
             .get(requested.saleItemId) as {
-              subtotal: number;
-              tax: number;
-            };
+            subtotal: number;
+            tax: number;
+          };
           return {
             saleItemId: requested.saleItemId,
             productName: String(item.product_name),

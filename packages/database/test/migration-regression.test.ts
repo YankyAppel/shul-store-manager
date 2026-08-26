@@ -63,7 +63,10 @@ describe('migration upgrades and regressions', () => {
   });
 
   it('aborts duplicate active idempotency repair with actionable row details', () => {
-    const filename = path.join(tmpdir(), `shul-mig15-unsafe-${randomUUID()}.sqlite`);
+    const filename = path.join(
+      tmpdir(),
+      `shul-mig15-unsafe-${randomUUID()}.sqlite`,
+    );
     const rawDb = createV14Database(filename);
     const key = 'unsafe-duplicate';
     const first = randomUUID();
@@ -112,7 +115,10 @@ describe('migration upgrades and regressions', () => {
   });
 
   it('repairs a duplicate key when terminal rows have mixed outcomes', () => {
-    const filename = path.join(tmpdir(), `shul-mig15-mixed-${randomUUID()}.sqlite`);
+    const filename = path.join(
+      tmpdir(),
+      `shul-mig15-mixed-${randomUUID()}.sqlite`,
+    );
     const rawDb = createV14Database(filename);
     const key = 'mixed-terminal-duplicate';
     const first = randomUUID();

@@ -153,15 +153,14 @@ export function SalesHistory({
         nextRefundAttention,
         products,
         kioskSettings,
-      ] =
-        await Promise.all([
-          window.storeApi.sales.list(),
-          window.storeApi.payments.listNeedsAttention(),
-          window.storeApi.payments.getPendingTransactions(),
-          window.storeApi.refunds.listAttention(),
-          window.storeApi.products.list(true),
-          window.storeApi.kiosk.getSettings(),
-        ]);
+      ] = await Promise.all([
+        window.storeApi.sales.list(),
+        window.storeApi.payments.listNeedsAttention(),
+        window.storeApi.payments.getPendingTransactions(),
+        window.storeApi.refunds.listAttention(),
+        window.storeApi.products.list(true),
+        window.storeApi.kiosk.getSettings(),
+      ]);
       setSales(nextSales);
       setNeedsAttention(nextAttention);
       setPendingCount(pending.length);
@@ -401,7 +400,9 @@ export function SalesHistory({
                 <button
                   type="button"
                   className="primary"
-                  onClick={() => void resolveRefundAttention(intent.operationId)}
+                  onClick={() =>
+                    void resolveRefundAttention(intent.operationId)
+                  }
                 >
                   Resolve status
                 </button>

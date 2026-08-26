@@ -274,9 +274,7 @@ describe('refunds', () => {
     expect(store.listRefunds(sale.id)).toEqual(before);
     expect(store.getSale(sale.id).status).toBe('completed');
     expect(
-      store.connection
-        .prepare('SELECT state FROM refund_intents')
-        .all(),
+      store.connection.prepare('SELECT state FROM refund_intents').all(),
     ).toEqual([{ state: 'failed' }]);
   });
 

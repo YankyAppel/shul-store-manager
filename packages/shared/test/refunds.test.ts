@@ -159,9 +159,9 @@ describe('refund domain calculations', () => {
         quantity: 1,
       },
     ]);
-    expect(first.subtotalCents + second.subtotalCents + third.subtotalCents).toBe(
-      100,
-    );
+    expect(
+      first.subtotalCents + second.subtotalCents + third.subtotalCents,
+    ).toBe(100);
     expect(first.taxCents + second.taxCents + third.taxCents).toBe(10);
     expect(third.subtotalCents).toBe(34);
     expect(third.taxCents).toBe(4);

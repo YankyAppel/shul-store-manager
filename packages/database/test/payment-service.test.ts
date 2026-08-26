@@ -473,13 +473,13 @@ describe('shared payment service', () => {
     await expect(
       payments.resolveNeedsAttention(input.chargeReference, 'retry'),
     ).rejects.toMatchObject({ code: 'charge-voided' });
-    await expect(payments.reconcile(input.chargeReference)).rejects.toMatchObject(
-      { code: 'charge-voided' },
-    );
+    await expect(
+      payments.reconcile(input.chargeReference),
+    ).rejects.toMatchObject({ code: 'charge-voided' });
     await db.runStartupReconciliation();
-    expect(String(db.getPaymentTransaction(input.chargeReference)!.status)).toBe(
-      'voided',
-    );
+    expect(
+      String(db.getPaymentTransaction(input.chargeReference)!.status),
+    ).toBe('voided');
     const secondVoid = await payments.resolveNeedsAttention(
       input.chargeReference,
       'void',

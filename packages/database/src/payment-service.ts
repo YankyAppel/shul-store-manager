@@ -243,18 +243,26 @@ export class PaymentService {
     try {
       allocation = JSON.parse(intent.allocationJson);
     } catch {
-      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+      throw new Error(
+        `Refund operation ${operationId} has invalid allocation data.`,
+      );
     }
     if (allocation === null || typeof allocation !== 'object')
-      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+      throw new Error(
+        `Refund operation ${operationId} has invalid allocation data.`,
+      );
     const record = allocation as Record<string, unknown>;
     if (!Array.isArray(record.items))
-      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+      throw new Error(
+        `Refund operation ${operationId} has invalid allocation data.`,
+      );
     return this.refund({
       operationId,
       saleId: intent.saleId,
       reason:
-        typeof record.reason === 'string' ? record.reason : 'Recovered card refund',
+        typeof record.reason === 'string'
+          ? record.reason
+          : 'Recovered card refund',
       terminalReference:
         typeof record.terminalReference === 'string'
           ? record.terminalReference
@@ -928,14 +936,17 @@ export class PaymentService {
       throw new Error(`Refund operation ${value.operationId} is incomplete.`);
     }
 
-    const resumingSentRefund = intent.state === 'sent' || intent.state === 'attention';
+    const resumingSentRefund =
+      intent.state === 'sent' || intent.state === 'attention';
     let refundInput = value;
     if (resumingSentRefund) {
       let parsedAllocation: unknown;
       try {
         parsedAllocation = JSON.parse(intent.allocationJson);
       } catch {
-        throw new Error(`Refund operation ${value.operationId} has invalid allocation data.`);
+        throw new Error(
+          `Refund operation ${value.operationId} has invalid allocation data.`,
+        );
       }
       if (
         canonicalJson(parsedAllocation) !== intent.allocationJson ||
@@ -943,14 +954,18 @@ export class PaymentService {
         parsedAllocation === null ||
         typeof parsedAllocation !== 'object'
       )
-        throw new Error(`Refund operation ${value.operationId} allocation integrity check failed.`);
+        throw new Error(
+          `Refund operation ${value.operationId} allocation integrity check failed.`,
+        );
       const allocationRecord = parsedAllocation as {
         reason?: unknown;
         terminalReference?: unknown;
         items?: unknown;
       };
       if (!Array.isArray(allocationRecord.items))
-        throw new Error(`Refund operation ${value.operationId} has invalid allocation data.`);
+        throw new Error(
+          `Refund operation ${value.operationId} has invalid allocation data.`,
+        );
       refundInput = recordRefundInputSchema.parse({
         operationId: value.operationId,
         saleId: intent.saleId,
@@ -1033,18 +1048,17 @@ export class PaymentService {
         'frozen-config-unavailable: the original processor configuration could not be recovered. Refund on the physical terminal and record an external-terminal refund.',
       );
     }
-    if (!processor.refundCharge)
-      {
-        this.db.updateRefundIntent(
-          value.operationId,
-          'failed',
-          null,
-          'Processor does not support refunds',
-        );
-        throw new Error(
-          'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
-        );
-      }
+    if (!processor.refundCharge) {
+      this.db.updateRefundIntent(
+        value.operationId,
+        'failed',
+        null,
+        'Processor does not support refunds',
+      );
+      throw new Error(
+        'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    }
     if (intent.state === 'recorded')
       intent = this.db.updateRefundIntent(value.operationId, 'sent');
     if (resumingSentRefund) {
@@ -1071,7 +1085,12 @@ export class PaymentService {
         );
       } catch (error) {
         const reason = `Refund sent, result unknown — operation ${value.operationId}: ${errorMessage(error)}`;
-        this.db.updateRefundIntent(value.operationId, 'attention', null, reason);
+        this.db.updateRefundIntent(
+          value.operationId,
+          'attention',
+          null,
+          reason,
+        );
         throw new Error(
           `Refund sent, result unknown — operation ${value.operationId}`,
         );

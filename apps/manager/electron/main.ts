@@ -528,9 +528,14 @@ function registerIpc(): void {
         confirmed: z.literal(true),
       }),
     ]),
-  }) satisfies z.ZodType<Omit<CompleteSaleInput, 'payment'> & {
-    payment: Exclude<CompleteSaleInput['payment'], { method: 'integrated_card' }>;
-  }>;
+  }) satisfies z.ZodType<
+    Omit<CompleteSaleInput, 'payment'> & {
+      payment: Exclude<
+        CompleteSaleInput['payment'],
+        { method: 'integrated_card' }
+      >;
+    }
+  >;
   ipcMain.handle('checkout:complete', (_event, input) =>
     database.completeSale(checkoutBoundarySchema.parse(input)),
   );
@@ -563,7 +568,9 @@ function registerIpc(): void {
     database.payments.listRefundAttention(),
   );
   ipcMain.handle('refunds:resolveAttention', (_event, operationId) =>
-    database.payments.resolveRefundAttention(z.string().uuid().parse(operationId)),
+    database.payments.resolveRefundAttention(
+      z.string().uuid().parse(operationId),
+    ),
   );
 
   // Customers

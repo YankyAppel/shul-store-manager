@@ -593,7 +593,9 @@ export const migrations: Migration[] = [
     version: 15,
     name: 'payment_transaction_frozen_identity',
     before: (db) => {
-      db.exec('DROP TRIGGER IF EXISTS payment_transactions_no_update_financials');
+      db.exec(
+        'DROP TRIGGER IF EXISTS payment_transactions_no_update_financials',
+      );
       const rows = db
         .prepare(
           `SELECT id, idempotency_key, status, created_at
@@ -622,7 +624,9 @@ export const migrations: Migration[] = [
           throw new Error(
             `Cannot repair duplicate payment idempotency key "${key}": active or approved rows ${group
               .map((row) => `${row.id} (${row.status})`)
-              .join(', ')}. Resolve these rows before migrating past version 14.`,
+              .join(
+                ', ',
+              )}. Resolve these rows before migrating past version 14.`,
           );
         }
         for (const duplicate of group.slice(1)) {

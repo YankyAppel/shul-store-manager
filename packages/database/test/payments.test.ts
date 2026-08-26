@@ -554,7 +554,9 @@ describe('payment transactions & integration', () => {
       store.completeSale(
         {
           completionKey: idempotencyKey,
-          lines: [{ productId: products[0].id, quantity: 1, barcodeUsed: null }],
+          lines: [
+            { productId: products[0].id, quantity: 1, barcodeUsed: null },
+          ],
           payment: { method: 'integrated_card', chargeReference: randomUUID() },
         },
         frozenSnapshot,

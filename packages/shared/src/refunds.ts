@@ -217,8 +217,7 @@ export function calculateRefund(
         throw new Error(`${label} must be a non-negative safe integer`);
     }
     if (
-      BigInt(line.saleLineSubtotalCents) +
-        BigInt(line.saleLineTaxCents) >
+      BigInt(line.saleLineSubtotalCents) + BigInt(line.saleLineTaxCents) >
       BigInt(line.saleLineTotalCents)
     )
       throw new Error('Sale line subtotal and tax exceed the line total');
