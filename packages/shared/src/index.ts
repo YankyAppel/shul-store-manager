@@ -189,6 +189,24 @@ export interface NeedsAttentionCharge {
   reservations: { productId: string; quantity: number; status: string }[];
 }
 
+export type PaymentStatus =
+  | 'initiated'
+  | 'approved'
+  | 'declined'
+  | 'error'
+  | 'unknown'
+  | 'reconciled'
+  | 'needs-attention'
+  | 'voided';
+
+export interface RefundIntentAttention {
+  operationId: string;
+  saleId: string;
+  amountCents: number;
+  attentionReason: string | null;
+  updatedAt: string;
+}
+
 export interface StoreApi {
   app: {
     getVersion(): Promise<string>;
@@ -208,20 +226,26 @@ export interface StoreApi {
     initiateCharge(
       input: import('./checkout.js').InitiateChargeInput,
     ): Promise<{
-      status: string;
+      status: PaymentStatus;
       processorTransactionId?: string;
       cardBrand?: string;
       cardLast4?: string;
       errorMessage?: string;
       declineReason?: string;
+      sale?: Sale;
+      receiptNumber?: number;
+      attentionReason?: string;
     }>;
     getChargeStatus(chargeReference: string): Promise<{
-      status: string;
+      status: PaymentStatus;
       processorTransactionId?: string;
       cardBrand?: string;
       cardLast4?: string;
       errorMessage?: string;
       declineReason?: string;
+      sale?: Sale;
+      receiptNumber?: number;
+      attentionReason?: string;
     }>;
     getPendingTransactions(): Promise<any[]>;
     reconcileTransactions(): Promise<void>;
@@ -232,7 +256,7 @@ export interface StoreApi {
       note?: string,
     ): Promise<{
       chargeReference: string;
-      status: string;
+      status: PaymentStatus;
       totalCents: number;
       attentionReason?: string;
     } | null>;
@@ -295,6 +319,8 @@ export interface StoreApi {
     record(input: RecordRefundInput): Promise<Refund>;
     list(saleId: string): Promise<Refund[]>;
     print(refundId: string): Promise<PrintResult>;
+    listAttention(): Promise<RefundIntentAttention[]>;
+    resolveAttention(operationId: string): Promise<Refund | null>;
   };
 
   settings: {

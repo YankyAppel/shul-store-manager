@@ -25,6 +25,7 @@ export {
   type ProcessorIdentity,
 } from './payment-service.js';
 export { KioskServer, paymentFailureStatus } from './kiosk-server.js';
+export type { RefundIntent } from './store-database.js';
 export { migrations, runMigrations } from './migrations.js';
 export { dailyReport } from './reports.js';
 export { validateRefundRequest, type RefundValidation } from './refunds.js';

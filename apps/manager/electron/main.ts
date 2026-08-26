@@ -59,6 +59,7 @@ import {
   type ReceiptData,
   type SecretStore,
   type UpdateCheckResult,
+  type CompleteSaleInput,
 } from '@shul-store/shared';
 import {
   maskApiKey,
@@ -510,8 +511,33 @@ function registerIpc(): void {
       z.string().trim().min(1).max(100).parse(value),
     ),
   );
+  const checkoutBoundarySchema = completeSaleInputSchema.extend({
+    payment: z.discriminatedUnion('method', [
+      z.object({
+        method: z.literal('cash'),
+        cashReceivedCents: z.number().int().safe().nonnegative(),
+      }),
+      z.object({
+        method: z.literal('external_terminal'),
+        approved: z.literal(true),
+        terminalReference: z.string().trim().max(100).nullable(),
+      }),
+      z.object({
+        method: z.literal('account'),
+        customerId: z.string().uuid(),
+        confirmed: z.literal(true),
+      }),
+    ]),
+  }) satisfies z.ZodType<
+    Omit<CompleteSaleInput, 'payment'> & {
+      payment: Exclude<
+        CompleteSaleInput['payment'],
+        { method: 'integrated_card' }
+      >;
+    }
+  >;
   ipcMain.handle('checkout:complete', (_event, input) =>
-    database.completeSale(completeSaleInputSchema.parse(input)),
+    database.completeSale(checkoutBoundarySchema.parse(input)),
   );
 
   // Sales
@@ -537,6 +563,14 @@ function registerIpc(): void {
   );
   ipcMain.handle('refunds:print', (_event, id) =>
     printRefund(idSchema.parse(id)),
+  );
+  ipcMain.handle('refunds:listAttention', () =>
+    database.payments.listRefundAttention(),
+  );
+  ipcMain.handle('refunds:resolveAttention', (_event, operationId) =>
+    database.payments.resolveRefundAttention(
+      z.string().uuid().parse(operationId),
+    ),
   );
 
   // Customers

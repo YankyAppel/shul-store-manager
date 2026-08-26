@@ -59,6 +59,11 @@ export interface PaymentProcessor<TConfig> {
     config: TConfig,
     storage: ProcessorStorage,
   ): Promise<RefundResult>;
+  getRefundStatus?(
+    request: Pick<RefundRequest, 'chargeReference' | 'refundReference'>,
+    config: TConfig,
+    storage: ProcessorStorage,
+  ): Promise<RefundResult>;
 }
 
 // SIMULATED PROCESSOR
@@ -153,6 +158,20 @@ export const simulatedProcessor: PaymentProcessor<SimulatedConfig> = {
       processorTransactionId: result.processorRefundId,
     });
     return result;
+  },
+  async getRefundStatus(request, config, storage) {
+    const result = await storage.get(request.refundReference);
+    if (!result)
+      return {
+        status: 'error',
+        errorMessage: 'Refund not found in simulated store',
+      };
+    if (result.processorTransactionId)
+      return {
+        status: 'refunded',
+        processorRefundId: result.processorTransactionId,
+      };
+    return { status: 'error', errorMessage: 'Refund result is unavailable' };
   },
 };
 

@@ -540,8 +540,8 @@ function applyPaymentTransaction(
         processor_transaction_id, card_brand, card_last4,
         sale_id, cart_snapshot_json, idempotency_key,
         kiosk_id, snapshot_hash, processor_config_hash, origin_channel, attention_reason,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        resolved_at, resolved_by_note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         processor_transaction_id = excluded.processor_transaction_id,
@@ -549,6 +549,8 @@ function applyPaymentTransaction(
         card_last4 = excluded.card_last4,
         sale_id = excluded.sale_id,
         cart_snapshot_json = COALESCE(excluded.cart_snapshot_json, payment_transactions.cart_snapshot_json),
+        resolved_at = excluded.resolved_at,
+        resolved_by_note = excluded.resolved_by_note,
         updated_at = excluded.updated_at`,
     )
     .run(
@@ -568,6 +570,8 @@ function applyPaymentTransaction(
       payload.processorConfigHash ? String(payload.processorConfigHash) : null,
       payload.originChannel === 'kiosk' ? 'kiosk' : 'manager',
       payload.attentionReason ? String(payload.attentionReason) : null,
+      payload.resolvedAt ? String(payload.resolvedAt) : null,
+      payload.resolvedByNote ? String(payload.resolvedByNote) : null,
       payload.createdAt,
       payload.updatedAt,
     );

@@ -258,6 +258,40 @@ describe('shared payment service', () => {
     expect(db.getSale(before.id).totalCents).toBe(1000);
   });
 
+  it('finalizes a pending charge from its frozen products after a restart window', async () => {
+    db.updateProduct(water.id, {
+      categoryId: water.categoryId,
+      name: water.name,
+      purchaseCostCents: water.purchaseCostCents,
+      sellingPriceCents: 1003,
+      taxable: false,
+      lowStockThreshold: water.lowStockThreshold,
+    });
+    const input = request(water.id, 1);
+    const pending = await payments.charge(input, MANAGER);
+    expect(pending.status).toBe('unknown');
+
+    await db.getProcessorStorage().set(input.chargeReference, {
+      status: 'approved',
+      processorTransactionId: 'txn_restart',
+      cardBrand: 'Visa',
+      cardLast4: '4242',
+    });
+    db.updateProduct(water.id, {
+      categoryId: water.categoryId,
+      name: water.name,
+      purchaseCostCents: water.purchaseCostCents,
+      sellingPriceCents: 5000,
+      taxable: false,
+      lowStockThreshold: water.lowStockThreshold,
+    });
+
+    const recovered = await payments.reconcile(input.chargeReference);
+    expect(recovered?.status).toBe('approved');
+    expect(recovered?.sale?.totalCents).toBe(1003);
+    expect(db.listSales()[0]?.totalCents).toBe(1003);
+  });
+
   it('releases reservations and creates no sale for a declined charge', async () => {
     // Simulated processor declines anything ending in .01.
     const input = {
@@ -426,7 +460,7 @@ describe('shared payment service', () => {
       'void',
       'Refunded at the terminal',
     );
-    expect(voided?.status).toBe('needs-attention');
+    expect(voided?.status).toBe('voided');
     expect(
       String(db.getPaymentTransaction(input.chargeReference)!.attention_reason),
     ).toMatch(/^voided: Refunded at the terminal/);
@@ -435,6 +469,26 @@ describe('shared payment service', () => {
     ).toEqual(['released']);
     expect(db.heldQuantityFor(water.id, null)).toBe(0);
     expect(db.listSales()).toHaveLength(0);
+
+    await expect(
+      payments.resolveNeedsAttention(input.chargeReference, 'retry'),
+    ).rejects.toMatchObject({ code: 'charge-voided' });
+    await expect(
+      payments.reconcile(input.chargeReference),
+    ).rejects.toMatchObject({ code: 'charge-voided' });
+    await db.runStartupReconciliation();
+    expect(
+      String(db.getPaymentTransaction(input.chargeReference)!.status),
+    ).toBe('voided');
+    const secondVoid = await payments.resolveNeedsAttention(
+      input.chargeReference,
+      'void',
+      'different note',
+    );
+    expect(secondVoid?.status).toBe('voided');
+    expect(
+      String(db.getPaymentTransaction(input.chargeReference)!.resolved_by_note),
+    ).toBe('Refunded at the terminal');
   });
 
   it('marks a charge needs-attention when its frozen snapshot no longer validates', async () => {
@@ -769,6 +823,13 @@ describe('shared payment service', () => {
     // approved -> reconciled is not written by any code path and is not permitted.
     expect(() =>
       db.updatePaymentTransactionStatus(reference, 'reconciled'),
+    ).toThrow('Invalid payment transaction status transition');
+
+    db.updatePaymentTransactionStatus(reference, 'needs-attention');
+    db.updatePaymentTransactionStatus(reference, 'voided');
+    expect(String(db.getPaymentTransaction(reference)!.status)).toBe('voided');
+    expect(() =>
+      db.updatePaymentTransactionStatus(reference, 'unknown'),
     ).toThrow('Invalid payment transaction status transition');
   });
 

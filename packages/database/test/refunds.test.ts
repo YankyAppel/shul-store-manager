@@ -149,6 +149,24 @@ describe('refunds', () => {
     ).toEqual({ count: 1 });
   });
 
+  it('completes the cash refund intent without refund attention', async () => {
+    store = new StoreDatabase(':memory:');
+    const { productId } = seed(store);
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'cash', cashReceivedCents: 101 },
+    });
+    const input = refundInput(sale.id, sale.items[0]!.id, 1);
+
+    const refund = await store.payments.refund(input);
+
+    expect(store.getRefundIntent(refund.operationId)).toMatchObject({
+      state: 'completed',
+    });
+    expect(store.payments.listRefundAttention()).toEqual([]);
+  });
+
   it('allocates tax across repeated partial refunds exactly', () => {
     store = new StoreDatabase(':memory:');
     store.updateSettings({ ...store.getSettings(), taxRateBps: 333 });
@@ -168,6 +186,27 @@ describe('refunds', () => {
     expect(first.taxCents + second.taxCents + third.taxCents).toBe(
       sale.taxCents,
     );
+  });
+
+  it('refunds tax-inclusive prices exactly once', () => {
+    store = new StoreDatabase(':memory:');
+    store.updateSettings({
+      ...store.getSettings(),
+      taxRateBps: 1000,
+      pricesIncludeTax: true,
+    });
+    const { productId } = seed(store, 110, true);
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'cash', cashReceivedCents: 110 },
+    });
+    const refund = store.recordRefund(
+      refundInput(sale.id, sale.items[0]!.id, 1),
+    );
+    expect(refund.subtotalCents).toBe(100);
+    expect(refund.taxCents).toBe(10);
+    expect(refund.amountCents).toBe(110);
   });
 
   it('keeps not-resalable returns out of inventory', () => {
@@ -252,6 +291,9 @@ describe('refunds', () => {
     ).rejects.toThrow(/physical terminal/);
     expect(store.listRefunds(sale.id)).toEqual(before);
     expect(store.getSale(sale.id).status).toBe('completed');
+    expect(
+      store.connection.prepare('SELECT state FROM refund_intents').all(),
+    ).toEqual([{ state: 'failed' }]);
   });
 
   it('rejects invalid integrated-card refunds before calling the processor', async () => {
@@ -303,6 +345,65 @@ describe('refunds', () => {
       );
     } finally {
       failingStore.recordRefund = originalRecordRefund;
+    }
+    expect(store.listRefundIntentsByState('attention')).toHaveLength(1);
+  });
+
+  it('records a card refund journal before sending and completes it after persistence', async () => {
+    store = new StoreDatabase(':memory:');
+    const { sale } = await integratedSale(store, 103, 101);
+    const refund = await store.payments.refund(
+      refundInput(sale.id, sale.items[0]!.id, 1),
+    );
+    expect(refund.processorRefundId).toMatch(/^sim_refund_/);
+    expect(store.getRefundIntent(refund.operationId)).toMatchObject({
+      state: 'completed',
+      amountCents: refund.amountCents,
+      allocationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(store.payments.listRefundAttention()).toEqual([]);
+  });
+
+  it('recovers a sent refund from processor status without resending it', async () => {
+    let refundCalls = 0;
+    const trackingProcessor = {
+      ...simulatedProcessor,
+      id: 'tracking-recovery',
+      refundCharge: async (
+        ...args: Parameters<NonNullable<typeof simulatedProcessor.refundCharge>>
+      ) => {
+        refundCalls += 1;
+        return simulatedProcessor.refundCharge!(...args);
+      },
+    };
+    processors.push(trackingProcessor);
+    try {
+      store = new StoreDatabase(':memory:');
+      const { sale } = await integratedSale(
+        store,
+        103,
+        101,
+        trackingProcessor.id,
+      );
+      const input = refundInput(sale.id, sale.items[0]!.id, 1);
+      const originalRecordRefund = store.recordRefund;
+      const failingStore = store as StoreDatabase & {
+        recordRefund: typeof store.recordRefund;
+      };
+      failingStore.recordRefund = () => {
+        throw new Error('simulated database write failure');
+      };
+      await expect(store.payments.refund(input)).rejects.toThrow(
+        /Card was refunded but not recorded/,
+      );
+      failingStore.recordRefund = originalRecordRefund;
+
+      const recovered = await store.payments.refund(input);
+      expect(recovered.processorRefundId).toMatch(/^sim_refund_/);
+      expect(refundCalls).toBe(1);
+      expect(store.getRefundIntent(input.operationId)?.state).toBe('completed');
+    } finally {
+      processors.splice(processors.indexOf(trackingProcessor), 1);
     }
   });
 

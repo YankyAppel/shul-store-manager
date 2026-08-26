@@ -5,6 +5,7 @@ import {
   describePrintResult,
   extractAttentionDetail,
   type NeedsAttentionCharge,
+  type RefundIntentAttention,
   type RefundableSale,
   type Sale,
 } from '@shul-store/shared';
@@ -20,6 +21,9 @@ export function SalesHistory({
     [],
   );
   const [pendingCount, setPendingCount] = useState(0);
+  const [refundAttention, setRefundAttention] = useState<
+    RefundIntentAttention[]
+  >([]);
   const [productNames, setProductNames] = useState<Record<string, string>>({});
   const [kioskNames, setKioskNames] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Sale>();
@@ -65,10 +69,12 @@ export function SalesHistory({
         saleItemId: item.id,
         productName: item.productName,
         soldQuantity: item.quantity,
+        saleLineSubtotalCents: item.lineSubtotalCents,
+        saleLineTaxCents: item.taxCents,
+        saleLineTotalCents: item.lineTotalCents,
         refundedQuantity: item.refundedQuantity,
+        subtotalAlreadyRefundedCents: item.subtotalRefundedCents,
         taxAlreadyRefundedCents: item.taxRefundedCents,
-        unitSellingPriceCents: item.unitSellingPriceCents,
-        taxCents: item.taxCents,
         quantity: refundQuantities[item.id] ?? 0,
         restocked: refundRestocked[item.id] ?? true,
       }));
@@ -140,17 +146,25 @@ export function SalesHistory({
 
   async function refreshData() {
     try {
-      const [nextSales, nextAttention, pending, products, kioskSettings] =
-        await Promise.all([
-          window.storeApi.sales.list(),
-          window.storeApi.payments.listNeedsAttention(),
-          window.storeApi.payments.getPendingTransactions(),
-          window.storeApi.products.list(true),
-          window.storeApi.kiosk.getSettings(),
-        ]);
+      const [
+        nextSales,
+        nextAttention,
+        pending,
+        nextRefundAttention,
+        products,
+        kioskSettings,
+      ] = await Promise.all([
+        window.storeApi.sales.list(),
+        window.storeApi.payments.listNeedsAttention(),
+        window.storeApi.payments.getPendingTransactions(),
+        window.storeApi.refunds.listAttention(),
+        window.storeApi.products.list(true),
+        window.storeApi.kiosk.getSettings(),
+      ]);
       setSales(nextSales);
       setNeedsAttention(nextAttention);
       setPendingCount(pending.length);
+      setRefundAttention(nextRefundAttention);
       setProductNames(
         Object.fromEntries(
           products.map((product) => [product.id, product.name]),
@@ -234,6 +248,16 @@ export function SalesHistory({
       setMessage(messageFrom(reason));
     } finally {
       setChecking(false);
+    }
+  }
+
+  async function resolveRefundAttention(operationId: string) {
+    try {
+      await window.storeApi.refunds.resolveAttention(operationId);
+      setMessage('Refund attention refreshed.');
+      await refreshData();
+    } catch (reason) {
+      setMessage(messageFrom(reason));
     }
   }
 
@@ -342,6 +366,49 @@ export function SalesHistory({
               </article>
             );
           })}
+        </section>
+      )}
+      {refundAttention.length > 0 && (
+        <section className="attention-panel refund-attention-panel">
+          <div className="attention-header">
+            <div>
+              <h2>Card refunds needing attention</h2>
+              <p>
+                A sent refund is never resent. Resolve it by checking the
+                processor result.
+              </p>
+            </div>
+          </div>
+          {refundAttention.map((intent) => (
+            <article className="attention-charge" key={intent.operationId}>
+              <div className="attention-charge-header">
+                <div>
+                  <strong>{formatMoney(intent.amountCents)}</strong>
+                  <span>
+                    Updated {new Date(intent.updatedAt).toLocaleString()}
+                  </span>
+                </div>
+                <span className="badge badge-charge">Needs attention</span>
+              </div>
+              <p>
+                refund sent, result unknown — operation {intent.operationId}
+              </p>
+              {intent.attentionReason && (
+                <small className="muted">{intent.attentionReason}</small>
+              )}
+              <div className="attention-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={() =>
+                    void resolveRefundAttention(intent.operationId)
+                  }
+                >
+                  Resolve status
+                </button>
+              </div>
+            </article>
+          ))}
         </section>
       )}
       <div className="table-wrap">

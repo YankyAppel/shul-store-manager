@@ -88,6 +88,9 @@ const api: StoreApi = {
     record: (input) => ipcRenderer.invoke('refunds:record', input),
     list: (saleId) => ipcRenderer.invoke('refunds:list', saleId),
     print: (refundId) => ipcRenderer.invoke('refunds:print', refundId),
+    listAttention: () => ipcRenderer.invoke('refunds:listAttention'),
+    resolveAttention: (operationId) =>
+      ipcRenderer.invoke('refunds:resolveAttention', operationId),
   },
   labels: {
     render: (input) => ipcRenderer.invoke('labels:render', input),

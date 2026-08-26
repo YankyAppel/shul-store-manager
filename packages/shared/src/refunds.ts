@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { roundRatio } from './checkout.js';
 
 export const refundMethodSchema = z.enum([
   'cash',
@@ -63,7 +64,10 @@ export interface RefundableSaleItem {
   refundedQuantity: number;
   remainingQuantity: number;
   unitSellingPriceCents: number;
+  lineSubtotalCents: number;
+  lineTotalCents: number;
   taxCents: number;
+  subtotalRefundedCents: number;
   taxRefundedCents: number;
 }
 
@@ -173,10 +177,12 @@ export interface RefundCalculationInput {
   saleItemId: string;
   productName: string;
   soldQuantity: number;
+  saleLineSubtotalCents: number;
+  saleLineTaxCents: number;
+  saleLineTotalCents: number;
   refundedQuantity: number;
+  subtotalAlreadyRefundedCents: number;
   taxAlreadyRefundedCents: number;
-  unitSellingPriceCents: number;
-  taxCents: number;
   quantity: number;
   restocked: boolean;
 }
@@ -199,24 +205,59 @@ export function calculateRefund(
       line.refundedQuantity,
       line.quantity,
     );
+    const nonNegativeFields = [
+      ['Sale line subtotal', line.saleLineSubtotalCents],
+      ['Sale line tax', line.saleLineTaxCents],
+      ['Sale line total', line.saleLineTotalCents],
+      ['Already-refunded subtotal', line.subtotalAlreadyRefundedCents],
+      ['Already-refunded tax', line.taxAlreadyRefundedCents],
+    ] as const;
+    for (const [label, value] of nonNegativeFields) {
+      if (!Number.isSafeInteger(value) || value < 0)
+        throw new Error(`${label} must be a non-negative safe integer`);
+    }
     if (
-      !Number.isSafeInteger(line.unitSellingPriceCents) ||
-      line.unitSellingPriceCents < 0
+      BigInt(line.saleLineSubtotalCents) + BigInt(line.saleLineTaxCents) >
+      BigInt(line.saleLineTotalCents)
     )
-      throw new Error('Unit selling price must be a non-negative safe integer');
-    if (!Number.isSafeInteger(line.taxCents) || line.taxCents < 0)
-      throw new Error('Tax must be a non-negative safe integer');
-    const lineSubtotal = safeCents(
-      BigInt(line.unitSellingPriceCents) * BigInt(line.quantity),
-      'Refund subtotal',
-    );
-    const lineTax = calculateRefundTax({
-      saleItemTaxCents: line.taxCents,
-      soldQuantity: line.soldQuantity,
-      refundedQuantity: line.refundedQuantity,
-      requestedQuantity: line.quantity,
-      taxAlreadyRefundedCents: line.taxAlreadyRefundedCents,
-    });
+      throw new Error('Sale line subtotal and tax exceed the line total');
+    if (line.refundedQuantity + line.quantity === line.soldQuantity) {
+      if (
+        line.subtotalAlreadyRefundedCents > line.saleLineSubtotalCents ||
+        line.taxAlreadyRefundedCents > line.saleLineTaxCents
+      )
+        throw new Error('Cumulative refund exceeds the sale line allocation');
+    }
+    const finalRefund =
+      line.refundedQuantity + line.quantity === line.soldQuantity;
+    const lineSubtotal = finalRefund
+      ? line.saleLineSubtotalCents - line.subtotalAlreadyRefundedCents
+      : roundRatio(
+          BigInt(line.saleLineSubtotalCents) * BigInt(line.quantity),
+          BigInt(line.soldQuantity),
+        );
+    const lineTax = finalRefund
+      ? line.saleLineTaxCents - line.taxAlreadyRefundedCents
+      : roundRatio(
+          BigInt(line.saleLineTaxCents) * BigInt(line.quantity),
+          BigInt(line.soldQuantity),
+        );
+    const cumulativeQuantity =
+      BigInt(line.refundedQuantity) + BigInt(line.quantity);
+    const cumulativeSubtotal =
+      BigInt(line.subtotalAlreadyRefundedCents) + BigInt(lineSubtotal);
+    const cumulativeTax =
+      BigInt(line.taxAlreadyRefundedCents) + BigInt(lineTax);
+    const lineAmount = BigInt(lineSubtotal) + BigInt(lineTax);
+    const cumulativeAmount = cumulativeSubtotal + cumulativeTax;
+    if (cumulativeQuantity > BigInt(line.soldQuantity))
+      throw new Error('Cumulative refund quantity exceeds the sale line');
+    if (cumulativeSubtotal > BigInt(line.saleLineSubtotalCents))
+      throw new Error('Cumulative refund subtotal exceeds the sale line');
+    if (cumulativeTax > BigInt(line.saleLineTaxCents))
+      throw new Error('Cumulative refund tax exceeds the sale line');
+    if (cumulativeAmount > BigInt(line.saleLineTotalCents))
+      throw new Error('Cumulative refund amount exceeds the sale line');
     subtotal += BigInt(lineSubtotal);
     tax += BigInt(lineTax);
     return {
@@ -225,10 +266,7 @@ export function calculateRefund(
       restocked: line.restocked,
       subtotalCents: lineSubtotal,
       taxCents: lineTax,
-      amountCents: safeCents(
-        BigInt(lineSubtotal) + BigInt(lineTax),
-        'Refund line amount',
-      ),
+      amountCents: safeCents(lineAmount, 'Refund line amount'),
     };
   });
   const subtotalCents = safeCents(subtotal, 'Refund subtotal');
