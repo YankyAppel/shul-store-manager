@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { StoreApi } from '@shul-store/shared';
+import type { StoreApi, UpdateCheckResult } from '@shul-store/shared';
 
 const api: StoreApi = {
   app: {
@@ -7,6 +7,17 @@ const api: StoreApi = {
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),
+    getState: () => ipcRenderer.invoke('updates:getState'),
+    subscribe: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        state: UpdateCheckResult,
+      ) => {
+        listener(state);
+      };
+      ipcRenderer.on('updates:state', handler);
+      return () => ipcRenderer.removeListener('updates:state', handler);
+    },
   },
   kiosk: {
     getSettings: () => ipcRenderer.invoke('kiosk:getSettings'),

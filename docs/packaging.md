@@ -52,8 +52,11 @@ identify the same build.
 
 The release workflow runs on `windows-latest` for a tag matching `v*`, and can
 also be started with `workflow_dispatch`. It installs Node 22.14.0, runs the
-full quality-gate sequence, builds both installers, uploads them as workflow
-artifacts, and attaches them to the GitHub Release for a version tag.
+full quality-gate sequence, builds both installers, and uploads them as
+workflow artifacts. For a version tag, the manager package publishes its
+installer and `latest.yml` to the public release repository with
+electron-builder, and the kiosk installer is uploaded there as a manual
+release asset.
 
 Create a release from a clean branch by updating the root `package.json`
 version, committing it, and pushing a matching tag:
@@ -79,17 +82,30 @@ variables, electron-builder signs the installer and Windows can show the
 certificate publisher instead of “unknown publisher” (subject to certificate
 trust and reputation).
 
-## Optional manager updates
+## Manager automatic updates
 
-The kiosk never includes `electron-updater` and never restarts itself during a
-sale. The manager has an explicit **Check for updates** action in Settings.
-With no Update feed URL configured, the action does nothing except show that
-updates are disabled; it does not contact a server or block startup.
+The manager's default update feed is the public GitHub Releases feed for
+`YankyAppel/shul-store-manager-releases`. The release repository must be public so an
+installed manager can read its metadata without credentials. Change the
+`repo` value in `apps/manager/update-config.cjs` when the public release
+repository name is finalized; the workflow's `RELEASE_REPOSITORY` value must
+match it. The manager checks about 30 seconds after its window is ready and
+then every six hours. When an update is found, it downloads in the background
+and installs only when the manager is closed; it never restarts during a sale
+or other open session.
 
-To prepare a future generic update feed, enter its URL in Settings and save.
-The manager checks only when the shames presses the action. It never installs
-an update automatically or without an explicit confirmation. This milestone
-reports an available version without downloading or installing it. A future
-install action should require that confirmation. A feed should publish
-electron-builder update metadata and the signed installer once signing is
-enabled.
+Automatic updates are enabled by default. Turn them off with the
+**Download updates automatically and install when the app closes** checkbox in
+Settings. The **Check for updates** button remains available as a manual
+fallback, and Settings shows the last check result and timestamp. When an
+update is downloaded, the Settings notice says which version is ready and
+that it will install on close.
+
+The optional **Update feed URL** setting overrides GitHub Releases with a
+self-hosted generic electron-updater feed. Leave it blank to use the public
+release repository. A tagged release must include the manager installer and
+its `latest.yml` metadata; the Windows release workflow publishes both with
+electron-builder using the `GH_RELEASE_TOKEN` secret, a PAT with write access
+to the public release repository. The kiosk installer is uploaded separately
+to that same release repository and has no updater because a kiosk must never
+restart itself mid-sale. Kiosk upgrades are manual.

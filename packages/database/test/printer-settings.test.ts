@@ -23,6 +23,7 @@ describe('printer settings', () => {
       receiptPaperWidthMm: 80,
       labelPrinterName: null,
       defaultLabelTemplate: 'thermal_40x30',
+      automaticUpdatesEnabled: true,
     });
   });
 
@@ -33,12 +34,14 @@ describe('printer settings', () => {
       receiptPaperWidthMm: 58,
       labelPrinterName: 'Zebra ZD410',
       defaultLabelTemplate: 'letter_avery_5160',
+      automaticUpdatesEnabled: false,
     });
     expect(updated).toMatchObject({
       receiptPrinterName: 'Star TSP143',
       receiptPaperWidthMm: 58,
       labelPrinterName: 'Zebra ZD410',
       defaultLabelTemplate: 'letter_avery_5160',
+      automaticUpdatesEnabled: false,
     });
     expect(store.getSettings()).toEqual(updated);
 

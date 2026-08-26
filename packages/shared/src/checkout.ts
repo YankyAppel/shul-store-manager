@@ -57,6 +57,7 @@ export const storeSettingsSchema = z.object({
     .optional()
     .transform((value) => (value && value.length > 0 ? value : null))
     .default(null),
+  automaticUpdatesEnabled: z.boolean().default(true),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 

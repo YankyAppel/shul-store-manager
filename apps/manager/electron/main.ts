@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
   copyFile,
   mkdir,
@@ -57,6 +58,7 @@ import {
   type PrintResult,
   type ReceiptData,
   type SecretStore,
+  type UpdateCheckResult,
 } from '@shul-store/shared';
 import {
   maskApiKey,
@@ -67,6 +69,11 @@ import {
   type SyncSecretStore,
 } from '@shul-store/sync';
 import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
+
+const require = createRequire(import.meta.url);
+const { githubUpdateRepository } = require('../update-config.cjs') as {
+  githubUpdateRepository: { owner: string; repo: string };
+};
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -84,11 +91,170 @@ let databasePath = '';
 let backupDirectory = '';
 let imageDirectory = '';
 let backupTimer: ReturnType<typeof setInterval> | null = null;
+let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
+let updateTimer: ReturnType<typeof setInterval> | null = null;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const UPDATE_INITIAL_DELAY_MS = 30 * 1000;
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
+
+let updateState: UpdateCheckResult = {
+  status: 'not_configured',
+  currentVersion: '',
+  availableVersion: null,
+  message: 'Automatic updates have not been checked yet.',
+  checkedAt: null,
+};
+
+function publishUpdateState(
+  changes: Partial<UpdateCheckResult>,
+): UpdateCheckResult {
+  updateState = {
+    ...updateState,
+    ...changes,
+    currentVersion: app.getVersion(),
+  };
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue;
+    try {
+      window.webContents.send('updates:state', updateState);
+    } catch {
+      // A window can close while an updater event is being delivered.
+    }
+  }
+  return updateState;
+}
+
+function configureAutoUpdater(
+  settings: ReturnType<StoreDatabase['getSettings']>,
+): void {
+  autoUpdater.autoDownload = settings.automaticUpdatesEnabled;
+  autoUpdater.autoInstallOnAppQuit = settings.automaticUpdatesEnabled;
+  if (settings.updateFeedUrl) {
+    autoUpdater.setFeedURL({
+      provider: 'generic',
+      url: settings.updateFeedUrl,
+    });
+  } else {
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      ...githubUpdateRepository,
+    });
+  }
+}
+
+async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
+  if (!app.isPackaged) {
+    return publishUpdateState({
+      status: 'not_configured',
+      availableVersion: null,
+      message: 'Update checks are available only in packaged builds.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+
+  publishUpdateState({
+    status: 'checking',
+    message: 'Checking for updates…',
+  });
+  try {
+    const settings = database.getSettings();
+    if (!manual && !settings.automaticUpdatesEnabled) {
+      return publishUpdateState({
+        status: 'not_configured',
+        availableVersion: null,
+        message: 'Automatic updates are disabled in Settings.',
+        checkedAt: new Date().toISOString(),
+      });
+    }
+    configureAutoUpdater(settings);
+    const result = await autoUpdater.checkForUpdates();
+    const currentVersion = app.getVersion();
+    const availableVersion = result?.updateInfo.version ?? null;
+    return publishUpdateState({
+      status:
+        availableVersion && availableVersion !== currentVersion
+          ? 'available'
+          : 'up_to_date',
+      availableVersion,
+      message:
+        availableVersion && availableVersion !== currentVersion
+          ? settings.automaticUpdatesEnabled
+            ? `Version ${availableVersion} is downloading in the background and will install when the app is closed.`
+            : `Version ${availableVersion} is available. Automatic downloads are disabled in Settings.`
+          : `You are running the latest configured version (${currentVersion}).`,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return publishUpdateState({
+      status: 'error',
+      availableVersion: null,
+      message: error instanceof Error ? error.message : 'Update check failed.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
+
+function startAutomaticUpdates(): void {
+  if (!app.isPackaged) return;
+  try {
+    configureAutoUpdater(database.getSettings());
+  } catch (error) {
+    publishUpdateState({
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Update setup failed.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+  updateInitialTimer = setTimeout(() => {
+    void checkForUpdates(false);
+  }, UPDATE_INITIAL_DELAY_MS);
+  updateTimer = setInterval(() => {
+    void checkForUpdates(false);
+  }, UPDATE_INTERVAL_MS);
+}
+
+autoUpdater.on('checking-for-update', () => {
+  publishUpdateState({
+    status: 'checking',
+    message: 'Checking for updates…',
+  });
+});
+autoUpdater.on('update-available', (info) => {
+  publishUpdateState({
+    status: 'available',
+    availableVersion: info.version,
+    message: `Version ${info.version} is available and is downloading in the background.`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('update-not-available', () => {
+  publishUpdateState({
+    status: 'up_to_date',
+    availableVersion: null,
+    message: `You are running the latest configured version (${app.getVersion()}).`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('update-downloaded', (info) => {
+  publishUpdateState({
+    status: 'downloaded',
+    availableVersion: info.version,
+    message: `Version ${info.version} is ready and will install when the app is closed.`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('error', (error) => {
+  publishUpdateState({
+    status: 'error',
+    availableVersion: null,
+    message: error instanceof Error ? error.message : 'Update check failed.',
+    checkedAt: new Date().toISOString(),
+  });
+});
 
 /**
  * Electron safeStorage-backed secret store for the Supabase API key. When the OS
@@ -195,43 +361,11 @@ import { initiateChargeInputSchema } from '@shul-store/shared';
 
 function registerIpc(): void {
   ipcMain.handle('app:getVersion', () => app.getVersion());
-  ipcMain.handle('updates:check', async () => {
-    const currentVersion = app.getVersion();
-    const feedUrl = database.getSettings().updateFeedUrl;
-    if (!feedUrl) {
-      return {
-        status: 'not_configured' as const,
-        currentVersion,
-        availableVersion: null,
-        message: 'Automatic updates are not configured.',
-      };
-    }
-    try {
-      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
-      const result = await autoUpdater.checkForUpdates();
-      const availableVersion = result?.updateInfo.version ?? null;
-      return {
-        status:
-          availableVersion && availableVersion !== currentVersion
-            ? ('available' as const)
-            : ('up_to_date' as const),
-        currentVersion,
-        availableVersion,
-        message:
-          availableVersion && availableVersion !== currentVersion
-            ? `Version ${availableVersion} is available. Download and install it from a future update prompt.`
-            : `You are running the latest configured version (${currentVersion}).`,
-      };
-    } catch (error) {
-      return {
-        status: 'error' as const,
-        currentVersion,
-        availableVersion: null,
-        message:
-          error instanceof Error ? error.message : 'Update check failed.',
-      };
-    }
-  });
+  ipcMain.handle('updates:check', () => checkForUpdates(true));
+  ipcMain.handle('updates:getState', () => ({
+    ...updateState,
+    currentVersion: app.getVersion(),
+  }));
   ipcMain.handle('kiosk:getSettings', () => {
     const settings = database.getKioskServerSettings();
     return {
@@ -356,9 +490,11 @@ function registerIpc(): void {
 
   // Settings
   ipcMain.handle('settings:get', () => database.getSettings());
-  ipcMain.handle('settings:update', (_event, input) =>
-    database.updateSettings(storeSettingsSchema.parse(input)),
-  );
+  ipcMain.handle('settings:update', (_event, input) => {
+    const updated = database.updateSettings(storeSettingsSchema.parse(input));
+    if (app.isPackaged) configureAutoUpdater(updated);
+    return updated;
+  });
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
 
   ipcMain.handle('labels:render', (_event, input) =>
@@ -1003,6 +1139,7 @@ app.whenReady().then(async () => {
     );
   });
   await createWindow();
+  startAutomaticUpdates();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) void createWindow();
   });
@@ -1033,6 +1170,8 @@ app.on('before-quit', () => {
     }
   }
   if (backupTimer) clearInterval(backupTimer);
+  if (updateInitialTimer) clearTimeout(updateInitialTimer);
+  if (updateTimer) clearInterval(updateTimer);
 });
 app.on('will-quit', () => {
   database?.close();

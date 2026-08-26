@@ -195,6 +195,8 @@ export interface StoreApi {
   };
   updates: {
     check(): Promise<UpdateCheckResult>;
+    getState(): Promise<UpdateCheckResult>;
+    subscribe(listener: (state: UpdateCheckResult) => void): () => void;
   };
   kiosk: {
     getSettings(): Promise<KioskServerSettings>;
@@ -342,10 +344,17 @@ export interface StoreApi {
 }
 
 export interface UpdateCheckResult {
-  status: 'not_configured' | 'available' | 'up_to_date' | 'error';
+  status:
+    | 'checking'
+    | 'not_configured'
+    | 'available'
+    | 'up_to_date'
+    | 'downloaded'
+    | 'error';
   currentVersion: string;
   availableVersion: string | null;
   message: string;
+  checkedAt: string | null;
 }
 
 declare global {

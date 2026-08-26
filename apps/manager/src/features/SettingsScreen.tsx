@@ -23,10 +23,13 @@ export function SettingsScreen() {
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
     void window.storeApi.app.getVersion().then(setAppVersion);
+    void window.storeApi.updates.getState().then(setUpdateResult);
+    const unsubscribe = window.storeApi.updates.subscribe(setUpdateResult);
     void window.storeApi.settings
       .listPrinters()
       .then(setPrinters)
       .catch((error) => setPrinterError(messageFrom(error)));
+    return unsubscribe;
   }, []);
 
   if (!settings) return <p>Loading…</p>;
@@ -48,6 +51,7 @@ export function SettingsScreen() {
         currentVersion: appVersion,
         availableVersion: null,
         message: messageFrom(error),
+        checkedAt: new Date().toISOString(),
       });
     } finally {
       setCheckingForUpdates(false);
@@ -326,8 +330,7 @@ export function SettingsScreen() {
         </div>
 
         <label>
-          Update feed URL{' '}
-          <em>Optional; leave blank to disable update checks</em>
+          Update feed URL <em>Optional override; blank uses GitHub Releases</em>
           <input
             type="url"
             value={settings.updateFeedUrl ?? ''}
@@ -339,6 +342,19 @@ export function SettingsScreen() {
             }
             placeholder="https://example.org/shul-store-updates"
           />
+        </label>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={settings.automaticUpdatesEnabled}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                automaticUpdatesEnabled: e.target.checked,
+              })
+            }
+          />{' '}
+          Download updates automatically and install when the app closes
         </label>
         <div className="settings-version-row">
           <span>
@@ -356,7 +372,17 @@ export function SettingsScreen() {
           <p
             className={`settings-update-result settings-update-result-${updateResult.status}`}
           >
+            {updateResult.status === 'downloaded' && (
+              <strong>Update ready: </strong>
+            )}
             {updateResult.message}
+            {updateResult.checkedAt && (
+              <small>
+                {' '}
+                (last checked{' '}
+                {new Date(updateResult.checkedAt).toLocaleString()})
+              </small>
+            )}
           </p>
         )}
 

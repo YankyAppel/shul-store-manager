@@ -147,6 +147,7 @@ function applySettings(
         default_credit_limit_cents = ?, allow_customer_credit = ?, statement_footer = ?,
         overdue_days = ?, receipt_printer_name = ?, receipt_paper_width_mm = ?,
         label_printer_name = ?, default_label_template = ?, update_feed_url = ?,
+        automatic_updates_enabled = ?,
         updated_at = ?
        WHERE singleton_id = 1`,
     )
@@ -167,6 +168,7 @@ function applySettings(
       payload.labelPrinterName,
       payload.defaultLabelTemplate,
       payload.updateFeedUrl,
+      payload.automaticUpdatesEnabled ? 1 : 0,
       now(),
     );
 }

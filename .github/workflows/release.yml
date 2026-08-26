@@ -12,6 +12,8 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      RELEASE_REPOSITORY: YankyAppel/shul-store-manager-releases
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,8 +27,9 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Package manager installer
-        run: npm run package -w @shul-store/manager
+        run: npm run package -w @shul-store/manager -- --publish always
         env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
       - name: Package kiosk installer
@@ -41,10 +44,11 @@ jobs:
             apps/manager/release/*.exe
             apps/kiosk/release/*.exe
           if-no-files-found: error
-      - name: Attach installers to GitHub Release
+      - name: Publish kiosk installer to release repository
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            apps/manager/release/*.exe
-            apps/kiosk/release/*.exe
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path apps/kiosk/release -Filter *.exe
+          gh release upload "${{ github.ref_name }}" $installer.FullName --repo "$env:RELEASE_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
