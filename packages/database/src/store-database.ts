@@ -1287,7 +1287,8 @@ export class StoreDatabase {
       | 'error'
       | 'unknown'
       | 'reconciled'
-      | 'needs-attention',
+      | 'needs-attention'
+      | 'voided',
     processorTransactionId?: string | null,
     cardBrand?: string | null,
     cardLast4?: string | null,
@@ -1391,6 +1392,42 @@ export class StoreDatabase {
           "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
         )
         .run(now(), chargeReference);
+    })();
+  }
+
+  voidPaymentTransaction(chargeReference: string, note: string): void {
+    const timestamp = now();
+    this.connection.transaction(() => {
+      const tx = this.connection
+        .prepare(
+          'SELECT id, status FROM payment_transactions WHERE charge_reference = ?',
+        )
+        .get(chargeReference) as
+        | { id: string; status: string }
+        | undefined;
+      if (!tx) throw new Error('Payment transaction not found');
+      if (tx.status === 'voided') return;
+      if (!['needs-attention', 'unknown'].includes(tx.status))
+        throw new Error('Payment transaction is not voidable');
+      this.connection
+        .prepare(
+          `UPDATE payment_transactions
+           SET status='voided', attention_reason=?, resolved_at=?, resolved_by_note=?, updated_at=?
+           WHERE id=?`,
+        )
+        .run(
+          `voided: ${note}`.slice(0, 500),
+          timestamp,
+          note.slice(0, 500),
+          timestamp,
+          tx.id,
+        );
+      this.connection
+        .prepare(
+          "UPDATE payment_inventory_reservations SET status='released', resolved_at=? WHERE charge_reference=? AND status='held'",
+        )
+        .run(timestamp, chargeReference);
+      this.enqueueEntity('payment_transaction', tx.id);
     })();
   }
 
@@ -3681,6 +3718,8 @@ export class StoreDatabase {
           ? 'kiosk'
           : 'manager',
       attentionReason: tx.attention_reason ? String(tx.attention_reason) : null,
+      resolvedAt: tx.resolved_at ? String(tx.resolved_at) : null,
+      resolvedByNote: tx.resolved_by_note ? String(tx.resolved_by_note) : null,
       createdAt: String(tx.created_at),
       updatedAt: String(tx.updated_at),
     };

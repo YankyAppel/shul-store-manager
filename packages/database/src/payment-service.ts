@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { processors } from '@shul-store/payments';
+import { processors, type RefundResult } from '@shul-store/payments';
 import {
   calculateCart,
   cartSnapshotSchema,
@@ -11,6 +11,9 @@ import {
   type RecordRefundInput,
   type SecretStore,
   type Sale,
+  type PaymentStatus as SharedPaymentStatus,
+  type RefundIntentAttention,
+  type Refund,
   type StoreSettings,
 } from '@shul-store/shared';
 import type { StoreDatabase } from './store-database.js';
@@ -52,6 +55,7 @@ export const paymentFailureCodes = [
   'charge-reference-conflict',
   'idempotency-conflict',
   'charge-not-found',
+  'charge-voided',
 ] as const;
 export type PaymentFailureCode = (typeof paymentFailureCodes)[number];
 
@@ -113,14 +117,7 @@ export interface PaymentValidation {
   totalCents: number;
 }
 
-export type PaymentStatus =
-  | 'initiated'
-  | 'approved'
-  | 'declined'
-  | 'error'
-  | 'unknown'
-  | 'reconciled'
-  | 'needs-attention';
+export type PaymentStatus = SharedPaymentStatus;
 
 export interface ChargeOutcome {
   /** `replayed` means no new authorization was attempted for this call. */
@@ -190,6 +187,8 @@ interface TransactionRow {
   processor_config_secret: string | null;
   origin_channel: string;
   attention_reason: string | null;
+  resolved_at: string | null;
+  resolved_by_note: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -226,6 +225,53 @@ export class PaymentService {
     private readonly db: StoreDatabase,
     private readonly secretStore: SecretStore = new PlaintextSecretStore(),
   ) {}
+
+  listRefundAttention(): RefundIntentAttention[] {
+    return this.db.listRefundIntentsByState('attention').map((intent) => ({
+      operationId: intent.operationId,
+      saleId: intent.saleId,
+      amountCents: intent.amountCents,
+      attentionReason: intent.attentionReason,
+      updatedAt: intent.updatedAt,
+    }));
+  }
+
+  async resolveRefundAttention(operationId: string): Promise<Refund | null> {
+    const intent = this.db.getRefundIntent(operationId);
+    if (!intent) return null;
+    let allocation: unknown;
+    try {
+      allocation = JSON.parse(intent.allocationJson);
+    } catch {
+      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+    }
+    if (allocation === null || typeof allocation !== 'object')
+      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+    const record = allocation as Record<string, unknown>;
+    if (!Array.isArray(record.items))
+      throw new Error(`Refund operation ${operationId} has invalid allocation data.`);
+    return this.refund({
+      operationId,
+      saleId: intent.saleId,
+      reason:
+        typeof record.reason === 'string' ? record.reason : 'Recovered card refund',
+      terminalReference:
+        typeof record.terminalReference === 'string'
+          ? record.terminalReference
+          : null,
+      manualExternalTerminal: false,
+      items: record.items.map((item) => {
+        if (item === null || typeof item !== 'object')
+          throw new Error('Invalid refund allocation line');
+        const line = item as Record<string, unknown>;
+        return {
+          saleItemId: String(line.saleItemId),
+          quantity: Number(line.quantity),
+          restocked: Boolean(line.restocked),
+        };
+      }),
+    });
+  }
 
   // ---------------------------------------------------------------- validation
 
@@ -428,6 +474,11 @@ export class PaymentService {
     const existing = this.db.getPaymentTransaction(parsed.chargeReference) as
       TransactionRow | undefined;
     if (existing) {
+      if (String(existing.status) === 'voided')
+        throw new PaymentError(
+          'charge-voided',
+          'This payment charge was voided and cannot be retried',
+        );
       const boundKiosk = existing.kiosk_id ? String(existing.kiosk_id) : null;
       const requestedKiosk =
         actor.channel === 'kiosk' ? (actor.kioskId ?? null) : null;
@@ -570,6 +621,11 @@ export class PaymentService {
     const tx = this.db.getPaymentTransaction(chargeReference) as
       TransactionRow | undefined;
     if (!tx) return null;
+    if (String(tx.status) === 'voided')
+      throw new PaymentError(
+        'charge-voided',
+        'This payment charge was voided and cannot be finalized',
+      );
 
     // Exact-once: an already linked sale is the answer, no matter how often this runs.
     if (tx.sale_id) return this.db.getSale(String(tx.sale_id));
@@ -669,6 +725,11 @@ export class PaymentService {
     const tx = this.db.getPaymentTransaction(chargeReference) as
       TransactionRow | undefined;
     if (!tx) return null;
+    if (String(tx.status) === 'voided')
+      throw new PaymentError(
+        'charge-voided',
+        'This payment charge was voided and cannot be reconciled',
+      );
     if (tx.sale_id) return this.describe(tx, 'replayed');
     if (['declined', 'error'].includes(String(tx.status)))
       return this.describe(tx, 'replayed');
@@ -789,12 +850,134 @@ export class PaymentService {
     const replay = this.db.getRefundByOperationId(value.operationId);
     if (replay) return replay;
     const context = this.db.refundableSale(value.saleId);
-    if (value.manualExternalTerminal || context.method !== 'integrated_card') {
-      return this.db.recordRefund(value);
-    }
     const validation = validateRefundRequest(context, value, null, false);
+    const allocation = {
+      reason: value.reason,
+      terminalReference: value.terminalReference ?? null,
+      items: validation.calculation.lines,
+    };
+    const allocationJson = canonicalJson(allocation);
+    const allocationHash = sha256(allocationJson);
+    let intent = this.db.getRefundIntent(value.operationId);
+    const method = validation.method;
+    if (!intent) {
+      try {
+        this.db.connection.transaction(() => {
+          const latestIntent = this.db.getRefundIntent(value.operationId);
+          if (latestIntent) return;
+          const latestContext = this.db.refundableSale(value.saleId);
+          const latestValidation = validateRefundRequest(
+            latestContext,
+            value,
+            null,
+            false,
+          );
+          const latestAllocation = {
+            reason: value.reason,
+            terminalReference: value.terminalReference ?? null,
+            items: latestValidation.calculation.lines,
+          };
+          const latestAllocationJson = canonicalJson(latestAllocation);
+          this.db.createRefundIntent({
+            operationId: value.operationId,
+            saleId: value.saleId,
+            method: latestValidation.method,
+            chargeReference:
+              latestValidation.method === 'integrated_card'
+                ? latestContext.chargeReference
+                : null,
+            allocationJson: latestAllocationJson,
+            allocationHash: sha256(latestAllocationJson),
+            amountCents: latestValidation.calculation.amountCents,
+          });
+        })();
+        intent = this.db.getRefundIntent(value.operationId);
+      } catch (error) {
+        intent = this.db.getRefundIntent(value.operationId);
+        if (!intent) throw error;
+      }
+    }
+    if (!intent) throw new Error('Refund intent could not be recorded.');
+    if (intent.state === 'completed') {
+      const completed = this.db.getRefundByOperationId(value.operationId);
+      if (completed) return completed;
+      throw new Error('Completed refund intent has no refund record.');
+    }
+    if (intent.state === 'failed')
+      throw new Error(
+        `Refund operation ${value.operationId} previously failed and cannot be reused.`,
+      );
+
+    if (method !== 'integrated_card') {
+      if (intent.state === 'recorded') {
+        try {
+          const refund = this.db.recordRefund(value);
+          return refund;
+        } catch (error) {
+          this.db.updateRefundIntent(
+            value.operationId,
+            'failed',
+            null,
+            errorMessage(error),
+          );
+          throw error;
+        }
+      }
+      const existingRefund = this.db.getRefundByOperationId(value.operationId);
+      if (existingRefund) return existingRefund;
+      throw new Error(`Refund operation ${value.operationId} is incomplete.`);
+    }
+
+    const resumingSentRefund = intent.state === 'sent' || intent.state === 'attention';
+    let refundInput = value;
+    if (resumingSentRefund) {
+      let parsedAllocation: unknown;
+      try {
+        parsedAllocation = JSON.parse(intent.allocationJson);
+      } catch {
+        throw new Error(`Refund operation ${value.operationId} has invalid allocation data.`);
+      }
+      if (
+        canonicalJson(parsedAllocation) !== intent.allocationJson ||
+        sha256(intent.allocationJson) !== intent.allocationHash ||
+        parsedAllocation === null ||
+        typeof parsedAllocation !== 'object'
+      )
+        throw new Error(`Refund operation ${value.operationId} allocation integrity check failed.`);
+      const allocationRecord = parsedAllocation as {
+        reason?: unknown;
+        terminalReference?: unknown;
+        items?: unknown;
+      };
+      if (!Array.isArray(allocationRecord.items))
+        throw new Error(`Refund operation ${value.operationId} has invalid allocation data.`);
+      refundInput = recordRefundInputSchema.parse({
+        operationId: value.operationId,
+        saleId: intent.saleId,
+        reason:
+          typeof allocationRecord.reason === 'string'
+            ? allocationRecord.reason
+            : 'Recovered card refund',
+        terminalReference:
+          typeof allocationRecord.terminalReference === 'string'
+            ? allocationRecord.terminalReference
+            : null,
+        items: allocationRecord.items.map((item) => {
+          if (item === null || typeof item !== 'object')
+            throw new Error('Invalid refund allocation line');
+          const line = item as Record<string, unknown>;
+          return {
+            saleItemId: String(line.saleItemId),
+            quantity: Number(line.quantity),
+            restocked: Boolean(line.restocked),
+          };
+        }),
+      });
+    }
     const tx = parseRefundTransaction(
-      this.db.getPaymentTransaction(context.chargeReference ?? ''),
+      this.db.getPaymentTransaction(
+        intent.chargeReference ?? context.chargeReference ?? '',
+      ),
     );
     if (!tx)
       throw new Error(
@@ -851,26 +1034,118 @@ export class PaymentService {
       );
     }
     if (!processor.refundCharge)
-      throw new Error(
-        'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
+      {
+        this.db.updateRefundIntent(
+          value.operationId,
+          'failed',
+          null,
+          'Processor does not support refunds',
+        );
+        throw new Error(
+          'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
+        );
+      }
+    if (intent.state === 'recorded')
+      intent = this.db.updateRefundIntent(value.operationId, 'sent');
+    if (resumingSentRefund) {
+      if (!processor.getRefundStatus) {
+        this.db.updateRefundIntent(
+          value.operationId,
+          'attention',
+          null,
+          `Refund sent, result unknown — operation ${value.operationId}`,
+        );
+        throw new Error(
+          `Refund sent, result unknown — operation ${value.operationId}`,
+        );
+      }
+      let status: RefundResult;
+      try {
+        status = await processor.getRefundStatus(
+          {
+            chargeReference: intent.chargeReference ?? context.chargeReference!,
+            refundReference: value.operationId,
+          },
+          config,
+          this.db.getProcessorStorage(),
+        );
+      } catch (error) {
+        const reason = `Refund sent, result unknown — operation ${value.operationId}: ${errorMessage(error)}`;
+        this.db.updateRefundIntent(value.operationId, 'attention', null, reason);
+        throw new Error(
+          `Refund sent, result unknown — operation ${value.operationId}`,
+        );
+      }
+      if (status.status === 'refunded') {
+        const existingRefund = this.db.getRefundByOperationId(
+          value.operationId,
+        );
+        if (existingRefund) {
+          return existingRefund;
+        }
+        try {
+          const recovered = this.db.recordRefund(
+            refundInput,
+            status.processorRefundId ?? null,
+          );
+          return recovered;
+        } catch (error) {
+          this.db.updateRefundIntent(
+            value.operationId,
+            'attention',
+            status.processorRefundId ?? null,
+            `Refund processor result recovered but local record failed: ${errorMessage(error)}`,
+          );
+          throw error;
+        }
+      }
+      this.db.updateRefundIntent(
+        value.operationId,
+        'attention',
+        null,
+        `Refund sent, result unknown — operation ${value.operationId}: ${status.errorMessage ?? 'processor status unavailable'}`,
       );
+      throw new Error(
+        `Refund sent, result unknown — operation ${value.operationId}`,
+      );
+    }
     const result = await processor.refundCharge(
       {
-        chargeReference: context.chargeReference!,
+        chargeReference: intent.chargeReference ?? context.chargeReference!,
         refundReference: value.operationId,
-        amountCents: validation.calculation.amountCents,
+        amountCents: intent.amountCents,
       },
       config,
       this.db.getProcessorStorage(),
     );
-    if (result.status !== 'refunded')
+    if (result.status !== 'refunded') {
+      this.db.updateRefundIntent(
+        value.operationId,
+        'attention',
+        null,
+        result.errorMessage ?? 'Processor refund failed',
+      );
+      this.db.updateRefundIntent(
+        value.operationId,
+        'failed',
+        null,
+        result.errorMessage ?? 'Processor refund failed',
+      );
       throw new Error(
         `${result.errorMessage ?? 'Processor refund failed.'} Refund on the physical terminal and record an external-terminal refund.`,
       );
+    }
     const processorRefundId = result.processorRefundId ?? null;
     try {
-      return this.db.recordRefund(value, processorRefundId);
+      const refund = this.db.recordRefund(refundInput, processorRefundId);
+      return refund;
     } catch (error) {
+      this.db.updateRefundIntent(
+        value.operationId,
+        'attention',
+        processorRefundId,
+        `Card was refunded but not recorded: ${errorMessage(error)}`,
+      );
       throw new Error(
         `Card was refunded but not recorded. Processor refund ID: ${processorRefundId ?? 'unknown'}; refunded amount: ${validation.calculation.amountCents} cents. ${errorMessage(error)}`,
       );
@@ -934,18 +1209,31 @@ export class PaymentService {
         'charge-not-found',
         'Payment transaction not found',
       );
-    if (String(tx.status) !== 'needs-attention')
+    if (action === 'void' && String(tx.status) === 'voided')
+      return this.describe(tx, 'replayed');
+    if (
+      action === 'void' &&
+      !['needs-attention', 'unknown'].includes(String(tx.status))
+    )
+      throw new PaymentError(
+        'charge-not-found',
+        'Payment transaction is not voidable',
+      );
+    if (action === 'retry' && String(tx.status) === 'voided')
+      throw new PaymentError(
+        'charge-voided',
+        'This payment charge was voided and cannot be retried',
+      );
+    if (action === 'retry' && String(tx.status) !== 'needs-attention')
       throw new PaymentError(
         'charge-not-found',
         'Payment transaction is not awaiting attention',
       );
     if (action === 'void') {
-      this.db.markPaymentNeedsAttention(
+      this.db.voidPaymentTransaction(
         chargeReference,
-        `voided: ${note ?? 'resolved by operator'}`.slice(0, 500),
-        false,
+        note ?? 'resolved by operator',
       );
-      this.db.releaseReservations(chargeReference);
       return this.describe(this.require(chargeReference), 'replayed');
     }
     return this.reconcile(chargeReference);

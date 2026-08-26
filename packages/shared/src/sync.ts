@@ -280,6 +280,7 @@ export const paymentTransactionPayloadSchema = z.object({
     'unknown',
     'reconciled',
     'needs-attention',
+    'voided',
   ]),
   processorTransactionId: z.string().nullable(),
   cardBrand: z.string().nullable(),
@@ -306,6 +307,8 @@ export const paymentTransactionPayloadSchema = z.object({
   kioskId: uuidString.nullable().optional(),
   originChannel: z.enum(['manager', 'kiosk']),
   attentionReason: z.string().nullable(),
+  resolvedAt: isoString.nullable(),
+  resolvedByNote: z.string().nullable(),
   createdAt: isoString,
   updatedAt: isoString,
 });
