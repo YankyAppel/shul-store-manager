@@ -17,6 +17,18 @@ export interface ChargeRequest {
   amountCents: number;
 }
 
+export interface RefundRequest {
+  chargeReference: string;
+  refundReference: string;
+  amountCents: number;
+}
+
+export interface RefundResult {
+  status: 'refunded' | 'declined' | 'error';
+  processorRefundId?: string;
+  errorMessage?: string;
+}
+
 export interface ProcessorStorage {
   get(key: string): Promise<ChargeResult | undefined>;
   set(key: string, value: ChargeResult): Promise<void>;
@@ -42,6 +54,11 @@ export interface PaymentProcessor<TConfig> {
     config: TConfig,
     storage: ProcessorStorage,
   ): Promise<void>;
+  refundCharge?(
+    request: RefundRequest,
+    config: TConfig,
+    storage: ProcessorStorage,
+  ): Promise<RefundResult>;
 }
 
 // SIMULATED PROCESSOR
@@ -114,6 +131,28 @@ export const simulatedProcessor: PaymentProcessor<SimulatedConfig> = {
       );
     }
     await storage.delete(chargeReference);
+  },
+  async refundCharge(request, config, storage) {
+    const amountStr = (request.amountCents / 100).toFixed(2);
+    if (amountStr.endsWith('.01'))
+      return { status: 'declined', errorMessage: 'Simulated decline (.01)' };
+    if (amountStr.endsWith('.02'))
+      return { status: 'error', errorMessage: 'Simulated error (.02)' };
+    const charge = await storage.get(request.chargeReference);
+    if (!charge || charge.status !== 'approved')
+      return {
+        status: 'error',
+        errorMessage: 'Charge was not approved in simulated store',
+      };
+    const result = {
+      status: 'refunded' as const,
+      processorRefundId: `sim_refund_${randomUUID()}`,
+    };
+    await storage.set(request.refundReference, {
+      status: 'approved',
+      processorTransactionId: result.processorRefundId,
+    });
+    return result;
   },
 };
 

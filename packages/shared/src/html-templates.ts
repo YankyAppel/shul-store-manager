@@ -2,6 +2,7 @@ import type {
   AccountPaymentReceiptData,
   CustomerStatementData,
   DailyReport,
+  Refund,
   ReceiptData,
 } from './index.js';
 
@@ -325,4 +326,31 @@ export function dailyReportHtml(data: {
   </div>
 </body>
 </html>`;
+}
+
+export function refundReceiptHtml(data: {
+  refund: Refund;
+  storeName: string;
+}): string {
+  const refund = data.refund;
+  const lines = refund.items
+    .map(
+      (item) =>
+        `<tr><td>${escapeHtml(item.productName)} × ${item.quantity}</td><td>${item.restocked ? 'Back to stock' : 'Not resalable'}</td><td>${formatCents(item.amountCents)}</td></tr>`,
+    )
+    .join('');
+  const reference =
+    refund.processorRefundId ??
+    refund.terminalReference ??
+    refund.chargeReference ??
+    '—';
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Refund #${refund.receiptNumber}</title>
+<style>${receiptBodyCss({ receiptPaperWidthMm: 80 })}h1{text-align:center;margin:0 0 6px;font-size:18px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{padding:5px 2px;border-bottom:1px solid #eee;text-align:left}th:last-child,td:last-child{text-align:right}.total{font-weight:700;border-top:2px solid #333}</style></head>
+<body><h1>${escapeHtml(data.storeName)}</h1>
+<div style="text-align:center">Refund #${refund.receiptNumber}<br>Original sale: ${escapeHtml(refund.saleId)}<br>${escapeHtml(refund.createdAt)}</div>
+<table><thead><tr><th>Returned item</th><th>Restock</th><th>Amount</th></tr></thead><tbody>${lines}</tbody>
+<tfoot><tr><td colspan="2">Subtotal</td><td>${formatCents(refund.subtotalCents)}</td></tr><tr><td colspan="2">Tax</td><td>${formatCents(refund.taxCents)}</td></tr><tr class="total"><td colspan="2">Total</td><td>${formatCents(refund.amountCents)}</td></tr></tfoot></table>
+<div><b>Method:</b> ${escapeHtml(refund.method)}<br><b>Reference:</b> ${escapeHtml(reference)}<br><b>Reason:</b> ${escapeHtml(refund.reason)}</div>
+</body></html>`;
 }

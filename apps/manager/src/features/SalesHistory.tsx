@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
+  calculateRefund,
   describeAttentionReason,
   describePrintResult,
   extractAttentionDetail,
   type NeedsAttentionCharge,
+  type RefundableSale,
   type Sale,
 } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../utils/formatters';
@@ -25,6 +27,116 @@ export function SalesHistory({
   const [busyReference, setBusyReference] = useState('');
   const [checking, setChecking] = useState(false);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [refundable, setRefundable] = useState<RefundableSale>();
+  const [refundQuantities, setRefundQuantities] = useState<
+    Record<string, number>
+  >({});
+  const [refundRestocked, setRefundRestocked] = useState<
+    Record<string, boolean>
+  >({});
+  const [refundReason, setRefundReason] = useState('');
+  const [refundTerminalReference, setRefundTerminalReference] = useState('');
+  const [refundFallback, setRefundFallback] = useState(false);
+  const [refundError, setRefundError] = useState('');
+  const [refundBusy, setRefundBusy] = useState(false);
+
+  async function loadRefundable(sale: Sale) {
+    try {
+      const value = await window.storeApi.refunds.refundable(sale.id);
+      setRefundable(value);
+      setRefundQuantities({});
+      setRefundRestocked(
+        Object.fromEntries(value.items.map((item) => [item.id, true])),
+      );
+      setRefundReason('');
+      setRefundTerminalReference('');
+      setRefundFallback(false);
+      setRefundError('');
+    } catch (reason) {
+      setRefundError(messageFrom(reason));
+    }
+  }
+
+  function refundCalculation() {
+    if (!refundable) return null;
+    const lines = refundable.items
+      .filter((item) => (refundQuantities[item.id] ?? 0) > 0)
+      .map((item) => ({
+        saleItemId: item.id,
+        productName: item.productName,
+        soldQuantity: item.quantity,
+        refundedQuantity: item.refundedQuantity,
+        taxAlreadyRefundedCents: item.taxRefundedCents,
+        unitSellingPriceCents: item.unitSellingPriceCents,
+        taxCents: item.taxCents,
+        quantity: refundQuantities[item.id] ?? 0,
+        restocked: refundRestocked[item.id] ?? true,
+      }));
+    return lines.length > 0 ? calculateRefund(lines) : null;
+  }
+
+  async function recordRefund() {
+    if (!refundable) return;
+    const calculation = refundCalculation();
+    if (!calculation) {
+      setRefundError('Select at least one item to return.');
+      return;
+    }
+    if (!refundReason.trim()) {
+      setRefundError('A reason is required for every refund.');
+      return;
+    }
+    const needsTerminal =
+      refundable.method === 'external_terminal' ||
+      (refundable.method === 'integrated_card' && refundFallback);
+    if (needsTerminal && !refundTerminalReference.trim()) {
+      setRefundError('Enter the physical terminal reference.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Refund ${formatMoney(calculation.amountCents)} via ${
+          refundFallback ? 'external terminal' : refundable.method
+        }?`,
+      )
+    )
+      return;
+    setRefundBusy(true);
+    setRefundError('');
+    try {
+      await window.storeApi.refunds.record({
+        operationId: crypto.randomUUID(),
+        saleId: refundable.sale.id,
+        items: refundable.items
+          .filter((item) => (refundQuantities[item.id] ?? 0) > 0)
+          .map((item) => ({
+            saleItemId: item.id,
+            quantity: refundQuantities[item.id] ?? 0,
+            restocked: refundRestocked[item.id] ?? true,
+          })),
+        reason: refundReason.trim(),
+        terminalReference: refundTerminalReference.trim() || null,
+        manualExternalTerminal: refundFallback,
+      });
+      setMessage('Refund recorded successfully.');
+      await refreshData();
+      const updated = await window.storeApi.sales.get(refundable.sale.id);
+      setSelected(updated);
+      await loadRefundable(updated);
+    } catch (reason) {
+      const detail = messageFrom(reason);
+      setRefundError(detail);
+      setMessage(detail);
+      if (
+        refundable.method === 'integrated_card' &&
+        !refundFallback &&
+        /physical terminal|refund failed|processor/i.test(detail)
+      )
+        setRefundFallback(true);
+    } finally {
+      setRefundBusy(false);
+    }
+  }
 
   async function refreshData() {
     try {
@@ -65,6 +177,19 @@ export function SalesHistory({
         result.success
           ? describePrintResult(result, 'Receipt')
           : `Printing failed; the sale is unchanged. ${result.error ?? ''}`,
+      );
+    } catch (reason) {
+      setMessage(messageFrom(reason));
+    }
+  }
+
+  async function printRefund(refundId: string) {
+    try {
+      const result = await window.storeApi.refunds.print(refundId);
+      setMessage(
+        result.success
+          ? describePrintResult(result, 'Refund receipt')
+          : `Printing failed; the refund is unchanged. ${result.error ?? ''}`,
       );
     } catch (reason) {
       setMessage(messageFrom(reason));
@@ -275,7 +400,13 @@ export function SalesHistory({
                     <span className="badge badge-active">{sale.status}</span>
                   </td>
                   <td>
-                    <button type="button" onClick={() => setSelected(sale)}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelected(sale);
+                        void loadRefundable(sale);
+                      }}
+                    >
                       Details
                     </button>{' '}
                     <button type="button" onClick={() => void print(sale)}>
@@ -295,21 +426,14 @@ export function SalesHistory({
             ×
           </button>
           <h3>Sale #{selected.receiptNumber}</h3>
-          <p style={{ fontSize: '12px', color: '#666' }}>
+          <p className="sale-detail-date">
             {new Date(
               selected.completedAt ?? selected.createdAt,
             ).toLocaleString()}
           </p>
 
           {selected.payment.method === 'account' && (
-            <div
-              style={{
-                background: '#f8f9fa',
-                padding: '10px',
-                borderRadius: '6px',
-                margin: '10px 0',
-              }}
-            >
+            <div className="sale-customer-card">
               <div>
                 <strong>Customer:</strong> {selected.payment.customerName}
               </div>
@@ -319,11 +443,7 @@ export function SalesHistory({
               {selected.payment.customerId && onViewCustomer && (
                 <button
                   type="button"
-                  style={{
-                    marginTop: '6px',
-                    fontSize: '12px',
-                    padding: '4px 8px',
-                  }}
+                  className="sale-customer-link"
                   onClick={() => onViewCustomer(selected.payment.customerId!)}
                 >
                   View customer account →
@@ -332,9 +452,9 @@ export function SalesHistory({
             </div>
           )}
 
-          <div style={{ margin: '10px 0' }}>
+          <div className="sale-detail-lines">
             {selected.items.map((item) => (
-              <p key={item.id} style={{ margin: '4px 0' }}>
+              <p key={item.id} className="sale-detail-line">
                 <span>
                   {item.productName} × {item.quantity}
                 </span>
@@ -352,19 +472,12 @@ export function SalesHistory({
             <span>Tax</span>
             <b>{formatMoney(selected.taxCents)}</b>
           </p>
-          <p style={{ fontSize: '16px', fontWeight: 'bold' }}>
+          <p className="sale-detail-total">
             <span>Total</span>
             <b>{formatMoney(selected.totalCents)}</b>
           </p>
 
-          <div
-            style={{
-              borderTop: '1px dashed #ccc',
-              paddingTop: '8px',
-              marginTop: '8px',
-              fontSize: '13px',
-            }}
-          >
+          <div className="sale-payment-summary">
             {selected.payment.method === 'cash' ? (
               <div>
                 Cash:{' '}
@@ -401,17 +514,138 @@ export function SalesHistory({
             )}
           </div>
 
-          <div style={{ marginTop: '14px', display: 'flex', gap: '8px' }}>
+          {refundable && refundable.sale.id === selected.id && (
+            <section className="refund-panel">
+              <h4>Returns and refunds</h4>
+              <p>
+                Refund method:{' '}
+                <strong>
+                  {refundFallback ? 'external terminal' : refundable.method}
+                </strong>
+                {refundable.chargeReference && (
+                  <> · Original charge: {refundable.chargeReference}</>
+                )}
+              </p>
+              {refundError && <div className="alert">{refundError}</div>}
+              {refundable.items.map((item) => (
+                <div className="refund-line" key={item.id}>
+                  <div className="refund-line-description">
+                    <strong>{item.productName}</strong>
+                    <small>
+                      Sold {item.quantity} · Refunded {item.refundedQuantity} ·
+                      Remaining {item.remainingQuantity}
+                    </small>
+                  </div>
+                  <label>
+                    Return quantity
+                    <input
+                      type="number"
+                      min={0}
+                      max={item.remainingQuantity}
+                      value={refundQuantities[item.id] ?? 0}
+                      onChange={(event) =>
+                        setRefundQuantities({
+                          ...refundQuantities,
+                          [item.id]: Math.min(
+                            item.remainingQuantity,
+                            Math.max(0, Number(event.target.value) || 0),
+                          ),
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="refund-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={refundRestocked[item.id] ?? true}
+                      onChange={(event) =>
+                        setRefundRestocked({
+                          ...refundRestocked,
+                          [item.id]: event.target.checked,
+                        })
+                      }
+                    />
+                    Back to stock
+                  </label>
+                </div>
+              ))}
+              <label>
+                Reason
+                <textarea
+                  rows={2}
+                  value={refundReason}
+                  onChange={(event) => setRefundReason(event.target.value)}
+                  maxLength={1000}
+                />
+              </label>
+              {(refundable.method === 'external_terminal' ||
+                refundFallback) && (
+                <label>
+                  Physical terminal reference
+                  <input
+                    value={refundTerminalReference}
+                    onChange={(event) =>
+                      setRefundTerminalReference(event.target.value)
+                    }
+                    maxLength={100}
+                  />
+                </label>
+              )}
+              {refundFallback && (
+                <p className="warning">
+                  The processor refund did not complete. Confirm the physical
+                  terminal refund before recording it here.
+                </p>
+              )}
+              <div className="refund-total">
+                Refund total:{' '}
+                <strong>
+                  {formatMoney(refundCalculation()?.amountCents ?? 0)}
+                </strong>
+              </div>
+              <button
+                type="button"
+                className="primary"
+                disabled={refundBusy}
+                onClick={() => void recordRefund()}
+              >
+                {refundBusy ? 'Recording…' : 'Record refund'}
+              </button>
+              {refundable.refunds.length > 0 && (
+                <div className="refund-history">
+                  <h5>Previous refunds</h5>
+                  {refundable.refunds.map((refund) => (
+                    <div className="refund-history-row" key={refund.id}>
+                      <span>
+                        Refund #{refund.receiptNumber} ·{' '}
+                        {new Date(refund.createdAt).toLocaleString()}
+                      </span>
+                      <span className="refund-history-amount">
+                        <strong>{formatMoney(refund.amountCents)}</strong>
+                        <button
+                          type="button"
+                          onClick={() => void printRefund(refund.id)}
+                        >
+                          Print
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          <div className="sale-detail-actions">
             <button
               type="button"
-              className="primary"
-              style={{ flex: 1 }}
+              className="primary sale-detail-print"
               onClick={() => void print(selected)}
             >
               Reprint receipt
             </button>
           </div>
-          <small style={{ display: 'block', marginTop: '10px', color: '#777' }}>
+          <small className="sale-detail-note">
             Completed records are immutable.
           </small>
         </div>

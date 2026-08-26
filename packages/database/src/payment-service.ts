@@ -7,11 +7,14 @@ import {
   PlaintextSecretStore,
   type CartSnapshot,
   type CartSnapshotLine,
+  recordRefundInputSchema,
+  type RecordRefundInput,
   type SecretStore,
   type Sale,
   type StoreSettings,
 } from '@shul-store/shared';
 import type { StoreDatabase } from './store-database.js';
+import { validateRefundRequest } from './refunds.js';
 
 /**
  * The single Manager/Kiosk payment service.
@@ -189,6 +192,33 @@ interface TransactionRow {
   attention_reason: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface RefundTransactionRow {
+  processor_id: string;
+  processor_config_secret: string | null;
+  processor_config_hash: string | null;
+}
+
+function parseRefundTransaction(value: unknown): RefundTransactionRow | null {
+  if (value === null || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.processor_id !== 'string') return null;
+  if (
+    row.processor_config_secret !== null &&
+    typeof row.processor_config_secret !== 'string'
+  )
+    return null;
+  if (
+    row.processor_config_hash !== null &&
+    typeof row.processor_config_hash !== 'string'
+  )
+    return null;
+  return {
+    processor_id: row.processor_id,
+    processor_config_secret: row.processor_config_secret,
+    processor_config_hash: row.processor_config_hash,
+  };
 }
 
 export class PaymentService {
@@ -750,6 +780,101 @@ export class PaymentService {
         : outcome;
     }
     return this.describe(this.require(chargeReference), 'replayed');
+  }
+
+  async refund(
+    input: RecordRefundInput,
+  ): Promise<import('@shul-store/shared').Refund> {
+    const value = recordRefundInputSchema.parse(input);
+    const replay = this.db.getRefundByOperationId(value.operationId);
+    if (replay) return replay;
+    const context = this.db.refundableSale(value.saleId);
+    if (value.manualExternalTerminal || context.method !== 'integrated_card') {
+      return this.db.recordRefund(value);
+    }
+    const validation = validateRefundRequest(context, value, null, false);
+    const tx = parseRefundTransaction(
+      this.db.getPaymentTransaction(context.chargeReference ?? ''),
+    );
+    if (!tx)
+      throw new Error(
+        'Integrated card charge not found. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    const settings = this.db.getSettings();
+    if (String(tx.processor_id) !== settings.cardProcessorId)
+      throw new Error(
+        `frozen-config-unavailable: charge used ${tx.processor_id}, but the store is configured for ${settings.cardProcessorId ?? 'no processor'}. Refund on the physical terminal and record an external-terminal refund.`,
+      );
+    const processor = processors.find(
+      (candidate) => candidate.id === tx.processor_id,
+    );
+    if (!processor)
+      throw new Error(
+        'frozen-config-unavailable: the original card processor is unavailable. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    let config: unknown;
+    try {
+      if (tx.processor_config_secret !== null) {
+        try {
+          config = processor.configSchema.parse(
+            JSON.parse(this.secretStore.decrypt(tx.processor_config_secret)),
+          );
+        } catch {
+          const current = settings.cardProcessorConfigJson
+            ? processor.configSchema.parse(
+                JSON.parse(settings.cardProcessorConfigJson),
+              )
+            : processor.configSchema.parse({});
+          if (
+            !tx.processor_config_hash ||
+            tx.processor_config_hash !== sha256(canonicalJson(current))
+          )
+            throw new Error('frozen-config-unavailable');
+          config = current;
+        }
+      } else {
+        const current = settings.cardProcessorConfigJson
+          ? processor.configSchema.parse(
+              JSON.parse(settings.cardProcessorConfigJson),
+            )
+          : processor.configSchema.parse({});
+        if (
+          tx.processor_config_hash &&
+          tx.processor_config_hash !== sha256(canonicalJson(current))
+        )
+          throw new Error('frozen-config-unavailable');
+        config = current;
+      }
+    } catch {
+      throw new Error(
+        'frozen-config-unavailable: the original processor configuration could not be recovered. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    }
+    if (!processor.refundCharge)
+      throw new Error(
+        'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    const result = await processor.refundCharge(
+      {
+        chargeReference: context.chargeReference!,
+        refundReference: value.operationId,
+        amountCents: validation.calculation.amountCents,
+      },
+      config,
+      this.db.getProcessorStorage(),
+    );
+    if (result.status !== 'refunded')
+      throw new Error(
+        `${result.errorMessage ?? 'Processor refund failed.'} Refund on the physical terminal and record an external-terminal refund.`,
+      );
+    const processorRefundId = result.processorRefundId ?? null;
+    try {
+      return this.db.recordRefund(value, processorRefundId);
+    } catch (error) {
+      throw new Error(
+        `Card was refunded but not recorded. Processor refund ID: ${processorRefundId ?? 'unknown'}; refunded amount: ${validation.calculation.amountCents} cents. ${errorMessage(error)}`,
+      );
+    }
   }
 
   /** Reconciles every unresolved transaction except those awaiting operator attention. */

@@ -7,13 +7,16 @@ payments use `created_at`; receivables use `occurred_at`; card transactions
 use `created_at`; and inventory movements use `occurred_at`.
 
 Sales totals include completed and refunded sales. Refunded sales are shown
-separately and are not netted because recording the refund itself is separate
-work that has not yet been implemented.
+separately and are not netted because a refund is its own immutable financial
+record.
+
+Refunds are reported separately by method using the refund's `created_at`
+timestamp. Cash refunds reduce the expected cash figure.
 
 Expected cash is derived as:
 
 ```text
-opening float + cash sales + cash account payments
+opening float + cash sales + cash account payments - cash refunds
 ```
 
 Cash received and change given are shown for reconciliation, but change given

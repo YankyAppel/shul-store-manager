@@ -4,6 +4,7 @@ import type {
   DailyChannelTotal,
   DailyInventoryMovementTotal,
   DailyReport,
+  DailyRefundTotal,
   DailyReportInput,
   DailyTenderTotal,
   DailyTopItem,
@@ -25,6 +26,12 @@ interface RefundedRow {
 interface VoidedRow {
   voided_count: number;
   voided_total_cents: number;
+}
+
+interface RefundRow {
+  method: string;
+  refund_count: number;
+  amount_cents: number;
 }
 
 interface TenderRow {
@@ -143,6 +150,17 @@ export function dailyReport(
            AND created_at >= ? AND created_at < ?;`,
       )
       .get(input.from, input.to),
+  );
+  const refunds = allRows<RefundRow>(
+    connection,
+    `SELECT method,
+            COUNT(*) AS refund_count,
+            COALESCE(SUM(amount_cents), 0) AS amount_cents
+     FROM refunds
+     WHERE created_at >= ? AND created_at < ?
+     GROUP BY method;`,
+    input.from,
+    input.to,
   );
   const tenders = allRows<TenderRow>(
     connection,
@@ -277,6 +295,12 @@ export function dailyReport(
         total + integer(payment.amount_cents, 'Cash account payments'),
       0,
     );
+  const cashRefundsCents = refunds
+    .filter((refund) => refund.method === 'cash')
+    .reduce(
+      (total, refund) => total + integer(refund.amount_cents, 'Cash refunds'),
+      0,
+    );
   const costCents = integer(profit.cost_cents, 'Cost');
   const netSalesCents = integer(profit.net_sales_cents, 'Net sales');
 
@@ -334,6 +358,11 @@ export function dailyReport(
       count: integer(refunded.refunded_count, 'Refunded sale count'),
       totalCents: integer(refunded.refunded_total_cents, 'Refunded sale total'),
     },
+    refunds: refunds.map((item): DailyRefundTotal => ({
+      method: item.method,
+      refundCount: integer(item.refund_count, 'Refund count'),
+      amountCents: integer(item.amount_cents, 'Refund amount'),
+    })),
     voided: {
       count: integer(voided.voided_count, 'Voided sale count'),
       totalCents: integer(voided.voided_total_cents, 'Voided sale total'),
@@ -366,6 +395,9 @@ export function dailyReport(
     topItems: topItemTotals,
     inventoryMovements: movementTotals,
     expectedCashCents:
-      input.openingFloatCents + cashSalesCents + cashAccountPaymentsCents,
+      input.openingFloatCents +
+      cashSalesCents +
+      cashAccountPaymentsCents -
+      cashRefundsCents,
   };
 }

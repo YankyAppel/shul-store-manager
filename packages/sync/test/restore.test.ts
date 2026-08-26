@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { syncEntityTypeSchema, type CloudEvent } from '@shul-store/shared';
+import {
+  syncEntityTypeSchema,
+  type CloudEvent,
+  type RefundPayload,
+} from '@shul-store/shared';
 import {
   parseRestoreEvent,
   restoreFromCloud,
@@ -114,6 +118,21 @@ describe('restore round-trip', () => {
     const ids = populateStore(source.db);
     // A couple of extra writes after backfill still reach the cloud via enqueue.
     source.db.createCategory({ name: 'Extra Category' });
+    const accountSale = source.db
+      .listSales()
+      .find((sale) => sale.payment.method === 'account')!;
+    source.db.recordRefund({
+      operationId: randomUUID(),
+      saleId: accountSale.id,
+      items: [
+        {
+          saleItemId: accountSale.items[0]!.id,
+          quantity: 1,
+          restocked: true,
+        },
+      ],
+      reason: 'Cloud round-trip return',
+    });
 
     const cloudEvents: CloudEvent[] = outboxToCloudEvents(
       source.db.exportOutboxSnapshot(),
@@ -132,6 +151,7 @@ describe('restore round-trip', () => {
     expect(result.summary!.customers).toBe(1);
     expect(result.summary!.sales).toBe(2);
     expect(result.summary!.accountPayments).toBe(1);
+    expect(result.summary!.refunds).toBe(1);
     expect(result.summary!.integrityChecks.length).toBeGreaterThan(0);
 
     // 3. Compare source and target business state.
@@ -163,6 +183,7 @@ describe('restore round-trip', () => {
     expect(target.db.getCustomerBalance(ids.customerId)).toBe(
       source.db.getCustomerBalance(ids.customerId),
     );
+    expect(target.db.listRefunds(accountSale.id)).toHaveLength(1);
 
     // Sales reproduce exactly (cash + account tenders).
     const tgtSales = target.db.listSales();
@@ -354,6 +375,125 @@ describe('restore round-trip', () => {
     expect(target.db.listSales()[0]?.kioskId).toBe(kioskId);
     disposeDb(source.db, source.file);
     disposeDb(target.db, target.file);
+  });
+
+  it('rolls back when a refund points at a missing sale', async () => {
+    const source = createDb();
+    enableSync(source.db);
+    const ids = populateStore(source.db);
+    const sale = source.db
+      .listSales()
+      .find((item) => item.payment.method === 'cash')!;
+    source.db.recordRefund({
+      operationId: randomUUID(),
+      saleId: sale.id,
+      items: [
+        {
+          saleItemId: sale.items[0]!.id,
+          quantity: 1,
+          restocked: true,
+        },
+      ],
+      reason: 'Dangling refund test',
+    });
+    source.db.backfillOutbox();
+    const events = outboxToCloudEvents(source.db.exportOutboxSnapshot()).map(
+      (event) =>
+        event.entityType === 'refund'
+          ? {
+              ...event,
+              payload: { ...event.payload, saleId: randomUUID() },
+            }
+          : event,
+    );
+    const target = createDb();
+    const transport = new FakeTransport();
+    transport.seed(events);
+    const result = await restoreFromCloud(target.db, transport, TEST_STORE_ID);
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/rolled back/i);
+    expect(target.db.listRefunds(sale.id)).toHaveLength(0);
+    expect(target.db.isRestoreAllowed()).toBe(true);
+    expect(ids.productId).toBeTruthy();
+    disposeDb(source.db, source.file);
+    disposeDb(target.db, target.file);
+  });
+
+  it('rolls back when a refund points at a missing sale item, product, or customer', async () => {
+    const mutations = [
+      {
+        name: 'sale item',
+        apply: (payload: RefundPayload) => ({
+          ...payload,
+          items: payload.items.map((item, index) =>
+            index === 0 ? { ...item, saleItemId: randomUUID() } : item,
+          ),
+        }),
+      },
+      {
+        name: 'product',
+        apply: (payload: RefundPayload) => ({
+          ...payload,
+          items: payload.items.map((item, index) =>
+            index === 0 ? { ...item, productId: randomUUID() } : item,
+          ),
+        }),
+      },
+      {
+        name: 'customer',
+        apply: (payload: RefundPayload) => ({
+          ...payload,
+          customerId: randomUUID(),
+          ledgerEntry: payload.ledgerEntry
+            ? { ...payload.ledgerEntry, customerId: randomUUID() }
+            : null,
+        }),
+      },
+    ];
+    for (const mutation of mutations) {
+      const source = createDb();
+      const target = createDb();
+      try {
+        enableSync(source.db);
+        populateStore(source.db);
+        const sale = source.db
+          .listSales()
+          .find((item) => item.payment.method === 'account')!;
+        source.db.recordRefund({
+          operationId: randomUUID(),
+          saleId: sale.id,
+          items: [
+            {
+              saleItemId: sale.items[0]!.id,
+              quantity: 1,
+              restocked: true,
+            },
+          ],
+          reason: `Dangling ${mutation.name} test`,
+        });
+        source.db.backfillOutbox();
+        const events = outboxToCloudEvents(
+          source.db.exportOutboxSnapshot(),
+        ).map((event) =>
+          event.entityType === 'refund'
+            ? { ...event, payload: mutation.apply(event.payload) }
+            : event,
+        );
+        const transport = new FakeTransport();
+        transport.seed(events);
+        const result = await restoreFromCloud(
+          target.db,
+          transport,
+          TEST_STORE_ID,
+        );
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/rolled back/i);
+        expect(target.db.isRestoreAllowed()).toBe(true);
+      } finally {
+        disposeDb(source.db, source.file);
+        disposeDb(target.db, target.file);
+      }
+    }
   });
 
   it('rolls back when a kiosk reference has no kiosk event', async () => {

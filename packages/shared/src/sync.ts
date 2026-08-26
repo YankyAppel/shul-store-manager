@@ -26,6 +26,7 @@ export const syncEntityTypeSchema = z.enum([
   'customer',
   'sale',
   'account_payment',
+  'refund',
   'payment_transaction',
   'kiosk',
   'audit_event',
@@ -167,6 +168,7 @@ export const ledgerEntryPayloadSchema = z.object({
   occurredAt: isoString,
   relatedSaleId: uuidString.nullable(),
   relatedAccountPaymentId: uuidString.nullable(),
+  relatedRefundId: uuidString.nullable(),
   deviceId: uuidString.nullable(),
   notes: z.string().min(1).max(1000),
   sequence: z.number().int().min(1),
@@ -230,6 +232,40 @@ export const accountPaymentPayloadSchema = z.object({
   ledgerEntry: ledgerEntryPayloadSchema,
 });
 export type AccountPaymentPayload = z.infer<typeof accountPaymentPayloadSchema>;
+
+export const refundItemPayloadSchema = z.object({
+  id: uuidString,
+  saleItemId: uuidString,
+  productId: uuidString,
+  productName: z.string().min(1).max(200),
+  quantity: z.number().int().positive(),
+  restocked: z.boolean(),
+  subtotalCents: nonNegativeCents,
+  taxCents: nonNegativeCents,
+  amountCents: z.number().int().positive(),
+});
+export type RefundItemPayload = z.infer<typeof refundItemPayloadSchema>;
+
+export const refundPayloadSchema = z.object({
+  id: uuidString,
+  operationId: uuidString,
+  receiptNumber: z.number().int().min(1),
+  saleId: uuidString,
+  method: z.enum(['cash', 'external_terminal', 'integrated_card', 'account']),
+  subtotalCents: nonNegativeCents,
+  taxCents: nonNegativeCents,
+  amountCents: z.number().int().positive(),
+  terminalReference: z.string().nullable(),
+  chargeReference: z.string().nullable(),
+  processorRefundId: z.string().nullable(),
+  customerId: uuidString.nullable(),
+  reason: z.string().trim().min(1).max(1000),
+  createdAt: isoString,
+  items: z.array(refundItemPayloadSchema).min(1),
+  inventoryMovements: z.array(inventoryMovementPayloadSchema),
+  ledgerEntry: ledgerEntryPayloadSchema.nullable(),
+});
+export type RefundPayload = z.infer<typeof refundPayloadSchema>;
 
 export const paymentTransactionPayloadSchema = z.object({
   id: uuidString,
@@ -336,6 +372,11 @@ export const cloudPayloadSchema = z.discriminatedUnion('entityType', [
     payload: accountPaymentPayloadSchema,
   }),
   z.object({
+    entityType: z.literal('refund'),
+    entityId: uuidString,
+    payload: refundPayloadSchema,
+  }),
+  z.object({
     entityType: z.literal('payment_transaction'),
     entityId: uuidString,
     payload: paymentTransactionPayloadSchema,
@@ -422,6 +463,7 @@ export interface RestoreSummary {
   inventoryMovements: number;
   ledgerEntries: number;
   auditEvents: number;
+  refunds: number;
   integrityChecks: string[];
 }
 

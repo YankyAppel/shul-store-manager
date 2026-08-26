@@ -7,6 +7,90 @@ import { describe, expect, it } from 'vitest';
 import { migrations, StoreDatabase } from '../src/index.js';
 
 describe('migration upgrades and regressions', () => {
+  it('rebuilds the customer ledger for refunds without losing rows or protections', () => {
+    const filename = path.join(tmpdir(), `shul-mig18-${randomUUID()}.sqlite`);
+    const rawDb = new DatabaseSync(filename);
+    rawDb.exec('PRAGMA foreign_keys = ON');
+    for (const migration of migrations.filter((item) => item.version <= 18)) {
+      rawDb.exec(migration.sql);
+      rawDb.exec(`PRAGMA user_version = ${migration.version}`);
+    }
+    const customerId = randomUUID();
+    rawDb
+      .prepare(
+        `INSERT INTO customers
+         (id, account_number, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        customerId,
+        'MIGRATION-1',
+        'Migration Customer',
+        '2026-08-01T00:00:00.000Z',
+        '2026-08-01T00:00:00.000Z',
+      );
+    const ledgerId = randomUUID();
+    rawDb
+      .prepare(
+        `INSERT INTO customer_ledger
+         (id, operation_id, customer_id, amount_cents, entry_type,
+          occurred_at, notes, sequence)
+         VALUES (?, ?, ?, -125, 'manual_credit_adjustment', ?, ?, 42)`,
+      )
+      .run(
+        ledgerId,
+        randomUUID(),
+        customerId,
+        '2026-08-01T00:00:00.000Z',
+        'Preserved row',
+      );
+    rawDb.close();
+
+    const upgraded = new StoreDatabase(filename);
+    try {
+      expect(
+        upgraded.connection
+          .prepare(
+            'SELECT id, sequence, amount_cents FROM customer_ledger WHERE id = ?',
+          )
+          .get(ledgerId),
+      ).toEqual({ id: ledgerId, sequence: 42, amount_cents: -125 });
+      const indexes = upgraded.connection
+        .prepare('PRAGMA index_list(customer_ledger)')
+        .all() as Array<{ name: string }>;
+      expect(indexes.map((index) => index.name)).toEqual(
+        expect.arrayContaining([
+          'customer_ledger_sale_charge_idx',
+          'customer_ledger_refund_idx',
+          'customer_ledger_sequence_idx',
+          'customer_ledger_payment_idx',
+        ]),
+      );
+      const triggers = upgraded.connection
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'customer_ledger'",
+        )
+        .all() as Array<{ name: string }>;
+      expect(triggers.map((trigger) => trigger.name)).toEqual(
+        expect.arrayContaining([
+          'customer_ledger_no_update',
+          'customer_ledger_no_delete',
+          'validate_customer_ledger_sale_charge',
+          'validate_customer_ledger_payment',
+          'validate_customer_ledger_sale_refund',
+        ]),
+      );
+      expect(() =>
+        upgraded.connection
+          .prepare('UPDATE customer_ledger SET notes = ? WHERE id = ?')
+          .run('Tampered', ledgerId),
+      ).toThrow(/append-only/);
+    } finally {
+      upgraded.close();
+      rmSync(filename, { force: true });
+    }
+  });
+
   it('upgrades a populated migration-3 database without losing data or breaking existing checkout', () => {
     const filename = path.join(tmpdir(), `shul-mig3-${randomUUID()}.sqlite`);
     const rawDb = new DatabaseSync(filename);

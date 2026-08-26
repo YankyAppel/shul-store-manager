@@ -18,6 +18,7 @@ import type {
 import type { LabelPrintRequest } from './labels.js';
 import type { PrinterInfo, PrintResult } from './printing.js';
 import type { DailyClose, DailyReport } from './reports.js';
+import type { RecordRefundInput, Refund, RefundableSale } from './refunds.js';
 import type {
   ConnectionTestResult,
   RestoreInput,
@@ -44,6 +45,7 @@ export * from './kiosk.js';
 export * from './kiosk-client.js';
 export * from './printing.js';
 export * from './reports.js';
+export * from './refunds.js';
 export * from './secret-store.js';
 export * from './sync.js';
 export * from './ui-helpers.js';
@@ -279,6 +281,12 @@ export interface StoreApi {
     ): Promise<DailyClose>;
     listCloses(limit?: number): Promise<DailyClose[]>;
     print(businessDate: string, report: DailyReport): Promise<PrintResult>;
+  };
+  refunds: {
+    refundable(saleId: string): Promise<RefundableSale>;
+    record(input: RecordRefundInput): Promise<Refund>;
+    list(saleId: string): Promise<Refund[]>;
+    print(refundId: string): Promise<PrintResult>;
   };
 
   settings: {

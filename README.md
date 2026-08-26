@@ -55,6 +55,9 @@ rotation, migration safeguards, and local restore.
 See [Daily reports](docs/reports.md) for end-of-day reporting, cash
 reconciliation, and immutable local closes.
 
+See [Returns and refunds](docs/refunds.md) for partial returns, tender rules,
+account credits, and refund safeguards.
+
 ## Requirements
 
 - Node.js 22.13 or newer (use the version declared in `.nvmrc`)

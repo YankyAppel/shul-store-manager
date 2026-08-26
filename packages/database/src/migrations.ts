@@ -700,6 +700,203 @@ export const migrations: Migration[] = [
       END;
     `,
   },
+  {
+    version: 19,
+    name: 'returns_and_refunds',
+    sql: `
+      CREATE TABLE refunds (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL UNIQUE,
+        receipt_number INTEGER NOT NULL UNIQUE,
+        sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+        method TEXT NOT NULL CHECK (method IN ('cash','external_terminal','integrated_card','account')),
+        subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+        tax_cents INTEGER NOT NULL CHECK (tax_cents >= 0),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        terminal_reference TEXT,
+        charge_reference TEXT,
+        processor_refund_id TEXT,
+        customer_id TEXT REFERENCES customers(id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+        created_at TEXT NOT NULL,
+        CHECK (subtotal_cents + tax_cents = amount_cents),
+        CHECK ((method = 'account' AND customer_id IS NOT NULL)
+            OR (method <> 'account' AND customer_id IS NULL)),
+        CHECK ((method = 'integrated_card' AND charge_reference IS NOT NULL)
+            OR (method <> 'integrated_card' AND processor_refund_id IS NULL))
+      );
+      CREATE INDEX refunds_sale_idx ON refunds(sale_id);
+      CREATE INDEX refunds_time_idx ON refunds(created_at DESC);
+      CREATE TRIGGER refunds_no_update BEFORE UPDATE ON refunds BEGIN
+        SELECT RAISE(ABORT, 'Refunds are append-only');
+      END;
+      CREATE TRIGGER refunds_no_delete BEFORE DELETE ON refunds BEGIN
+        SELECT RAISE(ABORT, 'Refunds are append-only');
+      END;
+
+      CREATE TABLE refund_items (
+        id TEXT PRIMARY KEY,
+        refund_id TEXT NOT NULL REFERENCES refunds(id) ON DELETE RESTRICT,
+        sale_item_id TEXT NOT NULL REFERENCES sale_items(id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        product_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        restocked INTEGER NOT NULL CHECK (restocked IN (0,1)),
+        subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+        tax_cents INTEGER NOT NULL CHECK (tax_cents >= 0),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        CHECK (subtotal_cents + tax_cents = amount_cents)
+      );
+      CREATE INDEX refund_items_refund_idx ON refund_items(refund_id);
+      CREATE INDEX refund_items_sale_item_idx ON refund_items(sale_item_id);
+      CREATE TRIGGER refund_items_no_update BEFORE UPDATE ON refund_items BEGIN
+        SELECT RAISE(ABORT, 'Refund items are append-only');
+      END;
+      CREATE TRIGGER refund_items_no_delete BEFORE DELETE ON refund_items BEGIN
+        SELECT RAISE(ABORT, 'Refund items are append-only');
+      END;
+
+      DROP TRIGGER IF EXISTS prevent_sale_delete_if_ledger_linked;
+      DROP TRIGGER IF EXISTS prevent_sale_update_if_ledger_linked;
+      DROP TRIGGER IF EXISTS prevent_account_payment_delete_if_ledger_linked;
+
+      CREATE TABLE customer_ledger_new (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL UNIQUE,
+        customer_id TEXT NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+        amount_cents INTEGER NOT NULL CHECK (amount_cents <> 0),
+        entry_type TEXT NOT NULL CHECK (entry_type IN ('sale_charge', 'payment', 'manual_debit_adjustment', 'manual_credit_adjustment', 'sale_refund')),
+        occurred_at TEXT NOT NULL,
+        related_sale_id TEXT REFERENCES sales(id) ON DELETE RESTRICT,
+        related_account_payment_id TEXT REFERENCES account_payments(id) ON DELETE RESTRICT,
+        related_refund_id TEXT REFERENCES refunds(id) ON DELETE RESTRICT,
+        device_id TEXT,
+        notes TEXT NOT NULL CHECK (length(trim(notes)) > 0),
+        sequence INTEGER NOT NULL UNIQUE,
+        CHECK (
+          (entry_type = 'sale_charge' AND amount_cents > 0 AND related_sale_id IS NOT NULL AND related_account_payment_id IS NULL AND related_refund_id IS NULL)
+          OR (entry_type = 'payment' AND amount_cents < 0 AND related_account_payment_id IS NOT NULL AND related_sale_id IS NULL AND related_refund_id IS NULL)
+          OR (entry_type = 'manual_debit_adjustment' AND amount_cents > 0 AND related_sale_id IS NULL AND related_account_payment_id IS NULL AND related_refund_id IS NULL)
+          OR (entry_type = 'manual_credit_adjustment' AND amount_cents < 0 AND related_sale_id IS NULL AND related_account_payment_id IS NULL AND related_refund_id IS NULL)
+          OR (entry_type = 'sale_refund' AND amount_cents < 0 AND related_sale_id IS NOT NULL AND related_account_payment_id IS NULL AND related_refund_id IS NOT NULL)
+        )
+      );
+      INSERT INTO customer_ledger_new
+        (id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+         related_sale_id, related_account_payment_id, related_refund_id, device_id,
+         notes, sequence)
+      SELECT id, operation_id, customer_id, amount_cents, entry_type, occurred_at,
+             related_sale_id, related_account_payment_id, NULL, device_id,
+             notes, sequence
+      FROM customer_ledger;
+      DROP TABLE customer_ledger;
+      ALTER TABLE customer_ledger_new RENAME TO customer_ledger;
+
+      CREATE UNIQUE INDEX customer_ledger_sequence_idx ON customer_ledger(sequence);
+      CREATE INDEX customer_ledger_customer_seq_idx ON customer_ledger(customer_id, sequence ASC);
+      CREATE INDEX customer_ledger_customer_time_idx ON customer_ledger(customer_id, occurred_at, sequence);
+      CREATE UNIQUE INDEX customer_ledger_sale_charge_idx
+        ON customer_ledger(related_sale_id)
+        WHERE related_sale_id IS NOT NULL AND entry_type = 'sale_charge';
+      CREATE UNIQUE INDEX customer_ledger_payment_idx ON customer_ledger(related_account_payment_id)
+        WHERE related_account_payment_id IS NOT NULL;
+      CREATE UNIQUE INDEX customer_ledger_refund_idx
+        ON customer_ledger(related_refund_id)
+        WHERE related_refund_id IS NOT NULL;
+
+      CREATE TRIGGER customer_ledger_no_update
+      BEFORE UPDATE ON customer_ledger BEGIN
+        SELECT RAISE(ABORT, 'Customer ledger entries are append-only');
+      END;
+      CREATE TRIGGER customer_ledger_no_delete
+      BEFORE DELETE ON customer_ledger BEGIN
+        SELECT RAISE(ABORT, 'Customer ledger entries are append-only');
+      END;
+
+      CREATE TRIGGER validate_customer_ledger_sale_charge
+      BEFORE INSERT ON customer_ledger
+      WHEN NEW.entry_type = 'sale_charge'
+      BEGIN
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM sales
+            WHERE sales.id = NEW.related_sale_id
+              AND sales.customer_id = NEW.customer_id
+              AND sales.total_cents = NEW.amount_cents
+              AND sales.tender_type = 'account'
+          ) THEN RAISE(ABORT, 'sale_charge ledger entry must match an existing account sale for the same customer and amount')
+          WHEN EXISTS (
+            SELECT 1 FROM customer_ledger
+            WHERE customer_ledger.related_sale_id = NEW.related_sale_id
+              AND customer_ledger.entry_type = 'sale_charge'
+          ) THEN RAISE(ABORT, 'A ledger entry for this sale already exists')
+        END;
+      END;
+
+      CREATE TRIGGER validate_customer_ledger_payment
+      BEFORE INSERT ON customer_ledger
+      WHEN NEW.entry_type = 'payment'
+      BEGIN
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM account_payments
+            WHERE account_payments.id = NEW.related_account_payment_id
+              AND account_payments.customer_id = NEW.customer_id
+              AND account_payments.amount_cents = -NEW.amount_cents
+          ) THEN RAISE(ABORT, 'payment ledger entry must match an existing account payment for the same customer and amount')
+          WHEN EXISTS (
+            SELECT 1 FROM customer_ledger
+            WHERE customer_ledger.related_account_payment_id = NEW.related_account_payment_id
+          ) THEN RAISE(ABORT, 'A ledger entry for this account payment already exists')
+        END;
+      END;
+
+      CREATE TRIGGER validate_customer_ledger_sale_refund
+      BEFORE INSERT ON customer_ledger
+      WHEN NEW.entry_type = 'sale_refund'
+      BEGIN
+        SELECT CASE
+          WHEN NOT EXISTS (
+            SELECT 1 FROM refunds
+            WHERE refunds.id = NEW.related_refund_id
+              AND refunds.sale_id = NEW.related_sale_id
+              AND refunds.customer_id = NEW.customer_id
+              AND refunds.method = 'account'
+              AND refunds.amount_cents = -NEW.amount_cents
+          ) THEN RAISE(ABORT, 'sale_refund ledger entry must match an existing account refund for the same sale and customer')
+          WHEN EXISTS (
+            SELECT 1 FROM customer_ledger
+            WHERE customer_ledger.related_refund_id = NEW.related_refund_id
+          ) THEN RAISE(ABORT, 'A ledger entry for this refund already exists')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_sale_delete_if_ledger_linked
+      BEFORE DELETE ON sales
+      BEGIN
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_sale_id = OLD.id)
+          THEN RAISE(ABORT, 'Cannot delete sale that is linked to customer ledger')
+        END;
+      END;
+
+      CREATE TRIGGER prevent_sale_update_if_ledger_linked
+      BEFORE UPDATE OF customer_id, total_cents, tender_type ON sales
+      WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_sale_id = OLD.id)
+      BEGIN
+        SELECT RAISE(ABORT, 'Cannot modify financial fields of a sale that is linked to customer ledger');
+      END;
+
+      CREATE TRIGGER prevent_account_payment_delete_if_ledger_linked
+      BEFORE DELETE ON account_payments
+      BEGIN
+        SELECT CASE
+          WHEN EXISTS (SELECT 1 FROM customer_ledger WHERE customer_ledger.related_account_payment_id = OLD.id)
+          THEN RAISE(ABORT, 'Cannot delete account payment that is linked to customer ledger')
+        END;
+      END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

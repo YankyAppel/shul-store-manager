@@ -10,6 +10,7 @@ import type {
   LedgerEntryPayload,
   PaymentTransactionPayload,
   ProductPayload,
+  RefundPayload,
   SalePayload,
   SettingsPayload,
 } from '@shul-store/shared';
@@ -30,6 +31,7 @@ export interface RestoreCounts {
   ledgerEntries: number;
   auditEvents: number;
   kiosks: number;
+  refunds: number;
 }
 
 export interface RestoreOutcome {
@@ -313,8 +315,8 @@ function applyLedgerEntry(
     .prepare(
       `INSERT INTO customer_ledger
         (id, operation_id, customer_id, amount_cents, entry_type, occurred_at, related_sale_id,
-         related_account_payment_id, device_id, notes, sequence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         related_account_payment_id, related_refund_id, device_id, notes, sequence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
     )
     .run(
@@ -326,6 +328,7 @@ function applyLedgerEntry(
       entry.occurredAt,
       entry.relatedSaleId,
       entry.relatedAccountPaymentId,
+      entry.relatedRefundId,
       entry.deviceId,
       entry.notes,
       entry.sequence,
@@ -461,6 +464,60 @@ function applyAccountPayment(
   applyLedgerEntry(connection, payload.ledgerEntry);
 }
 
+function applyRefund(connection: SqliteDatabase, payload: RefundPayload): void {
+  connection
+    .prepare(
+      `INSERT INTO refunds (
+        id, operation_id, receipt_number, sale_id, method, subtotal_cents,
+        tax_cents, amount_cents, terminal_reference, charge_reference,
+        processor_refund_id, customer_id, reason, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING`,
+    )
+    .run(
+      payload.id,
+      payload.operationId,
+      payload.receiptNumber,
+      payload.saleId,
+      payload.method,
+      payload.subtotalCents,
+      payload.taxCents,
+      payload.amountCents,
+      payload.terminalReference,
+      payload.chargeReference,
+      payload.processorRefundId,
+      payload.customerId,
+      payload.reason,
+      payload.createdAt,
+    );
+  for (const item of payload.items) {
+    connection
+      .prepare(
+        `INSERT INTO refund_items (
+          id, refund_id, sale_item_id, product_id, product_name, quantity,
+          restocked, subtotal_cents, tax_cents, amount_cents
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING`,
+      )
+      .run(
+        item.id,
+        payload.id,
+        item.saleItemId,
+        item.productId,
+        item.productName,
+        item.quantity,
+        item.restocked ? 1 : 0,
+        item.subtotalCents,
+        item.taxCents,
+        item.amountCents,
+      );
+  }
+  for (const movement of payload.inventoryMovements) {
+    applyInventoryMovement(connection, movement);
+  }
+  if (payload.ledgerEntry) applyLedgerEntry(connection, payload.ledgerEntry);
+}
+
 function applyPaymentTransaction(
   connection: SqliteDatabase,
   payload: PaymentTransactionPayload,
@@ -590,6 +647,15 @@ function applyOne(
       applyAccountPayment(connection, event.payload as AccountPaymentPayload);
       counts.accountPayments += 1;
       break;
+    case 'refund':
+      applyRefund(connection, event.payload as RefundPayload);
+      counts.refunds += 1;
+      counts.inventoryMovements += (
+        event.payload as RefundPayload
+      ).inventoryMovements.length;
+      if ((event.payload as RefundPayload).ledgerEntry)
+        counts.ledgerEntries += 1;
+      break;
     case 'payment_transaction':
       applyPaymentTransaction(
         connection,
@@ -631,6 +697,7 @@ export function restoreFromEvents(
     ledgerEntries: 0,
     auditEvents: 0,
     kiosks: 0,
+    refunds: 0,
   };
 
   connection.exec('PRAGMA defer_foreign_keys = ON');
@@ -641,7 +708,12 @@ export function restoreFromEvents(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
+  const deferredRefunds: ValidatedRestoreEvent[] = [];
   for (const event of events) {
+    if (event.entityType === 'refund') {
+      deferredRefunds.push(event);
+      continue;
+    }
     applyOne(connection, event, counts);
     if (event.entityType === 'sale') {
       const sale = event.payload as SalePayload;
@@ -650,6 +722,19 @@ export function restoreFromEvents(
     } else if (event.entityType === 'account_payment') {
       counts.ledgerEntries += 1;
     }
+    seedOutbox.run(
+      event.sequence,
+      event.eventId,
+      event.entityType,
+      event.entityId,
+      event.operation,
+      JSON.stringify(event.payload),
+      event.createdAt,
+      now(),
+    );
+  }
+  for (const event of deferredRefunds) {
+    applyOne(connection, event, counts);
     seedOutbox.run(
       event.sequence,
       event.eventId,
@@ -745,6 +830,21 @@ export function verifyRestoreIntegrity(connection: SqliteDatabase): string[] {
         ? String(entry.related_account_payment_id)
         : null;
       if (relatedSaleId) {
+        if (String(entry.entry_type) === 'sale_refund') {
+          const refund = connection
+            .prepare('SELECT id FROM refunds WHERE id = ? AND sale_id = ?')
+            .get(
+              entry.related_refund_id ? String(entry.related_refund_id) : null,
+              relatedSaleId,
+            ) as Row | undefined;
+          if (!refund) {
+            throw new Error(
+              `Restore integrity check failed: refund ledger entry references missing refund for sale ${relatedSaleId}`,
+            );
+          }
+          running += amount;
+          continue;
+        }
         const sale = connection
           .prepare(
             'SELECT customer_balance_before_cents, customer_balance_after_cents FROM sales WHERE id = ?',

@@ -66,6 +66,7 @@ export const ledgerEntryTypeSchema = z.enum([
   'payment',
   'manual_debit_adjustment',
   'manual_credit_adjustment',
+  'sale_refund',
 ]);
 export type LedgerEntryType = z.infer<typeof ledgerEntryTypeSchema>;
 

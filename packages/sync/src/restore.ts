@@ -9,6 +9,7 @@ import {
   kioskPayloadSchema,
   paymentTransactionPayloadSchema,
   productPayloadSchema,
+  refundPayloadSchema,
   salePayloadSchema,
   settingsPayloadSchema,
   syncEntityTypeSchema,
@@ -31,6 +32,7 @@ type PayloadSchema =
   | typeof customerPayloadSchema
   | typeof salePayloadSchema
   | typeof accountPaymentPayloadSchema
+  | typeof refundPayloadSchema
   | typeof auditEventPayloadSchema;
 
 export const PAYLOAD_SCHEMA_BY_TYPE: Record<SyncEntityType, PayloadSchema> = {
@@ -41,6 +43,7 @@ export const PAYLOAD_SCHEMA_BY_TYPE: Record<SyncEntityType, PayloadSchema> = {
   customer: customerPayloadSchema,
   sale: salePayloadSchema,
   account_payment: accountPaymentPayloadSchema,
+  refund: refundPayloadSchema,
   payment_transaction: paymentTransactionPayloadSchema,
   kiosk: kioskPayloadSchema,
   audit_event: auditEventPayloadSchema,
@@ -132,6 +135,7 @@ function toSummary(
       inventoryMovements: number;
       ledgerEntries: number;
       auditEvents: number;
+      refunds: number;
     };
     integrityChecks: string[];
   },
@@ -150,6 +154,7 @@ function toSummary(
     inventoryMovements: outcome.counts.inventoryMovements,
     ledgerEntries: outcome.counts.ledgerEntries,
     auditEvents: outcome.counts.auditEvents,
+    refunds: outcome.counts.refunds,
     integrityChecks: outcome.integrityChecks,
   };
 }
