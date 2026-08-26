@@ -219,8 +219,8 @@ export function SalesHistory({
         customerName: result.payment.customerName,
         receiptNumber: result.payment.receiptNumber,
       });
-    } catch {
-      setMessage(`No receipt found for ${scanned}`);
+    } catch (reason) {
+      setMessage(messageFrom(reason));
     }
   }
 
