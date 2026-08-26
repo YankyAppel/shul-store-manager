@@ -85,6 +85,32 @@ describe('migration upgrades and regressions', () => {
     }
   });
 
+  it('aborts duplicate initiated idempotency repair before creating the unique index', () => {
+    const filename = path.join(
+      tmpdir(),
+      `shul-mig15-initiated-${randomUUID()}.sqlite`,
+    );
+    const rawDb = createV14Database(filename);
+    const key = 'initiated-duplicate';
+    const first = randomUUID();
+    const second = randomUUID();
+    insertPayment(rawDb, first, key, 'initiated', '2026-08-01T00:00:00.000Z');
+    insertPayment(rawDb, second, key, 'error', '2026-08-01T00:01:00.000Z');
+    rawDb.close();
+    expect(() => new StoreDatabase(filename)).toThrow(
+      new RegExp(`${key}.*${first}.*${second}`, 's'),
+    );
+    const check = new DatabaseSync(filename);
+    try {
+      expect(check.prepare('PRAGMA user_version').get()).toEqual({
+        user_version: 14,
+      });
+    } finally {
+      check.close();
+      rmSync(filename, { force: true });
+    }
+  });
+
   it('repairs a duplicate key when terminal rows have mixed outcomes', () => {
     const filename = path.join(tmpdir(), `shul-mig15-mixed-${randomUUID()}.sqlite`);
     const rawDb = createV14Database(filename);
