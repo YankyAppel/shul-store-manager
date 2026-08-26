@@ -156,10 +156,6 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
     });
   }
 
-  publishUpdateState({
-    status: 'checking',
-    message: 'Checking for updates…',
-  });
   try {
     const settings = database.getSettings();
     if (!manual && !settings.automaticUpdatesEnabled) {
@@ -170,6 +166,10 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
         checkedAt: new Date().toISOString(),
       });
     }
+    publishUpdateState({
+      status: 'checking',
+      message: 'Checking for updates…',
+    });
     configureAutoUpdater(settings);
     const result = await autoUpdater.checkForUpdates();
     const currentVersion = app.getVersion();
