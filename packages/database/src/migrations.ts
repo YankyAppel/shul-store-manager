@@ -1167,7 +1167,7 @@ export const migrations: Migration[] = [
       BEFORE UPDATE OF state ON refund_intents
       WHEN OLD.state != NEW.state AND NOT (
         (OLD.state = 'recorded' AND NEW.state IN ('sent','failed','completed')) OR
-        (OLD.state = 'sent' AND NEW.state IN ('completed','attention')) OR
+        (OLD.state = 'sent' AND NEW.state IN ('completed','attention','failed')) OR
         (OLD.state = 'attention' AND NEW.state IN ('completed','failed'))
       )
       BEGIN SELECT RAISE(ABORT, 'Invalid refund intent state transition'); END;

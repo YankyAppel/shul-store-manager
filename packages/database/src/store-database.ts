@@ -2631,16 +2631,6 @@ export class StoreDatabase {
           .prepare('SELECT * FROM refunds WHERE operation_id = ?')
           .get(value.operationId) as Row | undefined;
         if (again) {
-          this.connection
-            .prepare(
-              `UPDATE refund_intents
-               SET state='completed',
-                   processor_refund_id=COALESCE(?, processor_refund_id),
-                   attention_reason=NULL,
-                   updated_at=?
-               WHERE operation_id=? AND state IN ('recorded','sent','attention')`,
-            )
-            .run(processorRefundId, timestamp, value.operationId);
           refund = this.mapRefund(again);
           return;
         }
@@ -2808,16 +2798,6 @@ export class StoreDatabase {
             .prepare("UPDATE sales SET status = 'refunded' WHERE id = ?")
             .run(value.saleId);
         this.enqueueEntity('refund', refundId);
-        this.connection
-          .prepare(
-            `UPDATE refund_intents
-             SET state='completed',
-                 processor_refund_id=COALESCE(?, processor_refund_id),
-                 attention_reason=NULL,
-                 updated_at=?
-             WHERE operation_id=? AND state IN ('recorded','sent','attention')`,
-          )
-          .run(processorRefundId, timestamp, value.operationId);
       })();
     } catch (error) {
       throw friendlyDatabaseError(error);

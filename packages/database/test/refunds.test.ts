@@ -149,6 +149,24 @@ describe('refunds', () => {
     ).toEqual({ count: 1 });
   });
 
+  it('completes the cash refund intent without refund attention', async () => {
+    store = new StoreDatabase(':memory:');
+    const { productId } = seed(store);
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'cash', cashReceivedCents: 101 },
+    });
+    const input = refundInput(sale.id, sale.items[0]!.id, 1);
+
+    const refund = await store.payments.refund(input);
+
+    expect(store.getRefundIntent(refund.operationId)).toMatchObject({
+      state: 'completed',
+    });
+    expect(store.payments.listRefundAttention()).toEqual([]);
+  });
+
   it('allocates tax across repeated partial refunds exactly', () => {
     store = new StoreDatabase(':memory:');
     store.updateSettings({ ...store.getSettings(), taxRateBps: 333 });
@@ -343,6 +361,7 @@ describe('refunds', () => {
       amountCents: refund.amountCents,
       allocationHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
+    expect(store.payments.listRefundAttention()).toEqual([]);
   });
 
   it('recovers a sent refund from processor status without resending it', async () => {
