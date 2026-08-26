@@ -859,13 +859,6 @@ export class PaymentService {
     if (replay) return replay;
     const context = this.db.refundableSale(value.saleId);
     const validation = validateRefundRequest(context, value, null, false);
-    const allocation = {
-      reason: value.reason,
-      terminalReference: value.terminalReference ?? null,
-      items: validation.calculation.lines,
-    };
-    const allocationJson = canonicalJson(allocation);
-    const allocationHash = sha256(allocationJson);
     let intent = this.db.getRefundIntent(value.operationId);
     const method = validation.method;
     if (!intent) {
