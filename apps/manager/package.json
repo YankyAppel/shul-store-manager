@@ -8,7 +8,7 @@
     "dev": "npm run build:electron && concurrently -k \"vite --host 0.0.0.0\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/verify-preload.mjs",
     "build": "npm run build:electron && vite build",
-    "package": "electron-builder --config electron-builder.config.cjs --win --x64",
+    "package": "node scripts/package.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint electron src --max-warnings=0"
   },
