@@ -47,19 +47,51 @@ export const storeSettingsSchema = z.object({
     .default('thermal_40x30'),
   cardProcessingEnabled: z.boolean().default(false),
   cardProcessorId: z.string().nullable().default(null),
-  cardProcessorConfigJson: z.string().nullable().default(null),
+});
+export type StoreSettings = z.infer<typeof storeSettingsSchema>;
+
+const httpsUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .max(2000)
+  .refine((value) => isHttpsUpdateFeedUrl(value), {
+    message: 'Update feed URL must use HTTPS',
+  });
+
+export function isHttpsUpdateFeedUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+export const deviceSettingsSchema = z.object({
   updateFeedUrl: z
-    .string()
-    .trim()
-    .url()
-    .max(2000)
+    .union([httpsUrlSchema, z.literal('')])
     .nullable()
     .optional()
     .transform((value) => (value && value.length > 0 ? value : null))
     .default(null),
   automaticUpdatesEnabled: z.boolean().default(true),
 });
-export type StoreSettings = z.infer<typeof storeSettingsSchema>;
+export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
+
+export const processorConfigInputSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => {
+    try {
+      JSON.parse(value);
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'Processor configuration must be valid JSON')
+  .nullable();
+export type ProcessorConfigInput = z.infer<typeof processorConfigInputSchema>;
 
 export const checkoutLineSchema = z.object({
   productId: z.string().uuid(),

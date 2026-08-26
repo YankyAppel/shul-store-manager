@@ -1177,6 +1177,37 @@ export const migrations: Migration[] = [
       BEGIN SELECT RAISE(ABORT, 'Completed and failed refund intents are immutable'); END;
     `,
   },
+  {
+    version: 24,
+    name: 'device_settings',
+    sql: `
+      CREATE TABLE device_settings (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        card_processor_config_secret TEXT,
+        card_processor_config_encrypted INTEGER NOT NULL DEFAULT 0 CHECK (card_processor_config_encrypted IN (0, 1)),
+        update_feed_url TEXT,
+        automatic_updates_enabled INTEGER NOT NULL DEFAULT 1 CHECK (automatic_updates_enabled IN (0, 1)),
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO device_settings (
+        singleton_id, card_processor_config_secret, card_processor_config_encrypted,
+        update_feed_url, automatic_updates_enabled, updated_at
+      )
+      SELECT
+        1, card_processor_config_json, 0,
+        CASE
+          WHEN update_feed_url LIKE 'https://%' THEN update_feed_url
+          ELSE NULL
+        END,
+        COALESCE(automatic_updates_enabled, 1), CURRENT_TIMESTAMP
+      FROM store_settings WHERE singleton_id = 1;
+      UPDATE store_settings
+      SET card_processor_config_json = NULL,
+          update_feed_url = NULL,
+          automatic_updates_enabled = 1
+      WHERE singleton_id = 1;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

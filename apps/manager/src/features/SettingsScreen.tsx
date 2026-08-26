@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   LABEL_TEMPLATE_OPTIONS,
+  type DeviceSettings,
+  type ProcessorConfigStatus,
   type PrinterInfo,
   type StoreSettings,
   type UpdateCheckResult,
@@ -11,6 +13,11 @@ import { LocalBackupSection } from './LocalBackupSection';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
+  const [deviceSettings, setDeviceSettings] = useState<DeviceSettings>();
+  const [processorStatus, setProcessorStatus] =
+    useState<ProcessorConfigStatus>();
+  const [processorDraft, setProcessorDraft] = useState('');
+  const [processorMessage, setProcessorMessage] = useState('');
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
@@ -21,7 +28,15 @@ export function SettingsScreen() {
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
 
   useEffect(() => {
-    void window.storeApi.settings.get().then(setSettings);
+    void Promise.all([
+      window.storeApi.settings.get(),
+      window.storeApi.settings.getDevice(),
+      window.storeApi.settings.getProcessorConfigStatus(),
+    ]).then(([store, device, processor]) => {
+      setSettings(store);
+      setDeviceSettings(device);
+      setProcessorStatus(processor);
+    });
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
     const unsubscribe = window.storeApi.updates.subscribe(setUpdateResult);
@@ -32,13 +47,31 @@ export function SettingsScreen() {
     return unsubscribe;
   }, []);
 
-  if (!settings) return <p>Loading…</p>;
+  if (!settings || !deviceSettings || !processorStatus) return <p>Loading…</p>;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     await window.storeApi.settings.update(settings!);
+    setDeviceSettings(
+      await window.storeApi.settings.updateDevice(deviceSettings!),
+    );
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
+  }
+
+  async function saveProcessorConfig(value: string | null) {
+    try {
+      const status = await window.storeApi.settings.setProcessorConfig(value);
+      setProcessorStatus(status);
+      setProcessorDraft('');
+      setProcessorMessage(
+        status.configured
+          ? 'Processor configuration replaced.'
+          : 'Processor configuration cleared.',
+      );
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    }
   }
 
   async function checkForUpdates() {
@@ -333,10 +366,10 @@ export function SettingsScreen() {
           Update feed URL <em>Optional override; blank uses GitHub Releases</em>
           <input
             type="url"
-            value={settings.updateFeedUrl ?? ''}
+            value={deviceSettings.updateFeedUrl ?? ''}
             onChange={(e) =>
-              setSettings({
-                ...settings,
+              setDeviceSettings({
+                ...deviceSettings,
                 updateFeedUrl: e.target.value || null,
               })
             }
@@ -346,10 +379,10 @@ export function SettingsScreen() {
         <label className="toggle">
           <input
             type="checkbox"
-            checked={settings.automaticUpdatesEnabled}
+            checked={deviceSettings.automaticUpdatesEnabled}
             onChange={(e) =>
-              setSettings({
-                ...settings,
+              setDeviceSettings({
+                ...deviceSettings,
                 automaticUpdatesEnabled: e.target.checked,
               })
             }
@@ -450,20 +483,42 @@ export function SettingsScreen() {
 
             {settings.cardProcessorId === 'simulated' && (
               <label>
-                Processor Configuration (JSON)
+                Replace processor configuration (JSON)
                 <textarea
-                  value={settings.cardProcessorConfigJson || ''}
-                  onChange={(e) => {
-                    const next = {
-                      ...settings,
-                      cardProcessorConfigJson: e.target.value || null,
-                    };
-                    setSettings(next);
-                  }}
-                  placeholder="{}"
+                  value={processorDraft}
+                  onChange={(e) => setProcessorDraft(e.target.value)}
+                  placeholder='{"apiKey":"..."}'
                 />
               </label>
             )}
+            <p style={{ color: '#66766d', fontSize: '13px' }}>
+              {processorStatus.configured
+                ? processorStatus.encrypted
+                  ? 'Configured, encrypted by this PC'
+                  : 'Configured, stored unencrypted — OS keychain unavailable'
+                : 'Not configured'}
+            </p>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => void saveProcessorConfig(processorDraft)}
+                disabled={!processorDraft.trim()}
+              >
+                Replace processor configuration
+              </button>
+              {processorStatus.configured && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProcessorDraft('');
+                    void saveProcessorConfig(null);
+                  }}
+                >
+                  Clear configuration
+                </button>
+              )}
+              {processorMessage && <span>{processorMessage}</span>}
+            </div>
           </>
         )}
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>

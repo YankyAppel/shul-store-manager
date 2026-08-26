@@ -55,6 +55,15 @@ The frozen processor configuration is immutable once written. It is machine-boun
 
 Reservation sets are aggregated per product and ordered by product id, so the same cart always produces the same snapshot digest and the same reservation rows.
 
+Processor credentials never leave the PC. The Manager's **Replace processor
+configuration** field is write-only: it is blank when Settings opens and the
+saved JSON is never returned to the renderer, even in masked form. The main
+process stores it through Electron `safeStorage` when the operating system
+keychain is available. If the keychain is unavailable, the documented
+plaintext fallback is used and Settings clearly reports that state. General
+settings saves do not clear the processor configuration; use **Clear
+configuration** explicitly.
+
 ### Snapshot-only, exact-once finalization
 
 `finalize(chargeReference)` builds the sale exclusively from `cart_snapshot_json`; live catalog prices are never consulted, so a later price change cannot rewrite an approved charge. It is idempotent: an already linked sale is returned as-is, `completeSale` short-circuits when the same charge reference and completion key are replayed, and repeated calls create exactly one sale.

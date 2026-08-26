@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type {
   CompleteSaleInput,
+  DeviceSettings,
+  ProcessorConfigInput,
   ReceiptData,
   Sale,
   StoreSettings,
@@ -327,6 +329,12 @@ export interface StoreApi {
   settings: {
     get(): Promise<StoreSettings>;
     update(input: StoreSettings): Promise<StoreSettings>;
+    getDevice(): Promise<DeviceSettings>;
+    updateDevice(input: DeviceSettings): Promise<DeviceSettings>;
+    setProcessorConfig(
+      input: ProcessorConfigInput,
+    ): Promise<ProcessorConfigStatus>;
+    getProcessorConfigStatus(): Promise<ProcessorConfigStatus>;
     listPrinters(): Promise<PrinterInfo[]>;
   };
   checkout: {
@@ -392,6 +400,11 @@ export interface UpdateCheckResult {
   availableVersion: string | null;
   message: string;
   checkedAt: string | null;
+}
+
+export interface ProcessorConfigStatus {
+  configured: boolean;
+  encrypted: boolean;
 }
 
 declare global {
