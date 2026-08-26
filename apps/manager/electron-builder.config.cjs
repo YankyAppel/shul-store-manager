@@ -22,6 +22,7 @@ module.exports = {
   publish: [
     {
       provider: 'github',
+      releaseType: 'release',
       ...githubUpdateRepository,
     },
   ],
