@@ -7,6 +7,111 @@ import { describe, expect, it } from 'vitest';
 import { migrations, StoreDatabase } from '../src/index.js';
 
 describe('migration upgrades and regressions', () => {
+  function createV14Database(filename: string) {
+    const db = new DatabaseSync(filename);
+    db.exec('PRAGMA foreign_keys = ON');
+    for (const migration of migrations.filter((item) => item.version <= 14)) {
+      db.exec(migration.sql);
+      db.exec(`PRAGMA user_version = ${migration.version}`);
+    }
+    return db;
+  }
+
+  function insertPayment(
+    db: DatabaseSync,
+    id: string,
+    key: string,
+    status: string,
+    createdAt: string,
+  ) {
+    db.prepare(
+      `INSERT INTO payment_transactions
+       (id, charge_reference, processor_id, amount_cents, status,
+        idempotency_key, created_at, updated_at)
+       VALUES (?, ?, 'simulated', 100, ?, ?, ?, ?)`,
+    ).run(id, randomUUID(), status, key, createdAt, createdAt);
+  }
+
+  it.each([
+    ['declined', 'declined'],
+    ['error', 'error'],
+  ] as const)('repairs duplicate terminal %s idempotency keys', (status) => {
+    const filename = path.join(tmpdir(), `shul-mig15-${randomUUID()}.sqlite`);
+    const rawDb = createV14Database(filename);
+    const key = `duplicate-${status}`;
+    const first = randomUUID();
+    const second = randomUUID();
+    insertPayment(rawDb, first, key, status, '2026-08-01T00:00:00.000Z');
+    insertPayment(rawDb, second, key, status, '2026-08-01T00:01:00.000Z');
+    rawDb.close();
+    const upgraded = new StoreDatabase(filename);
+    try {
+      expect(
+        upgraded.connection
+          .prepare(
+            'SELECT id, idempotency_key FROM payment_transactions ORDER BY created_at',
+          )
+          .all(),
+      ).toEqual([
+        { id: first, idempotency_key: key },
+        { id: second, idempotency_key: null },
+      ]);
+    } finally {
+      upgraded.close();
+      rmSync(filename, { force: true });
+    }
+  });
+
+  it('aborts duplicate active idempotency repair with actionable row details', () => {
+    const filename = path.join(tmpdir(), `shul-mig15-unsafe-${randomUUID()}.sqlite`);
+    const rawDb = createV14Database(filename);
+    const key = 'unsafe-duplicate';
+    const first = randomUUID();
+    const second = randomUUID();
+    insertPayment(rawDb, first, key, 'declined', '2026-08-01T00:00:00.000Z');
+    insertPayment(rawDb, second, key, 'approved', '2026-08-01T00:01:00.000Z');
+    rawDb.close();
+    expect(() => new StoreDatabase(filename)).toThrow(
+      new RegExp(`${key}.*${first}.*${second}`, 's'),
+    );
+    const check = new DatabaseSync(filename);
+    try {
+      expect(check.prepare('PRAGMA user_version').get()).toEqual({
+        user_version: 14,
+      });
+    } finally {
+      check.close();
+      rmSync(filename, { force: true });
+    }
+  });
+
+  it('repairs a duplicate key when terminal rows have mixed outcomes', () => {
+    const filename = path.join(tmpdir(), `shul-mig15-mixed-${randomUUID()}.sqlite`);
+    const rawDb = createV14Database(filename);
+    const key = 'mixed-terminal-duplicate';
+    const first = randomUUID();
+    const second = randomUUID();
+    insertPayment(rawDb, first, key, 'declined', '2026-08-01T00:00:00.000Z');
+    insertPayment(rawDb, second, key, 'error', '2026-08-01T00:01:00.000Z');
+    rawDb.close();
+    const upgraded = new StoreDatabase(filename);
+    try {
+      expect(
+        upgraded.connection
+          .prepare(
+            'SELECT id, idempotency_key FROM payment_transactions ORDER BY created_at',
+          )
+          .all(),
+      ).toEqual([
+        { id: first, idempotency_key: key },
+        { id: second, idempotency_key: null },
+      ]);
+    } finally {
+      upgraded.close();
+      rmSync(filename, { force: true });
+    }
+  });
+
   it('rebuilds the customer ledger for refunds without losing rows or protections', () => {
     const filename = path.join(tmpdir(), `shul-mig18-${randomUUID()}.sqlite`);
     const rawDb = new DatabaseSync(filename);

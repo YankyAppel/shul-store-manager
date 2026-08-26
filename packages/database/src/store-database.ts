@@ -4,6 +4,7 @@ import { PaymentService } from './payment-service.js';
 import {
   calculateCart,
   calculateCashChange,
+  cartSnapshotSchema,
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
@@ -92,6 +93,21 @@ import { dailyReport as buildDailyReport } from './reports.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
+
+export interface RefundIntent {
+  operationId: string;
+  saleId: string;
+  method: Refund['method'];
+  chargeReference: string | null;
+  allocationJson: string;
+  allocationHash: string;
+  amountCents: number;
+  state: 'recorded' | 'sent' | 'completed' | 'failed' | 'attention';
+  processorRefundId: string | null;
+  attentionReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -1606,6 +1622,33 @@ export class StoreDatabase {
     kioskId: string | null = null,
   ): import('@shul-store/shared').Sale {
     const value = completeSaleInputSchema.parse(input);
+    if (value.payment.method === 'integrated_card' && !snapshot)
+      throw new Error(
+        'Integrated-card sales must be finalized through the payment service with a frozen snapshot.',
+      );
+    const frozenSnapshot =
+      value.payment.method === 'integrated_card'
+        ? cartSnapshotSchema.parse(snapshot)
+        : null;
+    if (frozenSnapshot) {
+      const lineKey = (line: {
+        productId: string;
+        quantity: number;
+        barcodeUsed: string | null;
+      }) => `${line.productId}::${line.barcodeUsed ?? ''}::${line.quantity}`;
+      const requestedLines = value.lines
+        .map(lineKey)
+        .sort()
+        .join('|');
+      const frozenLines = frozenSnapshot.lines
+        .map(lineKey)
+        .sort()
+        .join('|');
+      if (requestedLines !== frozenLines)
+        throw new Error(
+          'Integrated-card sale lines do not match the frozen payment snapshot.',
+        );
+    }
     const settings = this.getSettings();
 
     // Check existing completion key idempotency before transaction
@@ -2018,10 +2061,11 @@ export class StoreDatabase {
             throw new Error(
               `Cannot complete sale for payment transaction in status: ${txRow.status}`,
             );
-          if (txRow.amount_cents !== totals.totalCents && !snapshot)
+          if (txRow.amount_cents !== totals.totalCents) {
             throw new Error(
               'Payment transaction amount mismatch with sale total',
             );
+          }
           if (txRow.sale_id)
             throw new Error('Payment transaction is already linked to a sale');
 
@@ -2452,7 +2496,10 @@ export class StoreDatabase {
         refundedQuantity: prior.quantity,
         remainingQuantity,
         unitSellingPriceCents: item.unitSellingPriceCents,
+        lineSubtotalCents: item.lineSubtotalCents,
+        lineTotalCents: item.lineTotalCents,
         taxCents: item.taxCents,
+        subtotalRefundedCents: prior.subtotalCents,
         taxRefundedCents: prior.taxCents,
       };
     });
@@ -2492,6 +2539,75 @@ export class StoreDatabase {
     return row ? this.mapRefund(row) : null;
   }
 
+  getRefundIntent(operationId: string): RefundIntent | null {
+    const row = this.connection
+      .prepare('SELECT * FROM refund_intents WHERE operation_id = ?')
+      .get(operationId) as Row | undefined;
+    return row ? this.mapRefundIntent(row) : null;
+  }
+
+  createRefundIntent(input: {
+    operationId: string;
+    saleId: string;
+    method: Refund['method'];
+    chargeReference: string | null;
+    allocationJson: string;
+    allocationHash: string;
+    amountCents: number;
+  }): RefundIntent {
+    const timestamp = now();
+    this.connection
+      .prepare(
+        `INSERT INTO refund_intents (
+          operation_id, sale_id, method, charge_reference, allocation_json,
+          allocation_hash, amount_cents, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?)`,
+      )
+      .run(
+        input.operationId,
+        input.saleId,
+        input.method,
+        input.chargeReference,
+        input.allocationJson,
+        input.allocationHash,
+        input.amountCents,
+        timestamp,
+        timestamp,
+      );
+    return this.getRefundIntent(input.operationId)!;
+  }
+
+  updateRefundIntent(
+    operationId: string,
+    state: RefundIntent['state'],
+    processorRefundId: string | null = null,
+    attentionReason: string | null = null,
+  ): RefundIntent {
+    this.connection
+      .prepare(
+        `UPDATE refund_intents
+         SET state=?, processor_refund_id=COALESCE(?, processor_refund_id),
+             attention_reason=?, updated_at=?
+         WHERE operation_id=?`,
+      )
+      .run(state, processorRefundId, attentionReason, now(), operationId);
+    const intent = this.getRefundIntent(operationId);
+    if (!intent) throw new Error('Refund intent not found');
+    return intent;
+  }
+
+  listRefundIntentsByState(
+    state: RefundIntent['state'],
+  ): RefundIntent[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT * FROM refund_intents WHERE state=? ORDER BY updated_at',
+        )
+        .all(state) as Row[]
+    ).map((row) => this.mapRefundIntent(row));
+  }
+
   listRecentRefunds(limit = 100): Refund[] {
     const rows = this.connection
       .prepare(
@@ -2525,6 +2641,16 @@ export class StoreDatabase {
           .prepare('SELECT * FROM refunds WHERE operation_id = ?')
           .get(value.operationId) as Row | undefined;
         if (again) {
+          this.connection
+            .prepare(
+              `UPDATE refund_intents
+               SET state='completed',
+                   processor_refund_id=COALESCE(?, processor_refund_id),
+                   attention_reason=NULL,
+                   updated_at=?
+               WHERE operation_id=? AND state IN ('recorded','sent','attention')`,
+            )
+            .run(processorRefundId, timestamp, value.operationId);
           refund = this.mapRefund(again);
           return;
         }
@@ -2692,6 +2818,16 @@ export class StoreDatabase {
             .prepare("UPDATE sales SET status = 'refunded' WHERE id = ?")
             .run(value.saleId);
         this.enqueueEntity('refund', refundId);
+        this.connection
+          .prepare(
+            `UPDATE refund_intents
+             SET state='completed',
+                 processor_refund_id=COALESCE(?, processor_refund_id),
+                 attention_reason=NULL,
+                 updated_at=?
+             WHERE operation_id=? AND state IN ('recorded','sent','attention')`,
+          )
+          .run(processorRefundId, timestamp, value.operationId);
       })();
     } catch (error) {
       throw friendlyDatabaseError(error);
@@ -2744,6 +2880,28 @@ export class StoreDatabase {
         taxCents: readSafeCents(item.tax_cents, 'refund item tax'),
         amountCents: readSafeCents(item.amount_cents, 'refund item amount'),
       })),
+    };
+  }
+
+  private mapRefundIntent(row: Row): RefundIntent {
+    return {
+      operationId: String(row.operation_id),
+      saleId: String(row.sale_id),
+      method: String(row.method) as Refund['method'],
+      chargeReference:
+        row.charge_reference === null ? null : String(row.charge_reference),
+      allocationJson: String(row.allocation_json),
+      allocationHash: String(row.allocation_hash),
+      amountCents: readSafeCents(row.amount_cents, 'refund intent amount'),
+      state: String(row.state) as RefundIntent['state'],
+      processorRefundId:
+        row.processor_refund_id === null
+          ? null
+          : String(row.processor_refund_id),
+      attentionReason:
+        row.attention_reason === null ? null : String(row.attention_reason),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     };
   }
 
