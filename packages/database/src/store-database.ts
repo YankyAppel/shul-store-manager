@@ -63,6 +63,7 @@ import {
   type SyncStatus,
 } from '@shul-store/shared';
 import { migrations, runMigrations } from './migrations.js';
+import { validateRefundRequest } from './refunds.js';
 import {
   createBackup as createBackupFile,
   listBackups as listBackupFiles,
@@ -2424,6 +2425,13 @@ export class StoreDatabase {
     return row ? this.mapRefund(row) : null;
   }
 
+  getRefund(refundId: string): Refund | null {
+    const row = this.connection
+      .prepare('SELECT * FROM refunds WHERE id = ?')
+      .get(refundId) as Row | undefined;
+    return row ? this.mapRefund(row) : null;
+  }
+
   listRecentRefunds(limit = 100): Refund[] {
     const rows = this.connection
       .prepare(
@@ -2443,33 +2451,10 @@ export class StoreDatabase {
       .get(value.operationId) as Row | undefined;
     if (existing) return this.mapRefund(existing);
 
-    const sale = this.getSale(value.saleId);
-    if (sale.status !== 'completed' && sale.status !== 'refunded')
-      throw new Error('Only completed sales can be refunded.');
-    const derivedMethod = sale.payment.method;
-    const manualExternal =
-      value.manualExternalTerminal === true &&
-      derivedMethod === 'integrated_card';
-    const method = manualExternal ? 'external_terminal' : derivedMethod;
-    if (
-      derivedMethod === 'integrated_card' &&
-      !manualExternal &&
-      !processorRefundId
-    )
-      throw new Error(
-        'No processor refund was completed. Refund on the physical terminal and record an external-terminal refund.',
-      );
-    const terminalReference = value.terminalReference?.trim() || null;
-    if (method === 'external_terminal' && !terminalReference)
-      throw new Error('A terminal reference is required for this refund.');
-    if (method !== 'external_terminal' && terminalReference)
-      throw new Error('Terminal reference is only valid for terminal refunds.');
-    if (method !== 'integrated_card' && processorRefundId)
-      throw new Error(
-        'Processor refund ID is only valid for integrated-card refunds.',
-      );
-    if (method === 'account' && !sale.customer?.id)
-      throw new Error('Account refund requires the original sale customer.');
+    const context = this.refundableSale(value.saleId);
+    const validation = validateRefundRequest(context, value, processorRefundId);
+    const { sale } = context;
+    const { method, terminalReference } = validation;
 
     const refundId = randomUUID();
     const timestamp = now();
@@ -2483,6 +2468,11 @@ export class StoreDatabase {
           refund = this.mapRefund(again);
           return;
         }
+        validateRefundRequest(
+          this.refundableSale(value.saleId),
+          value,
+          processorRefundId,
+        );
         const lineInputs = value.items.map((requested) => {
           const item = this.connection
             .prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?')
@@ -2519,12 +2509,7 @@ export class StoreDatabase {
         const calculation = calculateRefund(lineInputs);
         const receiptRow = this.connection
           .prepare(
-            `SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next
-             FROM (
-               SELECT receipt_number FROM sales
-               UNION ALL SELECT receipt_number FROM account_payments
-               UNION ALL SELECT receipt_number FROM refunds
-             )`,
+            'SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next FROM refunds',
           )
           .get() as Row;
         const receiptNumber = Number(receiptRow.next);

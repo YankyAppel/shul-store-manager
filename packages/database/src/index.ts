@@ -27,6 +27,7 @@ export {
 export { KioskServer, paymentFailureStatus } from './kiosk-server.js';
 export { migrations, runMigrations } from './migrations.js';
 export { dailyReport } from './reports.js';
+export { validateRefundRequest, type RefundValidation } from './refunds.js';
 export {
   createBackup,
   formatBackupName,

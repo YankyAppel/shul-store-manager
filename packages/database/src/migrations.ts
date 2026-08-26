@@ -289,7 +289,7 @@ export const migrations: Migration[] = [
       BEFORE INSERT ON customer_ledger
       WHEN NEW.entry_type = 'sale_charge'
       BEGIN
-      SELECT CASE
+        SELECT CASE
           WHEN NOT EXISTS (
             SELECT 1 FROM sales
             WHERE sales.id = NEW.related_sale_id

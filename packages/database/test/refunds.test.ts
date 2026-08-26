@@ -254,6 +254,58 @@ describe('refunds', () => {
     expect(store.getSale(sale.id).status).toBe('completed');
   });
 
+  it('rejects invalid integrated-card refunds before calling the processor', async () => {
+    let refundCalls = 0;
+    const trackingProcessor = {
+      ...simulatedProcessor,
+      id: 'tracking-refund',
+      refundCharge: async (
+        ...args: Parameters<NonNullable<typeof simulatedProcessor.refundCharge>>
+      ) => {
+        refundCalls += 1;
+        return simulatedProcessor.refundCharge!(...args);
+      },
+    };
+    processors.push(trackingProcessor);
+    try {
+      store = new StoreDatabase(':memory:');
+      const { sale } = await integratedSale(
+        store,
+        103,
+        101,
+        trackingProcessor.id,
+      );
+      await expect(
+        store.payments.refund(refundInput(sale.id, sale.items[0]!.id, 2)),
+      ).rejects.toThrow(/only 1 unit\(s\) remain refundable/);
+      expect(refundCalls).toBe(0);
+      expect(store.listRefunds(sale.id)).toHaveLength(0);
+    } finally {
+      processors.splice(processors.indexOf(trackingProcessor), 1);
+    }
+  });
+
+  it('reports the processor refund when persistence fails afterward', async () => {
+    store = new StoreDatabase(':memory:');
+    const { sale } = await integratedSale(store, 103, 101);
+    const originalRecordRefund = store.recordRefund;
+    const failingStore = store as StoreDatabase & {
+      recordRefund: typeof store.recordRefund;
+    };
+    failingStore.recordRefund = () => {
+      throw new Error('simulated database write failure');
+    };
+    try {
+      await expect(
+        store.payments.refund(refundInput(sale.id, sale.items[0]!.id, 1)),
+      ).rejects.toThrow(
+        /Card was refunded but not recorded.*Processor refund ID: sim_refund_.*refunded amount: 103 cents/,
+      );
+    } finally {
+      failingStore.recordRefund = originalRecordRefund;
+    }
+  });
+
   it('writes nothing when the integrated-card processor errors', async () => {
     store = new StoreDatabase(':memory:');
     const { sale, productId } = await integratedSale(store, 102, 102);

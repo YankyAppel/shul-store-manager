@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { processors } from '@shul-store/payments';
 import {
   calculateCart,
-  calculateRefund,
   cartSnapshotSchema,
   errorMessage,
   PlaintextSecretStore,
@@ -15,6 +14,7 @@ import {
   type StoreSettings,
 } from '@shul-store/shared';
 import type { StoreDatabase } from './store-database.js';
+import { validateRefundRequest } from './refunds.js';
 
 /**
  * The single Manager/Kiosk payment service.
@@ -192,6 +192,33 @@ interface TransactionRow {
   attention_reason: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface RefundTransactionRow {
+  processor_id: string;
+  processor_config_secret: string | null;
+  processor_config_hash: string | null;
+}
+
+function parseRefundTransaction(value: unknown): RefundTransactionRow | null {
+  if (value === null || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.processor_id !== 'string') return null;
+  if (
+    row.processor_config_secret !== null &&
+    typeof row.processor_config_secret !== 'string'
+  )
+    return null;
+  if (
+    row.processor_config_hash !== null &&
+    typeof row.processor_config_hash !== 'string'
+  )
+    return null;
+  return {
+    processor_id: row.processor_id,
+    processor_config_secret: row.processor_config_secret,
+    processor_config_hash: row.processor_config_hash,
+  };
 }
 
 export class PaymentService {
@@ -765,8 +792,10 @@ export class PaymentService {
     if (value.manualExternalTerminal || context.method !== 'integrated_card') {
       return this.db.recordRefund(value);
     }
-    const tx = this.db.getPaymentTransaction(context.chargeReference ?? '') as
-      TransactionRow | undefined;
+    const validation = validateRefundRequest(context, value, null, false);
+    const tx = parseRefundTransaction(
+      this.db.getPaymentTransaction(context.chargeReference ?? ''),
+    );
     if (!tx)
       throw new Error(
         'Integrated card charge not found. Refund on the physical terminal and record an external-terminal refund.',
@@ -825,32 +854,11 @@ export class PaymentService {
       throw new Error(
         'This processor cannot refund charges. Refund on the physical terminal and record an external-terminal refund.',
       );
-    const requested = new Map(
-      value.items.map((item) => [item.saleItemId, item]),
-    );
-    const calculation = calculateRefund(
-      context.items
-        .filter((item) => requested.has(item.id))
-        .map((item) => {
-          const request = requested.get(item.id)!;
-          return {
-            saleItemId: item.id,
-            productName: item.productName,
-            soldQuantity: item.quantity,
-            refundedQuantity: item.refundedQuantity,
-            taxAlreadyRefundedCents: item.taxRefundedCents,
-            unitSellingPriceCents: item.unitSellingPriceCents,
-            taxCents: item.taxCents,
-            quantity: request.quantity,
-            restocked: request.restocked,
-          };
-        }),
-    );
     const result = await processor.refundCharge(
       {
         chargeReference: context.chargeReference!,
         refundReference: value.operationId,
-        amountCents: calculation.amountCents,
+        amountCents: validation.calculation.amountCents,
       },
       config,
       this.db.getProcessorStorage(),
@@ -859,7 +867,14 @@ export class PaymentService {
       throw new Error(
         `${result.errorMessage ?? 'Processor refund failed.'} Refund on the physical terminal and record an external-terminal refund.`,
       );
-    return this.db.recordRefund(value, result.processorRefundId ?? null);
+    const processorRefundId = result.processorRefundId ?? null;
+    try {
+      return this.db.recordRefund(value, processorRefundId);
+    } catch (error) {
+      throw new Error(
+        `Card was refunded but not recorded. Processor refund ID: ${processorRefundId ?? 'unknown'}; refunded amount: ${validation.calculation.amountCents} cents. ${errorMessage(error)}`,
+      );
+    }
   }
 
   /** Reconciles every unresolved transaction except those awaiting operator attention. */

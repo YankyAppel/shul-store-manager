@@ -833,9 +833,7 @@ async function printAccountPayment(paymentId: string): Promise<PrintResult> {
 }
 
 async function printRefund(refundId: string): Promise<PrintResult> {
-  const refund = database
-    .listRecentRefunds(1000)
-    .find((item) => item.id === refundId);
+  const refund = database.getRefund(refundId);
   if (!refund) throw new Error('Refund not found');
   const result = await printHtmlDocument(
     refundReceiptHtml({ refund, storeName: database.getSettings().storeName }),
