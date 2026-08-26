@@ -499,9 +499,7 @@ function registerIpc(): void {
   // Settings
   ipcMain.handle('settings:get', () => database.getSettings());
   ipcMain.handle('settings:update', (_event, input) => {
-    const updated = database.updateSettings(storeSettingsSchema.parse(input));
-    if (app.isPackaged) configureAutoUpdater(database.getDeviceSettings());
-    return updated;
+    return database.updateSettings(storeSettingsSchema.parse(input));
   });
   ipcMain.handle('settings:getDevice', () => database.getDeviceSettings());
   ipcMain.handle('settings:updateDevice', (_event, input) => {

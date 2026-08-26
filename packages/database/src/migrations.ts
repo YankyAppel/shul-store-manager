@@ -1194,7 +1194,11 @@ export const migrations: Migration[] = [
         update_feed_url, automatic_updates_enabled, updated_at
       )
       SELECT
-        1, card_processor_config_json, 0, update_feed_url,
+        1, card_processor_config_json, 0,
+        CASE
+          WHEN update_feed_url LIKE 'https://%' THEN update_feed_url
+          ELSE NULL
+        END,
         COALESCE(automatic_updates_enabled, 1), CURRENT_TIMESTAMP
       FROM store_settings WHERE singleton_id = 1;
       UPDATE store_settings

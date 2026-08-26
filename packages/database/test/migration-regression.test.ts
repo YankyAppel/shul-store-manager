@@ -100,47 +100,55 @@ describe('migration upgrades and regressions', () => {
     }
   });
 
-  it('moves legacy device settings and clears the old store settings columns', () => {
-    const filename = path.join(
-      tmpdir(),
-      `shul-mig24-device-${randomUUID()}.sqlite`,
-    );
-    const rawDb = createV23Database(filename);
-    rawDb.close();
-    const legacyDb = new DatabaseSync(filename);
-    legacyDb
-      .prepare(
-        `UPDATE store_settings SET
+  it.each([
+    ['http://updates.example.test/feed', null],
+    ['https://updates.example.test/feed', 'https://updates.example.test/feed'],
+  ] as const)(
+    'moves legacy device settings and clears the old store settings columns (%s)',
+    (legacyFeedUrl, expectedFeedUrl) => {
+      const filename = path.join(
+        tmpdir(),
+        `shul-mig24-device-${randomUUID()}.sqlite`,
+      );
+      const rawDb = createV23Database(filename);
+      rawDb.close();
+      const legacyDb = new DatabaseSync(filename);
+      legacyDb
+        .prepare(
+          `UPDATE store_settings SET
           card_processor_config_json = ?,
           update_feed_url = ?,
           automatic_updates_enabled = 0
          WHERE singleton_id = 1`,
-      )
-      .run('{"apiKey":"legacy"}', 'https://updates.example.test/feed');
-    legacyDb.close();
-    const upgraded = new StoreDatabase(filename);
-    try {
-      expect(upgraded.getDeviceSettings()).toEqual({
-        updateFeedUrl: 'https://updates.example.test/feed',
-        automaticUpdatesEnabled: false,
-      });
-      expect(upgraded.getCardProcessorConfigJson()).toBe('{"apiKey":"legacy"}');
-      expect(
-        upgraded.connection
-          .prepare(
-            'SELECT card_processor_config_json, update_feed_url, automatic_updates_enabled FROM store_settings WHERE singleton_id = 1',
-          )
-          .get(),
-      ).toEqual({
-        card_processor_config_json: null,
-        update_feed_url: null,
-        automatic_updates_enabled: 1,
-      });
-    } finally {
-      upgraded.close();
-      rmSync(filename, { force: true });
-    }
-  });
+        )
+        .run('{"apiKey":"legacy"}', legacyFeedUrl);
+      legacyDb.close();
+      const upgraded = new StoreDatabase(filename);
+      try {
+        expect(upgraded.getDeviceSettings()).toEqual({
+          updateFeedUrl: expectedFeedUrl,
+          automaticUpdatesEnabled: false,
+        });
+        expect(upgraded.getCardProcessorConfigJson()).toBe(
+          '{"apiKey":"legacy"}',
+        );
+        expect(
+          upgraded.connection
+            .prepare(
+              'SELECT card_processor_config_json, update_feed_url, automatic_updates_enabled FROM store_settings WHERE singleton_id = 1',
+            )
+            .get(),
+        ).toEqual({
+          card_processor_config_json: null,
+          update_feed_url: null,
+          automatic_updates_enabled: 1,
+        });
+      } finally {
+        upgraded.close();
+        rmSync(filename, { force: true });
+      }
+    },
+  );
 
   it('aborts duplicate initiated idempotency repair before creating the unique index', () => {
     const filename = path.join(
