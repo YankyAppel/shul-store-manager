@@ -281,7 +281,11 @@ describe('payment transactions & integration', () => {
           totalCents: 100,
         },
       ],
-      totals: { subtotalCents: 100, taxCents: 0, totalCents: 100 },
+      totals: {
+        subtotalCents: 100,
+        taxCents: 0,
+        totalCents: 100,
+      },
     });
 
     store1.createPaymentTransaction(
@@ -505,11 +509,7 @@ describe('payment transactions & integration', () => {
     store.createPaymentTransaction(
       existingRef,
       'simulated',
-      store.completeSale({
-        completionKey: randomUUID(),
-        lines: [{ productId: products[0].id, quantity: 1, barcodeUsed: null }],
-        payment: { method: 'cash', cashReceivedCents: 1000 },
-      }).totalCents,
+      products[0].sellingPriceCents,
 
       JSON.stringify({ lines: [], totals: { totalCents: 100 } }),
       idempotencyKey,
@@ -518,20 +518,106 @@ describe('payment transactions & integration', () => {
       .prepare("UPDATE payment_transactions SET status='approved'")
       .run();
 
-    store.completeSale({
-      completionKey: idempotencyKey,
-      lines: [{ productId: products[0].id, quantity: 1, barcodeUsed: null }],
-      payment: { method: 'integrated_card', chargeReference: existingRef },
-    });
-
-    expect(() => {
-      store.completeSale({
+    const frozenSnapshot = {
+      lines: [
+        {
+          productId: products[0].id,
+          quantity: 1,
+          barcodeUsed: null,
+          productName: products[0].name,
+          secondaryName: products[0].secondaryName,
+          unitSellingPriceCents: products[0].sellingPriceCents,
+          unitPurchaseCostCents: products[0].purchaseCostCents,
+          taxable: false,
+          unitPriceCents: products[0].sellingPriceCents,
+          subtotalCents: products[0].sellingPriceCents,
+          taxCents: 0,
+          totalCents: products[0].sellingPriceCents,
+        },
+      ],
+      totals: {
+        subtotalCents: products[0].sellingPriceCents,
+        taxCents: 0,
+        totalCents: products[0].sellingPriceCents,
+      },
+    };
+    store.completeSale(
+      {
         completionKey: idempotencyKey,
         lines: [{ productId: products[0].id, quantity: 1, barcodeUsed: null }],
-        payment: { method: 'integrated_card', chargeReference: randomUUID() },
-      });
+        payment: { method: 'integrated_card', chargeReference: existingRef },
+      },
+      frozenSnapshot,
+    );
+
+    expect(() => {
+      store.completeSale(
+        {
+          completionKey: idempotencyKey,
+          lines: [{ productId: products[0].id, quantity: 1, barcodeUsed: null }],
+          payment: { method: 'integrated_card', chargeReference: randomUUID() },
+        },
+        frozenSnapshot,
+      );
     }).toThrow(
       'A sale with this completion key already exists with different details.',
     );
+  });
+
+  test('rejects same-total product substitution during frozen finalization', () => {
+    const products = store.listProducts();
+    const original = products[0]!;
+    const substitute = products[1]!;
+    store.updateProduct(substitute.id, {
+      categoryId: substitute.categoryId,
+      name: substitute.name,
+      purchaseCostCents: substitute.purchaseCostCents,
+      sellingPriceCents: original.sellingPriceCents,
+      taxable: false,
+      lowStockThreshold: substitute.lowStockThreshold,
+    });
+    const chargeReference = randomUUID();
+    store.createPaymentTransaction(
+      chargeReference,
+      'simulated',
+      original.sellingPriceCents,
+      '{}',
+      randomUUID(),
+    );
+    store.updatePaymentTransactionStatus(chargeReference, 'approved');
+    const snapshot = {
+      lines: [
+        {
+          productId: original.id,
+          quantity: 1,
+          barcodeUsed: null,
+          productName: original.name,
+          secondaryName: original.secondaryName,
+          unitSellingPriceCents: original.sellingPriceCents,
+          unitPurchaseCostCents: original.purchaseCostCents,
+          taxable: false,
+          unitPriceCents: original.sellingPriceCents,
+          subtotalCents: original.sellingPriceCents,
+          taxCents: 0,
+          totalCents: original.sellingPriceCents,
+        },
+      ],
+      totals: {
+        subtotalCents: original.sellingPriceCents,
+        taxCents: 0,
+        totalCents: original.sellingPriceCents,
+      },
+    };
+    expect(() =>
+      store.completeSale(
+        {
+          completionKey: randomUUID(),
+          lines: [{ productId: substitute.id, quantity: 1, barcodeUsed: null }],
+          payment: { method: 'integrated_card', chargeReference },
+        },
+        snapshot,
+      ),
+    ).toThrow('do not match the frozen payment snapshot');
+    expect(store.listSales()).toHaveLength(0);
   });
 });

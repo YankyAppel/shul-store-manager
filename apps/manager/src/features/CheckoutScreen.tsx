@@ -281,21 +281,16 @@ export function CheckoutScreen({
       const result = await window.storeApi.payments.initiateCharge(input);
 
       if (result.status === 'approved') {
-        const inputComp = {
-          completionKey: completionKey.current,
-          lines: cart.map((c) => ({
-            productId: c.product.id,
-            quantity: c.quantity,
-            barcodeUsed: c.barcodeUsed,
-          })),
-          payment: {
-            method: 'integrated_card' as const,
-            chargeReference: ref,
-          },
-        };
-        const completed = await window.storeApi.checkout.complete(inputComp);
-        setSale(completed);
-        await onInventoryChanged();
+        if (result.sale) {
+          setSale(result.sale);
+          await onInventoryChanged();
+        } else {
+          setChargeStatus('error');
+          setChargeError(
+            result.attentionReason ??
+              'The card was approved but the sale needs manager attention.',
+          );
+        }
       } else if (result.status === 'declined') {
         setChargeStatus('declined');
         setChargeError(result.declineReason || 'Card declined');
@@ -307,9 +302,9 @@ export function CheckoutScreen({
       } else if (result.status === 'pending' || result.status === 'unknown') {
         setChargeStatus('pending');
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       setChargeStatus('error');
-      setChargeError(e.message);
+      setChargeError(e instanceof Error ? e.message : 'Payment failed');
     } finally {
       isChargingRef.current = false;
     }
@@ -322,21 +317,16 @@ export function CheckoutScreen({
       const result =
         await window.storeApi.payments.getChargeStatus(chargeReference);
       if (result.status === 'approved') {
-        const inputComp = {
-          completionKey: completionKey.current,
-          lines: cart.map((c) => ({
-            productId: c.product.id,
-            quantity: c.quantity,
-            barcodeUsed: c.barcodeUsed,
-          })),
-          payment: {
-            method: 'integrated_card' as const,
-            chargeReference,
-          },
-        };
-        const completed = await window.storeApi.checkout.complete(inputComp);
-        setSale(completed);
-        await onInventoryChanged();
+        if (result.sale) {
+          setSale(result.sale);
+          await onInventoryChanged();
+        } else {
+          setChargeStatus('error');
+          setChargeError(
+            result.attentionReason ??
+              'The card was approved but the sale needs manager attention.',
+          );
+        }
       } else if (result.status === 'declined') {
         setChargeStatus('declined');
         setChargeError(result.declineReason || 'Card declined');
@@ -346,8 +336,9 @@ export function CheckoutScreen({
           result.errorMessage || 'An error occurred during payment',
         );
       }
-    } catch (e: any) {
-      setChargeError(e.message);
+    } catch (e: unknown) {
+      setChargeStatus('error');
+      setChargeError(e instanceof Error ? e.message : 'Payment status failed');
     }
   }
 
