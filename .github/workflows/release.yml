@@ -27,7 +27,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Package manager installer
-        run: npm run package -w @shul-store/manager -- --publish always
+        run: npm run package:publish -w @shul-store/manager
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
