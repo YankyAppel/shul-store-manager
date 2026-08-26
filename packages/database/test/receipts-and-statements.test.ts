@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   accountPaymentReceiptHtml,
   escapeHtml,
+  parseReceiptBarcode,
   receiptHtml,
   statementHtml,
   statementOptionsSchema,
@@ -370,5 +371,67 @@ describe('receipts and statements', () => {
     expect(paymentReceiptHtml).toContain(
       '&lt;b&gt;bold&lt;/b&gt; &amp; &quot;quotes&quot;',
     );
+  });
+
+  it('resolves sale, refund, and account-payment receipt namespaces independently', () => {
+    store.updateSettings({
+      ...store.getSettings(),
+      allowCustomerCredit: true,
+    });
+    store.addInventoryMovement({
+      productId,
+      quantityChange: 45,
+      reason: 'stock_received',
+      notes: 'Receipt lookup test',
+    });
+    const sales = Array.from({ length: 45 }, () =>
+      store.completeSale({
+        completionKey: randomUUID(),
+        lines: [{ productId, quantity: 1, barcodeUsed: null }],
+        payment: { method: 'cash', cashReceivedCents: 1500 },
+      }),
+    );
+    const refunds = sales.map((sale) =>
+      store.recordRefund({
+        operationId: randomUUID(),
+        saleId: sale.id,
+        items: [
+          { saleItemId: sale.items[0]!.id, quantity: 1, restocked: true },
+        ],
+        reason: 'Receipt lookup test',
+      }),
+    );
+    const payments = Array.from({ length: 45 }, () =>
+      store.recordAccountPayment({
+        operationId: randomUUID(),
+        customerId,
+        amountCents: 1,
+        payment: { method: 'cash', cashReceivedCents: 1 },
+      }),
+    );
+    const sale = sales[44]!;
+    const refund = refunds[44]!;
+    const payment = payments[44]!;
+
+    expect(store.lookupReceiptBarcode('SSM-S-45')).toEqual({
+      kind: 'sale',
+      sale: expect.objectContaining({ id: sale.id, receiptNumber: 45 }),
+    });
+    expect(store.lookupReceiptBarcode('SSM-R-000045')).toEqual({
+      kind: 'refund',
+      refund: expect.objectContaining({ id: refund.id, receiptNumber: 45 }),
+      sale: expect.objectContaining({ id: sale.id, receiptNumber: 45 }),
+    });
+    expect(store.lookupReceiptBarcode('SSM-P-45')).toEqual({
+      kind: 'account_payment',
+      payment: expect.objectContaining({
+        id: payment.id,
+        receiptNumber: 45,
+      }),
+      customerId,
+    });
+    expect(store.lookupReceiptBarcode('SSM-S-999999')).toBeNull();
+    expect(parseReceiptBarcode(store.generateInternalBarcode())).toBeNull();
+    expect(parseReceiptBarcode(store.generateCustomerBarcode())).toBeNull();
   });
 });

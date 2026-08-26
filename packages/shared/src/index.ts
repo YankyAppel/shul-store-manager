@@ -44,6 +44,7 @@ export * from './labels.js';
 export * from './kiosk.js';
 export * from './kiosk-client.js';
 export * from './printing.js';
+export * from './receipt-barcode.js';
 export * from './reports.js';
 export * from './refunds.js';
 export * from './secret-store.js';
@@ -337,6 +338,16 @@ export interface StoreApi {
     get(id: string): Promise<Sale>;
     receipt(id: string): Promise<ReceiptData>;
     print(id: string): Promise<PrintResult>;
+    lookupReceiptBarcode(value: string): Promise<
+      | { kind: 'sale'; sale: Sale }
+      | { kind: 'refund'; refund: Refund; sale: Sale }
+      | {
+          kind: 'account_payment';
+          payment: AccountPayment;
+          customerId: string;
+        }
+      | null
+    >;
   };
   labels: {
     render(input: LabelPrintRequest): Promise<string>;
