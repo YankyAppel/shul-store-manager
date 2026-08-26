@@ -51,6 +51,13 @@ const dailyReportSchema = z.object({
     count: z.number().int().safe(),
     totalCents: z.number().int().safe(),
   }),
+  refunds: z.array(
+    z.object({
+      method: z.string(),
+      refundCount: z.number().int().safe(),
+      amountCents: z.number().int().safe(),
+    }),
+  ),
   voided: z.object({
     count: z.number().int().safe(),
     totalCents: z.number().int().safe(),
@@ -142,6 +149,12 @@ export interface DailyAccountPaymentTotal {
   amountCents: number;
 }
 
+export interface DailyRefundTotal {
+  method: string;
+  refundCount: number;
+  amountCents: number;
+}
+
 export interface DailyCardTransactionTotal {
   status: string;
   transactionCount: number;
@@ -181,6 +194,7 @@ export interface DailyReport {
     count: number;
     totalCents: number;
   };
+  refunds: DailyRefundTotal[];
   voided: {
     count: number;
     totalCents: number;

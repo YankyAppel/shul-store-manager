@@ -11,6 +11,8 @@ import {
   productInputSchema,
   PlaintextSecretStore,
   recordAccountPaymentInputSchema,
+  calculateRefund,
+  recordRefundInputSchema,
   statementOptionsSchema,
   storeSettingsSchema,
   syncOperationFor,
@@ -42,6 +44,11 @@ import {
   type ProductInput,
   type ProductPayload,
   type RecordAccountPaymentInput,
+  type RecordRefundInput,
+  type RefundPayload,
+  type Refund,
+  type RefundItem,
+  type RefundableSale,
   type Sale,
   type SaleItemPayload,
   type SalePayload,
@@ -2349,6 +2356,337 @@ export class StoreDatabase {
     };
   }
 
+  refundableSale(saleId: string): RefundableSale {
+    const sale = this.getSale(saleId);
+    if (sale.status !== 'completed' && sale.status !== 'refunded')
+      throw new Error('Only completed sales can be refunded.');
+    const method = sale.payment.method;
+    const refundRows = this.connection
+      .prepare(
+        `SELECT sale_item_id,
+                COALESCE(SUM(quantity), 0) AS refunded_quantity,
+                COALESCE(SUM(tax_cents), 0) AS refunded_tax_cents
+         FROM refund_items
+         WHERE refund_id IN (SELECT id FROM refunds WHERE sale_id = ?)
+         GROUP BY sale_item_id`,
+      )
+      .all(saleId) as Row[];
+    const refundedByItem = new Map(
+      refundRows.map((row) => [
+        String(row.sale_item_id),
+        {
+          quantity: Number(row.refunded_quantity),
+          taxCents: readSafeCents(row.refunded_tax_cents, 'refunded tax'),
+        },
+      ]),
+    );
+    const items = sale.items.map((item) => {
+      const prior = refundedByItem.get(item.id) ?? { quantity: 0, taxCents: 0 };
+      const remainingQuantity = item.quantity - prior.quantity;
+      return {
+        id: item.id,
+        productId: item.productId,
+        productName: item.productName,
+        quantity: item.quantity,
+        refundedQuantity: prior.quantity,
+        remainingQuantity,
+        unitSellingPriceCents: item.unitSellingPriceCents,
+        taxCents: item.taxCents,
+        taxRefundedCents: prior.taxCents,
+      };
+    });
+    return {
+      sale,
+      method,
+      chargeReference:
+        sale.payment.method === 'integrated_card'
+          ? (sale.payment.chargeReference ?? null)
+          : null,
+      customerId: sale.customer?.id ?? null,
+      items,
+      refunds: this.listRefunds(saleId),
+    };
+  }
+
+  listRefunds(saleId: string): Refund[] {
+    const rows = this.connection
+      .prepare(
+        'SELECT * FROM refunds WHERE sale_id = ? ORDER BY created_at DESC, receipt_number DESC',
+      )
+      .all(saleId) as Row[];
+    return rows.map((row) => this.mapRefund(row));
+  }
+
+  getRefundByOperationId(operationId: string): Refund | null {
+    const row = this.connection
+      .prepare('SELECT * FROM refunds WHERE operation_id = ?')
+      .get(operationId) as Row | undefined;
+    return row ? this.mapRefund(row) : null;
+  }
+
+  listRecentRefunds(limit = 100): Refund[] {
+    const rows = this.connection
+      .prepare(
+        'SELECT * FROM refunds ORDER BY created_at DESC, receipt_number DESC LIMIT ?',
+      )
+      .all(limit) as Row[];
+    return rows.map((row) => this.mapRefund(row));
+  }
+
+  recordRefund(
+    input: RecordRefundInput,
+    processorRefundId: string | null = null,
+  ): Refund {
+    const value = recordRefundInputSchema.parse(input);
+    const existing = this.connection
+      .prepare('SELECT * FROM refunds WHERE operation_id = ?')
+      .get(value.operationId) as Row | undefined;
+    if (existing) return this.mapRefund(existing);
+
+    const sale = this.getSale(value.saleId);
+    if (sale.status !== 'completed' && sale.status !== 'refunded')
+      throw new Error('Only completed sales can be refunded.');
+    const derivedMethod = sale.payment.method;
+    const manualExternal =
+      value.manualExternalTerminal === true &&
+      derivedMethod === 'integrated_card';
+    const method = manualExternal ? 'external_terminal' : derivedMethod;
+    if (
+      derivedMethod === 'integrated_card' &&
+      !manualExternal &&
+      !processorRefundId
+    )
+      throw new Error(
+        'No processor refund was completed. Refund on the physical terminal and record an external-terminal refund.',
+      );
+    const terminalReference = value.terminalReference?.trim() || null;
+    if (method === 'external_terminal' && !terminalReference)
+      throw new Error('A terminal reference is required for this refund.');
+    if (method !== 'external_terminal' && terminalReference)
+      throw new Error('Terminal reference is only valid for terminal refunds.');
+    if (method !== 'integrated_card' && processorRefundId)
+      throw new Error(
+        'Processor refund ID is only valid for integrated-card refunds.',
+      );
+    if (method === 'account' && !sale.customer?.id)
+      throw new Error('Account refund requires the original sale customer.');
+
+    const refundId = randomUUID();
+    const timestamp = now();
+    let refund: Refund | null = null;
+    try {
+      this.connection.transaction(() => {
+        const again = this.connection
+          .prepare('SELECT * FROM refunds WHERE operation_id = ?')
+          .get(value.operationId) as Row | undefined;
+        if (again) {
+          refund = this.mapRefund(again);
+          return;
+        }
+        const lineInputs = value.items.map((requested) => {
+          const item = this.connection
+            .prepare('SELECT * FROM sale_items WHERE id = ? AND sale_id = ?')
+            .get(requested.saleItemId, value.saleId) as Row | undefined;
+          if (!item) throw new Error('Refund sale item was not found.');
+          const refundedRow = this.connection
+            .prepare(
+              'SELECT COALESCE(SUM(ri.quantity), 0) AS refunded FROM refund_items ri WHERE ri.sale_item_id = ?',
+            )
+            .get(requested.saleItemId) as { refunded: number };
+          const taxRow = this.connection
+            .prepare(
+              `SELECT COALESCE(SUM(ri.tax_cents), 0) AS tax
+               FROM refund_items ri
+               JOIN refunds r ON r.id = ri.refund_id
+               WHERE ri.sale_item_id = ?`,
+            )
+            .get(requested.saleItemId) as { tax: number };
+          return {
+            saleItemId: requested.saleItemId,
+            productName: String(item.product_name),
+            soldQuantity: Number(item.quantity),
+            refundedQuantity: Number(refundedRow.refunded),
+            taxAlreadyRefundedCents: readSafeCents(taxRow.tax, 'refunded tax'),
+            unitSellingPriceCents: readSafeCents(
+              item.unit_selling_price_cents,
+              'unit selling price',
+            ),
+            taxCents: readSafeCents(item.tax_cents, 'sale item tax'),
+            quantity: requested.quantity,
+            restocked: requested.restocked,
+          };
+        });
+        const calculation = calculateRefund(lineInputs);
+        const receiptRow = this.connection
+          .prepare(
+            `SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next
+             FROM (
+               SELECT receipt_number FROM sales
+               UNION ALL SELECT receipt_number FROM account_payments
+               UNION ALL SELECT receipt_number FROM refunds
+             )`,
+          )
+          .get() as Row;
+        const receiptNumber = Number(receiptRow.next);
+        this.connection
+          .prepare(
+            `INSERT INTO refunds (
+              id, operation_id, receipt_number, sale_id, method, subtotal_cents,
+              tax_cents, amount_cents, terminal_reference, charge_reference,
+              processor_refund_id, customer_id, reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            refundId,
+            value.operationId,
+            receiptNumber,
+            value.saleId,
+            method,
+            calculation.subtotalCents,
+            calculation.taxCents,
+            calculation.amountCents,
+            terminalReference,
+            method === 'integrated_card'
+              ? (sale.payment.chargeReference ?? null)
+              : null,
+            method === 'integrated_card' ? processorRefundId : null,
+            method === 'account' ? (sale.customer?.id ?? null) : null,
+            value.reason,
+            timestamp,
+          );
+        for (const line of calculation.lines) {
+          const refundItemId = randomUUID();
+          this.connection
+            .prepare(
+              `INSERT INTO refund_items (
+                id, refund_id, sale_item_id, product_id, product_name, quantity,
+                restocked, subtotal_cents, tax_cents, amount_cents
+              ) SELECT ?, ?, id, product_id, product_name, ?, ?, ?, ?, ?
+                FROM sale_items WHERE id = ?`,
+            )
+            .run(
+              refundItemId,
+              refundId,
+              line.quantity,
+              line.restocked ? 1 : 0,
+              line.subtotalCents,
+              line.taxCents,
+              line.amountCents,
+              line.saleItemId,
+            );
+          if (line.restocked) {
+            const movementId = randomUUID();
+            this.connection
+              .prepare(
+                `INSERT INTO inventory_movements (
+                  id, operation_id, product_id, quantity_change, reason,
+                  occurred_at, device_id, related_sale_id, notes, sequence
+                ) SELECT ?, ?, product_id, ?, 'customer_return', ?, NULL, ?,
+                         ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements)
+                   FROM sale_items WHERE id = ?`,
+              )
+              .run(
+                movementId,
+                refundItemId,
+                line.quantity,
+                timestamp,
+                value.saleId,
+                `Refund #${receiptNumber}`,
+                line.saleItemId,
+              );
+          }
+        }
+        if (method === 'account') {
+          this.connection
+            .prepare(
+              `INSERT INTO customer_ledger (
+                id, operation_id, customer_id, amount_cents, entry_type,
+                occurred_at, related_sale_id, related_account_payment_id,
+                related_refund_id, device_id, notes, sequence
+              ) VALUES (?, ?, ?, ?, 'sale_refund', ?, ?, NULL, ?, NULL, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM customer_ledger))`,
+            )
+            .run(
+              randomUUID(),
+              randomUUID(),
+              sale.customer!.id,
+              -calculation.amountCents,
+              timestamp,
+              value.saleId,
+              refundId,
+              `Refund #${receiptNumber}`,
+            );
+        }
+        const remaining = this.connection
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM sale_items si
+             WHERE si.sale_id = ?
+               AND si.quantity > COALESCE(
+                 (SELECT SUM(ri.quantity) FROM refund_items ri WHERE ri.sale_item_id = si.id),
+                 0
+               )`,
+          )
+          .get(value.saleId) as { count: number };
+        if (Number(remaining.count) === 0)
+          this.connection
+            .prepare("UPDATE sales SET status = 'refunded' WHERE id = ?")
+            .run(value.saleId);
+        this.enqueueEntity('refund', refundId);
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+    if (!refund) {
+      const row = this.connection
+        .prepare('SELECT * FROM refunds WHERE id = ?')
+        .get(refundId) as Row | undefined;
+      if (!row) throw new Error('Refund recording failed.');
+      refund = this.mapRefund(row);
+    }
+    return refund;
+  }
+
+  private mapRefund(row: Row): Refund {
+    const items = this.connection
+      .prepare('SELECT * FROM refund_items WHERE refund_id = ? ORDER BY rowid')
+      .all(String(row.id)) as Row[];
+    return {
+      id: String(row.id),
+      operationId: String(row.operation_id),
+      receiptNumber: Number(row.receipt_number),
+      saleId: String(row.sale_id),
+      method: String(row.method) as Refund['method'],
+      subtotalCents: readSafeCents(row.subtotal_cents, 'refund subtotal'),
+      taxCents: readSafeCents(row.tax_cents, 'refund tax'),
+      amountCents: readSafeCents(row.amount_cents, 'refund amount'),
+      terminalReference:
+        row.terminal_reference === null ? null : String(row.terminal_reference),
+      chargeReference:
+        row.charge_reference === null ? null : String(row.charge_reference),
+      processorRefundId:
+        row.processor_refund_id === null
+          ? null
+          : String(row.processor_refund_id),
+      customerId: row.customer_id === null ? null : String(row.customer_id),
+      reason: String(row.reason),
+      createdAt: String(row.created_at),
+      items: items.map((item): RefundItem => ({
+        id: String(item.id),
+        saleItemId: String(item.sale_item_id),
+        productId: String(item.product_id),
+        productName: String(item.product_name),
+        quantity: Number(item.quantity),
+        restocked: Boolean(item.restocked),
+        subtotalCents: readSafeCents(
+          item.subtotal_cents,
+          'refund item subtotal',
+        ),
+        taxCents: readSafeCents(item.tax_cents, 'refund item tax'),
+        amountCents: readSafeCents(item.amount_cents, 'refund item amount'),
+      })),
+    };
+  }
+
   recordPrintAttempt(
     saleId: string,
     success: boolean,
@@ -3014,6 +3352,10 @@ export class StoreDatabase {
         'SELECT id FROM account_payments ORDER BY receipt_number',
       );
       enqueued += this.backfillRows(
+        'refund',
+        'SELECT id FROM refunds ORDER BY receipt_number',
+      );
+      enqueued += this.backfillRows(
         'payment_transaction',
         'SELECT id FROM payment_transactions ORDER BY created_at',
       );
@@ -3253,6 +3595,7 @@ export class StoreDatabase {
     | InventoryMovementPayload
     | SalePayload
     | AccountPaymentPayload
+    | RefundPayload
     | PaymentTransactionPayload
     | KioskPayload
     | null {
@@ -3271,6 +3614,8 @@ export class StoreDatabase {
         return this.buildSalePayload(entityId);
       case 'account_payment':
         return this.buildAccountPaymentPayload(entityId);
+      case 'refund':
+        return this.buildRefundPayload(entityId);
       case 'payment_transaction':
         return this.buildPaymentTransactionPayload(entityId);
       case 'kiosk':
@@ -3579,6 +3924,67 @@ export class StoreDatabase {
     };
   }
 
+  private buildRefundPayload(refundId: string): RefundPayload | null {
+    const row = this.connection
+      .prepare('SELECT * FROM refunds WHERE id = ?')
+      .get(refundId) as Row | undefined;
+    if (!row) return null;
+    const items = this.connection
+      .prepare('SELECT * FROM refund_items WHERE refund_id = ? ORDER BY rowid')
+      .all(refundId) as Row[];
+    const movementIds = items.map((item) => String(item.id));
+    const movements =
+      movementIds.length === 0
+        ? []
+        : (this.connection
+            .prepare(
+              `SELECT * FROM inventory_movements
+               WHERE operation_id IN (${movementIds.map(() => '?').join(', ')})
+               ORDER BY sequence`,
+            )
+            .all(...movementIds) as Row[]);
+    const ledgerRow = this.connection
+      .prepare('SELECT * FROM customer_ledger WHERE related_refund_id = ?')
+      .get(refundId) as Row | undefined;
+    return {
+      id: String(row.id),
+      operationId: String(row.operation_id),
+      receiptNumber: Number(row.receipt_number),
+      saleId: String(row.sale_id),
+      method: String(row.method) as RefundPayload['method'],
+      subtotalCents: readSafeCents(row.subtotal_cents, 'refund subtotal'),
+      taxCents: readSafeCents(row.tax_cents, 'refund tax'),
+      amountCents: readSafeCents(row.amount_cents, 'refund amount'),
+      terminalReference:
+        row.terminal_reference === null ? null : String(row.terminal_reference),
+      chargeReference:
+        row.charge_reference === null ? null : String(row.charge_reference),
+      processorRefundId:
+        row.processor_refund_id === null
+          ? null
+          : String(row.processor_refund_id),
+      customerId: row.customer_id === null ? null : String(row.customer_id),
+      reason: String(row.reason),
+      createdAt: String(row.created_at),
+      items: items.map((item) => ({
+        id: String(item.id),
+        saleItemId: String(item.sale_item_id),
+        productId: String(item.product_id),
+        productName: String(item.product_name),
+        quantity: Number(item.quantity),
+        restocked: Boolean(item.restocked),
+        subtotalCents: readSafeCents(
+          item.subtotal_cents,
+          'refund item subtotal',
+        ),
+        taxCents: readSafeCents(item.tax_cents, 'refund item tax'),
+        amountCents: readSafeCents(item.amount_cents, 'refund item amount'),
+      })),
+      inventoryMovements: movements.map(mapMovementPayload),
+      ledgerEntry: ledgerRow ? mapLedgerPayload(ledgerRow) : null,
+    };
+  }
+
   private getMovement(id: string): InventoryMovement {
     const row = this.connection
       .prepare(
@@ -3666,6 +4072,8 @@ function mapLedgerPayload(row: Row): LedgerEntryPayload {
       row.related_account_payment_id === null
         ? null
         : String(row.related_account_payment_id),
+    relatedRefundId:
+      row.related_refund_id === null ? null : String(row.related_refund_id),
     deviceId: row.device_id === null ? null : String(row.device_id),
     notes: String(row.notes),
     sequence: Number(row.sequence),

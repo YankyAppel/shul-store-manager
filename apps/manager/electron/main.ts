@@ -43,7 +43,9 @@ import {
   labelsHtml,
   productInputSchema,
   receiptHtml,
+  refundReceiptHtml,
   recordAccountPaymentInputSchema,
+  recordRefundInputSchema,
   statementHtml,
   statementOptionsSchema,
   storeSettingsSchema,
@@ -345,6 +347,18 @@ function registerIpc(): void {
   }));
   ipcMain.handle('sales:print', (_event, id) =>
     printReceipt(idSchema.parse(id)),
+  );
+  ipcMain.handle('refunds:refundable', (_event, id) =>
+    database.refundableSale(idSchema.parse(id)),
+  );
+  ipcMain.handle('refunds:record', (_event, input) =>
+    database.payments.refund(recordRefundInputSchema.parse(input)),
+  );
+  ipcMain.handle('refunds:list', (_event, id) =>
+    database.listRefunds(idSchema.parse(id)),
+  );
+  ipcMain.handle('refunds:print', (_event, id) =>
+    printRefund(idSchema.parse(id)),
   );
 
   // Customers
@@ -814,6 +828,18 @@ async function printAccountPayment(paymentId: string): Promise<PrintResult> {
     paymentId,
     result.success,
     result.error,
+  );
+  return result;
+}
+
+async function printRefund(refundId: string): Promise<PrintResult> {
+  const refund = database
+    .listRecentRefunds(1000)
+    .find((item) => item.id === refundId);
+  if (!refund) throw new Error('Refund not found');
+  const result = await printHtmlDocument(
+    refundReceiptHtml({ refund, storeName: database.getSettings().storeName }),
+    database.getSettings().receiptPrinterName,
   );
   return result;
 }

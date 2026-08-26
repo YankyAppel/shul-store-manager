@@ -15,6 +15,7 @@ const entryTypeLabels: Record<
     label: 'Credit adjustment',
     className: 'badge-payment',
   },
+  sale_refund: { label: 'Sale refund', className: 'badge-payment' },
 };
 
 export function CustomerLedgerTable({

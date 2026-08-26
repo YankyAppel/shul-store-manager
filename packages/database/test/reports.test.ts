@@ -115,6 +115,18 @@ describe('daily reports', () => {
       payment: { method: 'cash', cashReceivedCents: 300 },
     });
     moveSale(outside.id, businessDayRange(businessDate).to);
+    store.recordRefund({
+      operationId: randomUUID(),
+      saleId: cashSale.id,
+      items: [
+        {
+          saleItemId: cashSale.items[0]!.id,
+          quantity: 1,
+          restocked: true,
+        },
+      ],
+      reason: 'Report test return',
+    });
 
     const report = store.dailyReport(businessDate, 500);
     expect(report.sales).toMatchObject({
@@ -134,7 +146,10 @@ describe('daily reports', () => {
       receivedCents: 1000,
       changeGivenCents: 400,
     });
-    expect(report.expectedCashCents).toBe(500 + 600 + 700);
+    expect(report.expectedCashCents).toBe(500 + 600 + 700 - 300);
+    expect(report.refunds).toEqual([
+      { method: 'cash', refundCount: 1, amountCents: 300 },
+    ]);
     expect(report.profit).toMatchObject({
       costCents: 2 * 100 + 100 + 3 * 200,
       netSalesCents: 600 + 300 + 1500,

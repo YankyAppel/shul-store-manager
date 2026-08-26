@@ -691,6 +691,71 @@ code {
 .attention-actions button:last-child {
   color: #87352a;
 }
+.refund-panel {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #d9e1dc;
+  border-radius: 8px;
+  background: #fbfcfb;
+}
+.refund-panel h4,
+.refund-panel h5 {
+  margin: 0 0 8px;
+}
+.refund-line {
+  display: grid;
+  grid-template-columns: 1fr 130px 130px;
+  gap: 10px;
+  align-items: end;
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e9e6;
+}
+.refund-line-description {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.refund-line label,
+.refund-panel > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.refund-line input[type='number'],
+.refund-panel input,
+.refund-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.refund-checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  padding-bottom: 8px;
+}
+.refund-total {
+  margin: 14px 0;
+  font-size: 16px;
+}
+.refund-history {
+  margin-top: 16px;
+  border-top: 1px solid #d9e1dc;
+  padding-top: 10px;
+}
+.refund-history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+}
+.refund-history-amount {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.warning {
+  color: #87352a;
+  font-weight: 600;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -855,6 +920,53 @@ code {
   padding: 12px;
   margin: 0;
   border-radius: 7px;
+}
+
+.sale-detail-date {
+  font-size: 12px;
+  color: #666;
+}
+.sale-customer-card {
+  background: #f8f9fa;
+  padding: 10px;
+  border-radius: 6px;
+  margin: 10px 0;
+}
+.sale-customer-link {
+  margin-top: 6px;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+.sale-detail-lines {
+  margin: 10px 0;
+}
+.sale-detail-line {
+  margin: 4px 0;
+  display: flex;
+  justify-content: space-between;
+}
+.sale-detail-total {
+  font-size: 16px;
+  font-weight: bold;
+}
+.sale-payment-summary {
+  border-top: 1px dashed #ccc;
+  padding-top: 8px;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.sale-detail-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+}
+.sale-detail-print {
+  flex: 1;
+}
+.sale-detail-note {
+  display: block;
+  margin-top: 10px;
+  color: #777;
 }
 
 /* Badges and Customer specific styles */
