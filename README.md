@@ -58,6 +58,9 @@ reconciliation, and immutable local closes.
 See [Returns and refunds](docs/refunds.md) for partial returns, tender rules,
 account credits, and refund safeguards.
 
+See [Windows packaging](docs/packaging.md) for installer builds, upgrades,
+uninstallation, releases, and automatic update configuration.
+
 ## Requirements
 
 - Node.js 22.13 or newer (use the version declared in `.nvmrc`)

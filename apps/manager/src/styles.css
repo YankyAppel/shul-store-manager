@@ -25,6 +25,33 @@ textarea {
 button {
   cursor: pointer;
 }
+.settings-version-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings-update-result {
+  margin: 8px 0 0;
+}
+.settings-update-result-error {
+  color: #9c3024;
+}
+.settings-update-result-available {
+  color: #1c6448;
+  font-weight: 600;
+}
+.settings-update-result-downloaded {
+  color: #1c6448;
+  font-weight: 600;
+}
+.settings-update-result-checking {
+  color: #66766d;
+}
+.settings-update-result-up_to_date,
+.settings-update-result-not_configured {
+  color: #66766d;
+}
 .shell {
   display: grid;
   grid-template-columns: 230px 1fr;

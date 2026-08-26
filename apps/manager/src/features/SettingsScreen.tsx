@@ -3,6 +3,7 @@ import {
   LABEL_TEMPLATE_OPTIONS,
   type PrinterInfo,
   type StoreSettings,
+  type UpdateCheckResult,
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 import { CloudBackupSection } from './CloudBackupSection';
@@ -13,13 +14,22 @@ export function SettingsScreen() {
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
+  const [appVersion, setAppVersion] = useState('');
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(
+    null,
+  );
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
+    void window.storeApi.app.getVersion().then(setAppVersion);
+    void window.storeApi.updates.getState().then(setUpdateResult);
+    const unsubscribe = window.storeApi.updates.subscribe(setUpdateResult);
     void window.storeApi.settings
       .listPrinters()
       .then(setPrinters)
       .catch((error) => setPrinterError(messageFrom(error)));
+    return unsubscribe;
   }, []);
 
   if (!settings) return <p>Loading…</p>;
@@ -29,6 +39,23 @@ export function SettingsScreen() {
     await window.storeApi.settings.update(settings!);
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
+  }
+
+  async function checkForUpdates() {
+    setCheckingForUpdates(true);
+    try {
+      setUpdateResult(await window.storeApi.updates.check());
+    } catch (error) {
+      setUpdateResult({
+        status: 'error',
+        currentVersion: appVersion,
+        availableVersion: null,
+        message: messageFrom(error),
+        checkedAt: new Date().toISOString(),
+      });
+    } finally {
+      setCheckingForUpdates(false);
+    }
   }
 
   return (
@@ -301,6 +328,63 @@ export function SettingsScreen() {
             </select>
           </label>
         </div>
+
+        <label>
+          Update feed URL <em>Optional override; blank uses GitHub Releases</em>
+          <input
+            type="url"
+            value={settings.updateFeedUrl ?? ''}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                updateFeedUrl: e.target.value || null,
+              })
+            }
+            placeholder="https://example.org/shul-store-updates"
+          />
+        </label>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={settings.automaticUpdatesEnabled}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                automaticUpdatesEnabled: e.target.checked,
+              })
+            }
+          />{' '}
+          Download updates automatically and install when the app closes
+        </label>
+        <div className="settings-version-row">
+          <span>
+            Installed version: <strong>{appVersion || 'Loading…'}</strong>
+          </span>
+          <button
+            type="button"
+            onClick={() => void checkForUpdates()}
+            disabled={checkingForUpdates}
+          >
+            {checkingForUpdates ? 'Checking…' : 'Check for updates'}
+          </button>
+        </div>
+        {updateResult && (
+          <p
+            className={`settings-update-result settings-update-result-${updateResult.status}`}
+          >
+            {updateResult.status === 'downloaded' && (
+              <strong>Update ready: </strong>
+            )}
+            {updateResult.message}
+            {updateResult.checkedAt && (
+              <small>
+                {' '}
+                (last checked{' '}
+                {new Date(updateResult.checkedAt).toLocaleString()})
+              </small>
+            )}
+          </p>
+        )}
 
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           <button className="primary">Save settings</button>

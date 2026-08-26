@@ -114,6 +114,10 @@ describe('restore round-trip', () => {
     // 1. Build a populated source store and capture its outbox as the "cloud".
     const source = createDb();
     enableSync(source.db);
+    source.db.updateSettings({
+      ...source.db.getSettings(),
+      automaticUpdatesEnabled: false,
+    });
     source.db.backfillOutbox(); // ensure settings + everything is captured
     const ids = populateStore(source.db);
     // A couple of extra writes after backfill still reach the cloud via enqueue.
@@ -156,6 +160,7 @@ describe('restore round-trip', () => {
 
     // 3. Compare source and target business state.
     expect(target.db.getSettings().storeName).toBe('Test Shul');
+    expect(target.db.getSettings().automaticUpdatesEnabled).toBe(false);
     expect(
       target.db
         .listCategories()

@@ -7,6 +7,7 @@
   "scripts": {
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:electron && vite build",
+    "package": "electron-builder --config electron-builder.config.cjs --win --x64",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint electron src --max-warnings=0"
   },
@@ -20,8 +21,9 @@
     "@types/react": "^19.0.3",
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^43.4.1",
-    "vite": "^6.0.5",
-    "typescript": "^5.7.2"
+    "electron": "43.4.1",
+    "electron-builder": "26.15.3",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
   }
 }
