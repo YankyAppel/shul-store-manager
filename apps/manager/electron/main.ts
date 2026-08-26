@@ -20,6 +20,7 @@ import {
   safeStorage,
   shell,
 } from 'electron';
+import { autoUpdater } from 'electron-updater';
 import { z } from 'zod';
 import {
   KioskServer,
@@ -85,6 +86,9 @@ let imageDirectory = '';
 let backupTimer: ReturnType<typeof setInterval> | null = null;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
 
 /**
  * Electron safeStorage-backed secret store for the Supabase API key. When the OS
@@ -190,6 +194,44 @@ async function createWindow(): Promise<void> {
 import { initiateChargeInputSchema } from '@shul-store/shared';
 
 function registerIpc(): void {
+  ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('updates:check', async () => {
+    const currentVersion = app.getVersion();
+    const feedUrl = database.getSettings().updateFeedUrl;
+    if (!feedUrl) {
+      return {
+        status: 'not_configured' as const,
+        currentVersion,
+        availableVersion: null,
+        message: 'Automatic updates are not configured.',
+      };
+    }
+    try {
+      autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl });
+      const result = await autoUpdater.checkForUpdates();
+      const availableVersion = result?.updateInfo.version ?? null;
+      return {
+        status:
+          availableVersion && availableVersion !== currentVersion
+            ? ('available' as const)
+            : ('up_to_date' as const),
+        currentVersion,
+        availableVersion,
+        message:
+          availableVersion && availableVersion !== currentVersion
+            ? `Version ${availableVersion} is available. Download and install it from a future update prompt.`
+            : `You are running the latest configured version (${currentVersion}).`,
+      };
+    } catch (error) {
+      return {
+        status: 'error' as const,
+        currentVersion,
+        availableVersion: null,
+        message:
+          error instanceof Error ? error.message : 'Update check failed.',
+      };
+    }
+  });
   ipcMain.handle('kiosk:getSettings', () => {
     const settings = database.getKioskServerSettings();
     return {

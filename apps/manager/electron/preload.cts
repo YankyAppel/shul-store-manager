@@ -2,6 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { StoreApi } from '@shul-store/shared';
 
 const api: StoreApi = {
+  app: {
+    getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  },
+  updates: {
+    check: () => ipcRenderer.invoke('updates:check'),
+  },
   kiosk: {
     getSettings: () => ipcRenderer.invoke('kiosk:getSettings'),
     pairCode: () => ipcRenderer.invoke('kiosk:pairCode'),

@@ -48,6 +48,15 @@ export const storeSettingsSchema = z.object({
   cardProcessingEnabled: z.boolean().default(false),
   cardProcessorId: z.string().nullable().default(null),
   cardProcessorConfigJson: z.string().nullable().default(null),
+  updateFeedUrl: z
+    .string()
+    .trim()
+    .url()
+    .max(2000)
+    .nullable()
+    .optional()
+    .transform((value) => (value && value.length > 0 ? value : null))
+    .default(null),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 

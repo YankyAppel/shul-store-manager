@@ -146,7 +146,8 @@ function applySettings(
         prices_include_tax = ?, receipt_footer = ?, customer_accounts_enabled = ?,
         default_credit_limit_cents = ?, allow_customer_credit = ?, statement_footer = ?,
         overdue_days = ?, receipt_printer_name = ?, receipt_paper_width_mm = ?,
-        label_printer_name = ?, default_label_template = ?, updated_at = ?
+        label_printer_name = ?, default_label_template = ?, update_feed_url = ?,
+        updated_at = ?
        WHERE singleton_id = 1`,
     )
     .run(
@@ -165,6 +166,7 @@ function applySettings(
       payload.receiptPaperWidthMm,
       payload.labelPrinterName,
       payload.defaultLabelTemplate,
+      payload.updateFeedUrl,
       now(),
     );
 }

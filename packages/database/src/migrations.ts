@@ -897,6 +897,13 @@ export const migrations: Migration[] = [
       END;
     `,
   },
+  {
+    version: 20,
+    name: 'update_feed_url',
+    sql: `
+      ALTER TABLE store_settings ADD COLUMN update_feed_url TEXT;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

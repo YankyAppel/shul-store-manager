@@ -520,6 +520,12 @@ export class StoreDatabase {
       cardProcessorConfigJson: row.card_processor_config_json
         ? String(row.card_processor_config_json)
         : null,
+      updateFeedUrl:
+        row.update_feed_url === undefined ||
+        row.update_feed_url === null ||
+        String(row.update_feed_url).trim() === ''
+          ? null
+          : String(row.update_feed_url),
     };
   }
 
@@ -547,6 +553,7 @@ export class StoreDatabase {
             card_processing_enabled=?,
             card_processor_id=?,
             card_processor_config_json=?,
+            update_feed_url=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -569,6 +576,7 @@ export class StoreDatabase {
           value.cardProcessingEnabled ? 1 : 0,
           value.cardProcessorId,
           value.cardProcessorConfigJson,
+          value.updateFeedUrl,
           now(),
         );
       this.enqueueEntity('settings', 'settings');

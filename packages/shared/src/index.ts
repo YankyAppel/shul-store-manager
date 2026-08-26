@@ -190,6 +190,12 @@ export interface NeedsAttentionCharge {
 }
 
 export interface StoreApi {
+  app: {
+    getVersion(): Promise<string>;
+  };
+  updates: {
+    check(): Promise<UpdateCheckResult>;
+  };
   kiosk: {
     getSettings(): Promise<KioskServerSettings>;
     pairCode(): Promise<string>;
@@ -333,6 +339,13 @@ export interface StoreApi {
     receipt(id: string): Promise<AccountPaymentReceiptData>;
     print(id: string): Promise<PrintResult>;
   };
+}
+
+export interface UpdateCheckResult {
+  status: 'not_configured' | 'available' | 'up_to_date' | 'error';
+  currentVersion: string;
+  availableVersion: string | null;
+  message: string;
 }
 
 declare global {
