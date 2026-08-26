@@ -9,7 +9,13 @@ module.exports = {
   directories: {
     output: 'release',
   },
-  files: ['dist/**', 'dist-electron/**', 'package.json', 'update-config.cjs'],
+  files: [
+    'dist/**',
+    'dist-electron/**',
+    'package.json',
+    'update-config.cjs',
+    '!node_modules/@shul-store/payments/src/**',
+  ],
   extraMetadata: {
     version,
   },
