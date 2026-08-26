@@ -9,6 +9,7 @@
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/verify-preload.mjs",
     "build": "npm run build:electron && vite build",
     "package": "electron-builder --config electron-builder.config.cjs --win --x64",
+    "package:publish": "electron-builder --config electron-builder.config.cjs --win --x64 --publish always",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint electron src --max-warnings=0"
   },
