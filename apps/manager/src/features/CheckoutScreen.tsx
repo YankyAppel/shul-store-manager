@@ -299,7 +299,7 @@ export function CheckoutScreen({
         setChargeError(
           result.errorMessage || 'An error occurred during payment',
         );
-      } else if (result.status === 'pending' || result.status === 'unknown') {
+      } else if (result.status === 'unknown') {
         setChargeStatus('pending');
       }
     } catch (e: unknown) {
