@@ -26,6 +26,7 @@ export {
 } from './payment-service.js';
 export { KioskServer, paymentFailureStatus } from './kiosk-server.js';
 export { migrations, runMigrations } from './migrations.js';
+export { dailyReport } from './reports.js';
 export {
   createBackup,
   formatBackupName,

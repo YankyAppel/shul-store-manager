@@ -672,6 +672,34 @@ export const migrations: Migration[] = [
         ON restore_results(completed_at DESC);
     `,
   },
+  {
+    version: 18,
+    name: 'daily_closes',
+    sql: `
+      CREATE TABLE daily_closes (
+        id TEXT PRIMARY KEY,
+        business_date TEXT NOT NULL UNIQUE,
+        range_start TEXT NOT NULL,
+        range_end TEXT NOT NULL,
+        opening_float_cents INTEGER NOT NULL CHECK (opening_float_cents >= 0),
+        counted_cash_cents INTEGER NOT NULL CHECK (counted_cash_cents >= 0),
+        expected_cash_cents INTEGER NOT NULL,
+        over_short_cents INTEGER NOT NULL,
+        report_json TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        closed_at TEXT NOT NULL
+      );
+      CREATE INDEX daily_closes_date_idx ON daily_closes(business_date DESC);
+      CREATE TRIGGER daily_closes_no_update
+      BEFORE UPDATE ON daily_closes BEGIN
+        SELECT RAISE(ABORT, 'Daily closes are immutable');
+      END;
+      CREATE TRIGGER daily_closes_no_delete
+      BEFORE DELETE ON daily_closes BEGIN
+        SELECT RAISE(ABORT, 'Daily closes cannot be deleted');
+      END;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

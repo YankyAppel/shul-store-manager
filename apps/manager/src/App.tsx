@@ -12,6 +12,7 @@ import { SalesHistory } from './features/SalesHistory';
 import { SettingsScreen } from './features/SettingsScreen';
 import { KioskScreen } from './features/KioskScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
+import { ReportsScreen } from './features/ReportsScreen';
 
 type View =
   | 'checkout'
@@ -21,7 +22,8 @@ type View =
   | 'customers'
   | 'sales'
   | 'settings'
-  | 'kiosk';
+  | 'kiosk'
+  | 'reports';
 
 const imageUrl = (id: string | null) =>
   id ? `store-image://local/${id}` : undefined;
@@ -164,6 +166,12 @@ export function App() {
             ▤ <span>Sales history</span>
           </button>
           <button
+            className={view === 'reports' ? 'active' : ''}
+            onClick={() => setView('reports')}
+          >
+            ▤ <span>Reports</span>
+          </button>
+          <button
             className={view === 'settings' ? 'active' : ''}
             onClick={() => setView('settings')}
           >
@@ -194,6 +202,7 @@ export function App() {
                   inventory: 'Inventory',
                   customers: 'Customers & Accounts',
                   sales: 'Sales history',
+                  reports: 'Daily reports',
                   settings: 'Store settings',
                   kiosk: 'Kiosk',
                 }[view]
@@ -210,9 +219,11 @@ export function App() {
                       ? 'Local checkout, tax, customer credit, printers, and receipt configuration.'
                       : view === 'kiosk'
                         ? 'Configure and monitor LAN self-checkout kiosks.'
-                        : view === 'inventory'
-                          ? 'Receive stock and record append-only adjustments.'
-                          : `Manage your store ${view}.`}
+                        : view === 'reports'
+                          ? 'Review sales, cash reconciliation, and daily closes.'
+                          : view === 'inventory'
+                            ? 'Receive stock and record append-only adjustments.'
+                            : `Manage your store ${view}.`}
             </p>
           </div>
           {(view === 'products' || view === 'categories') && (
@@ -277,6 +288,7 @@ export function App() {
         )}
         {view === 'settings' && <SettingsScreen />}
         {view === 'kiosk' && <KioskScreen />}
+        {view === 'reports' && <ReportsScreen />}
         {view === 'categories' && (
           <div className="category-grid">
             {visibleCategories.map((category) => (

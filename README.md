@@ -52,6 +52,9 @@ See [Cloud sync](docs/cloud-sync.md) for architecture, the outbox design, cloud-
 See [Local backups](docs/backups.md) for automatic verified SQLite backups,
 rotation, migration safeguards, and local restore.
 
+See [Daily reports](docs/reports.md) for end-of-day reporting, cash
+reconciliation, and immutable local closes.
+
 ## Requirements
 
 - Node.js 22.13 or newer (use the version declared in `.nvmrc`)

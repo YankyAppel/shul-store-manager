@@ -17,6 +17,7 @@ import type {
 } from './customers.js';
 import type { LabelPrintRequest } from './labels.js';
 import type { PrinterInfo, PrintResult } from './printing.js';
+import type { DailyClose, DailyReport } from './reports.js';
 import type {
   ConnectionTestResult,
   RestoreInput,
@@ -42,6 +43,7 @@ export * from './labels.js';
 export * from './kiosk.js';
 export * from './kiosk-client.js';
 export * from './printing.js';
+export * from './reports.js';
 export * from './secret-store.js';
 export * from './sync.js';
 export * from './ui-helpers.js';
@@ -263,6 +265,20 @@ export interface StoreApi {
     getLastRestoreResult(): Promise<LocalRestoreResult | null>;
     revealFolder(): Promise<void>;
     restore(filename: string, confirmation: string): Promise<void>;
+  };
+  reports: {
+    daily(
+      businessDate: string,
+      openingFloatCents: number,
+    ): Promise<DailyReport>;
+    close(
+      businessDate: string,
+      openingFloatCents: number,
+      countedCashCents: number,
+      notes?: string,
+    ): Promise<DailyClose>;
+    listCloses(limit?: number): Promise<DailyClose[]>;
+    print(businessDate: string, report: DailyReport): Promise<PrintResult>;
   };
 
   settings: {
