@@ -40,7 +40,9 @@ import {
   dailyReportHtml,
   dailyReportInputSchema,
   dailyReportPrintInputSchema,
+  deviceSettingsSchema,
   inventoryMovementInputSchema,
+  isHttpsUpdateFeedUrl,
   labelPrintRequestSchema,
   labelsHtml,
   productInputSchema,
@@ -50,6 +52,7 @@ import {
   recordRefundInputSchema,
   statementHtml,
   statementOptionsSchema,
+  processorConfigInputSchema,
   storeSettingsSchema,
   type AccountPaymentReceiptData,
   type CustomerStatementData,
@@ -130,8 +133,12 @@ function publishUpdateState(
 }
 
 function configureAutoUpdater(
-  settings: ReturnType<StoreDatabase['getSettings']>,
+  settings: ReturnType<StoreDatabase['getDeviceSettings']>,
 ): void {
+  if (settings.updateFeedUrl && !isHttpsUpdateFeedUrl(settings.updateFeedUrl)) {
+    console.error('Refusing to configure updater with a non-HTTPS feed URL');
+    throw new Error('Update feed URL must use HTTPS');
+  }
   autoUpdater.autoDownload = settings.automaticUpdatesEnabled;
   autoUpdater.autoInstallOnAppQuit = settings.automaticUpdatesEnabled;
   if (settings.updateFeedUrl) {
@@ -158,8 +165,8 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
   }
 
   try {
-    const settings = database.getSettings();
-    if (!manual && !settings.automaticUpdatesEnabled) {
+    const deviceSettings = database.getDeviceSettings();
+    if (!manual && !deviceSettings.automaticUpdatesEnabled) {
       return publishUpdateState({
         status: 'not_configured',
         availableVersion: null,
@@ -171,7 +178,7 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
       status: 'checking',
       message: 'Checking for updates…',
     });
-    configureAutoUpdater(settings);
+    configureAutoUpdater(deviceSettings);
     const result = await autoUpdater.checkForUpdates();
     const currentVersion = app.getVersion();
     const availableVersion = result?.updateInfo.version ?? null;
@@ -183,7 +190,7 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
       availableVersion,
       message:
         availableVersion && availableVersion !== currentVersion
-          ? settings.automaticUpdatesEnabled
+          ? deviceSettings.automaticUpdatesEnabled
             ? `Version ${availableVersion} is downloading in the background and will install when the app is closed.`
             : `Version ${availableVersion} is available. Automatic downloads are disabled in Settings.`
           : `You are running the latest configured version (${currentVersion}).`,
@@ -202,7 +209,7 @@ async function checkForUpdates(manual: boolean): Promise<UpdateCheckResult> {
 function startAutomaticUpdates(): void {
   if (!app.isPackaged) return;
   try {
-    configureAutoUpdater(database.getSettings());
+    configureAutoUpdater(database.getDeviceSettings());
   } catch (error) {
     publishUpdateState({
       status: 'error',
@@ -493,9 +500,25 @@ function registerIpc(): void {
   ipcMain.handle('settings:get', () => database.getSettings());
   ipcMain.handle('settings:update', (_event, input) => {
     const updated = database.updateSettings(storeSettingsSchema.parse(input));
+    if (app.isPackaged) configureAutoUpdater(database.getDeviceSettings());
+    return updated;
+  });
+  ipcMain.handle('settings:getDevice', () => database.getDeviceSettings());
+  ipcMain.handle('settings:updateDevice', (_event, input) => {
+    const updated = database.updateDeviceSettings(
+      deviceSettingsSchema.parse(input),
+    );
     if (app.isPackaged) configureAutoUpdater(updated);
     return updated;
   });
+  ipcMain.handle('settings:setProcessorConfig', (_event, input) =>
+    database.setCardProcessorConfigJson(
+      processorConfigInputSchema.parse(input),
+    ),
+  );
+  ipcMain.handle('settings:getProcessorConfigStatus', () =>
+    database.getCardProcessorConfigStatus(),
+  );
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
 
   ipcMain.handle('labels:render', (_event, input) =>

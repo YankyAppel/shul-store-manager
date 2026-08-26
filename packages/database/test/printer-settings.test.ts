@@ -23,7 +23,6 @@ describe('printer settings', () => {
       receiptPaperWidthMm: 80,
       labelPrinterName: null,
       defaultLabelTemplate: 'thermal_40x30',
-      automaticUpdatesEnabled: true,
     });
   });
 
@@ -34,6 +33,9 @@ describe('printer settings', () => {
       receiptPaperWidthMm: 58,
       labelPrinterName: 'Zebra ZD410',
       defaultLabelTemplate: 'letter_avery_5160',
+    });
+    store.updateDeviceSettings({
+      ...store.getDeviceSettings(),
       automaticUpdatesEnabled: false,
     });
     expect(updated).toMatchObject({
@@ -41,7 +43,6 @@ describe('printer settings', () => {
       receiptPaperWidthMm: 58,
       labelPrinterName: 'Zebra ZD410',
       defaultLabelTemplate: 'letter_avery_5160',
-      automaticUpdatesEnabled: false,
     });
     expect(store.getSettings()).toEqual(updated);
 
@@ -81,6 +82,91 @@ describe('printer settings', () => {
         receiptPaperWidthMm: 70,
       }).success,
     ).toBe(false);
+  });
+
+  it('keeps device settings and processor secrets out of store settings', () => {
+    store.updateDeviceSettings({
+      updateFeedUrl: 'https://updates.example.test/feed',
+      automaticUpdatesEnabled: false,
+    });
+    store.setCardProcessorConfigJson('{"token":"secret"}');
+    const updated = store.updateSettings({
+      ...store.getSettings(),
+      storeName: 'Local Settings',
+    });
+    expect(updated).not.toHaveProperty('updateFeedUrl');
+    expect(updated).not.toHaveProperty('automaticUpdatesEnabled');
+    expect(updated).not.toHaveProperty('cardProcessorConfigJson');
+    expect(store.getDeviceSettings()).toEqual({
+      updateFeedUrl: 'https://updates.example.test/feed',
+      automaticUpdatesEnabled: false,
+    });
+    expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');
+    expect(
+      store.connection
+        .prepare(
+          'SELECT card_processor_config_json, update_feed_url, automatic_updates_enabled FROM store_settings WHERE singleton_id = 1',
+        )
+        .get(),
+    ).toEqual({
+      card_processor_config_json: null,
+      update_feed_url: null,
+      automatic_updates_enabled: 1,
+    });
+  });
+
+  it('records whether the processor secret store encrypts configuration', () => {
+    const encrypted = {
+      available: true,
+      encrypt(value: string) {
+        return `encrypted:${value}`;
+      },
+      decrypt(value: string) {
+        return value.replace(/^encrypted:/, '');
+      },
+    };
+    const secureStore = new StoreDatabase(':memory:', encrypted);
+    try {
+      expect(
+        secureStore.setCardProcessorConfigJson('{"token":"secure"}'),
+      ).toEqual({ configured: true, encrypted: true });
+      expect(secureStore.getCardProcessorConfigJson()).toBe(
+        '{"token":"secure"}',
+      );
+      expect(
+        secureStore.connection
+          .prepare(
+            'SELECT card_processor_config_secret FROM device_settings WHERE singleton_id = 1',
+          )
+          .get(),
+      ).toEqual({
+        card_processor_config_secret: 'encrypted:{"token":"secure"}',
+      });
+    } finally {
+      secureStore.close();
+    }
+  });
+
+  it.each([
+    ['http://updates.example.test/feed', false],
+    ['file:///tmp/updates', false],
+    ['junk', false],
+    ['https://updates.example.test/feed', true],
+  ])('validates device update feed URL %s', (updateFeedUrl, valid) => {
+    if (valid) {
+      store.updateDeviceSettings({
+        updateFeedUrl,
+        automaticUpdatesEnabled: true,
+      });
+      expect(store.getDeviceSettings().updateFeedUrl).toBe(updateFeedUrl);
+    } else {
+      expect(() =>
+        store.updateDeviceSettings({
+          updateFeedUrl,
+          automaticUpdatesEnabled: true,
+        }),
+      ).toThrow();
+    }
   });
 
   it('changes receipt CSS width from paper settings without altering sale text', () => {

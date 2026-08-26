@@ -434,8 +434,8 @@ describe('refunds', () => {
     const { sale } = await integratedSale(store, 103, 101);
     store.updateSettings({
       ...store.getSettings(),
-      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 9 }),
     });
+    store.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 9 }));
     await expect(
       store.payments.refund(refundInput(sale.id, sale.items[0]!.id, 1)),
     ).rejects.toThrow(/frozen-config-unavailable/);

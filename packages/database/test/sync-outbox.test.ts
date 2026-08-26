@@ -184,6 +184,12 @@ describe('sync backfill', () => {
     expect(types).toEqual(
       ['category', 'inventory_movement', 'product', 'settings'].sort(),
     );
+    const settingsEvent = store
+      .exportOutboxSnapshot()
+      .find((event) => event.entityType === 'settings')!;
+    expect(settingsEvent.payload).not.toHaveProperty('cardProcessorConfigJson');
+    expect(settingsEvent.payload).not.toHaveProperty('updateFeedUrl');
+    expect(settingsEvent.payload).not.toHaveProperty('automaticUpdatesEnabled');
 
     // Calling backfill again enqueues nothing (idempotent + completed flag).
     expect(store.backfillOutbox()).toBe(0);

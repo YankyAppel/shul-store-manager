@@ -586,8 +586,8 @@ describe('shared payment service', () => {
     // Configuration changed after authorization: identity no longer matches.
     db.updateSettings({
       ...db.getSettings(),
-      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 5 }),
     });
+    db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 5 }));
     await payments.reconcile(input.chargeReference);
     expect(
       String(db.getPaymentTransaction(input.chargeReference)!.status),
@@ -612,8 +612,8 @@ describe('shared payment service', () => {
     const second = request(soda.id);
     db.updateSettings({
       ...db.getSettings(),
-      cardProcessorConfigJson: null,
     });
+    db.setCardProcessorConfigJson(null);
     await payments.charge(second, MANAGER);
     db.updateSettings({ ...db.getSettings(), cardProcessorId: 'gone' });
     await payments.reconcile(second.chargeReference);
@@ -658,16 +658,16 @@ describe('shared payment service', () => {
         ...db.getSettings(),
         cardProcessingEnabled: true,
         cardProcessorId: 'recording',
-        cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 1 }),
       });
+      db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 1 }));
       const input = request(water.id);
       const pending = await payments.charge(input, MANAGER);
       expect(pending.status).toBe('unknown');
 
       db.updateSettings({
         ...db.getSettings(),
-        cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 99 }),
       });
+      db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 99 }));
       const reconciled = await payments.reconcile(input.chargeReference);
 
       expect(reconciled?.status).toBe('approved');
@@ -708,8 +708,8 @@ describe('shared payment service', () => {
     db.updatePaymentTransactionStatus(input.chargeReference, 'unknown');
     db.updateSettings({
       ...db.getSettings(),
-      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 5 }),
     });
+    db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 5 }));
 
     await expect(
       payments.reconcile(input.chargeReference),
@@ -765,8 +765,8 @@ describe('shared payment service', () => {
     });
     db.updateSettings({
       ...db.getSettings(),
-      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 5 }),
     });
+    db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 5 }));
     const input = request(water.id);
     const pending = await payments.charge(input, MANAGER);
     expect(pending.status).toBe('unknown');

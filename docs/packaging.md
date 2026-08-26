@@ -102,8 +102,10 @@ update is downloaded, the Settings notice says which version is ready and
 that it will install on close.
 
 The optional **Update feed URL** setting overrides GitHub Releases with a
-self-hosted generic electron-updater feed. Leave it blank to use the public
-release repository. A tagged release must include the manager installer and
+self-hosted generic electron-updater feed. It is device-local and must be an
+HTTPS URL; HTTP, `file:`, malformed, and other schemes are rejected. Leave it
+blank to use the public release repository. A persisted non-HTTPS value is
+refused by the updater rather than used as a fallback. A tagged release must include the manager installer and
 its `latest.yml` metadata; the Windows release workflow publishes both with
 electron-builder using the `GH_RELEASE_TOKEN` secret, a PAT with write access
 to the public release repository. The kiosk installer is uploaded separately

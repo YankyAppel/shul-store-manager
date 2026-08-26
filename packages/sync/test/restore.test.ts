@@ -65,6 +65,42 @@ describe('restore validation', () => {
     ).toThrow();
   });
 
+  it('accepts legacy device-setting keys but ignores them during restore', async () => {
+    const { db, file } = createDb();
+    const settings = db.getSettings();
+    const event: CloudEvent = {
+      eventId: randomUUID(),
+      storeId: TEST_STORE_ID,
+      sequence: 1,
+      entityType: 'settings',
+      entityId: 'settings',
+      operation: 'upsert',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      payload: {
+        ...settings,
+        storeName: 'Restored Shul',
+        cardProcessorConfigJson: '{"secret":"must-ignore"}',
+        updateFeedUrl: 'https://attacker.example/feed',
+        automaticUpdatesEnabled: false,
+      } as never,
+    };
+    const parsed = parseRestoreEvent(event);
+    expect(parsed.payload).not.toHaveProperty('cardProcessorConfigJson');
+    expect(parsed.payload).not.toHaveProperty('updateFeedUrl');
+    expect(parsed.payload).not.toHaveProperty('automaticUpdatesEnabled');
+    const transport = new FakeTransport();
+    transport.seed([event]);
+    const result = await restoreFromCloud(db, transport, TEST_STORE_ID);
+    expect(result.ok).toBe(true);
+    expect(db.getSettings().storeName).toBe('Restored Shul');
+    expect(db.getDeviceSettings()).toEqual({
+      updateFeedUrl: null,
+      automaticUpdatesEnabled: true,
+    });
+    expect(db.getCardProcessorConfigStatus().configured).toBe(false);
+    disposeDb(db, file);
+  });
+
   it('refuses to restore when the local database is not empty', async () => {
     const { db, file } = createDb();
     const transport = new FakeTransport();
@@ -114,8 +150,8 @@ describe('restore round-trip', () => {
     // 1. Build a populated source store and capture its outbox as the "cloud".
     const source = createDb();
     enableSync(source.db);
-    source.db.updateSettings({
-      ...source.db.getSettings(),
+    source.db.updateDeviceSettings({
+      ...source.db.getDeviceSettings(),
       automaticUpdatesEnabled: false,
     });
     source.db.backfillOutbox(); // ensure settings + everything is captured
@@ -160,7 +196,7 @@ describe('restore round-trip', () => {
 
     // 3. Compare source and target business state.
     expect(target.db.getSettings().storeName).toBe('Test Shul');
-    expect(target.db.getSettings().automaticUpdatesEnabled).toBe(false);
+    expect(target.db.getDeviceSettings().automaticUpdatesEnabled).toBe(true);
     expect(
       target.db
         .listCategories()

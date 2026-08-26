@@ -70,6 +70,12 @@ const api: StoreApi = {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (input) => ipcRenderer.invoke('settings:update', input),
+    getDevice: () => ipcRenderer.invoke('settings:getDevice'),
+    updateDevice: (input) => ipcRenderer.invoke('settings:updateDevice', input),
+    setProcessorConfig: (input) =>
+      ipcRenderer.invoke('settings:setProcessorConfig', input),
+    getProcessorConfigStatus: () =>
+      ipcRenderer.invoke('settings:getProcessorConfigStatus'),
     listPrinters: () => ipcRenderer.invoke('settings:listPrinters'),
   },
   checkout: {

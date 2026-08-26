@@ -8,6 +8,7 @@ import {
   categoryInputSchema,
   completeSaleInputSchema,
   customerInputSchema,
+  deviceSettingsSchema,
   inventoryMovementInputSchema,
   productInputSchema,
   PlaintextSecretStore,
@@ -33,6 +34,7 @@ import {
   businessDayRange,
   type DailyClose,
   type DailyReport,
+  type DeviceSettings,
   type InventoryMovement,
   type InventoryMovementInput,
   type InventoryMovementPayload,
@@ -44,6 +46,7 @@ import {
   type Product,
   type ProductInput,
   type ProductPayload,
+  type ProcessorConfigStatus,
   type RecordAccountPaymentInput,
   type RecordRefundInput,
   type RefundPayload,
@@ -216,6 +219,7 @@ export class StoreDatabase {
     }
     try {
       runMigrations(this.connection);
+      this.migrateLegacyProcessorConfig();
       if (preMigrationAttempt) {
         try {
           recordBackupAttempt(this.connection, preMigrationAttempt);
@@ -534,19 +538,6 @@ export class StoreDatabase {
       cardProcessorId: row.card_processor_id
         ? String(row.card_processor_id)
         : null,
-      cardProcessorConfigJson: row.card_processor_config_json
-        ? String(row.card_processor_config_json)
-        : null,
-      updateFeedUrl:
-        row.update_feed_url === undefined ||
-        row.update_feed_url === null ||
-        String(row.update_feed_url).trim() === ''
-          ? null
-          : String(row.update_feed_url),
-      automaticUpdatesEnabled:
-        row.automatic_updates_enabled === undefined
-          ? true
-          : Boolean(row.automatic_updates_enabled),
     };
   }
 
@@ -573,9 +564,6 @@ export class StoreDatabase {
             default_label_template=?,
             card_processing_enabled=?,
             card_processor_id=?,
-            card_processor_config_json=?,
-            update_feed_url=?,
-            automatic_updates_enabled=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -597,14 +585,114 @@ export class StoreDatabase {
           value.defaultLabelTemplate,
           value.cardProcessingEnabled ? 1 : 0,
           value.cardProcessorId,
-          value.cardProcessorConfigJson,
-          value.updateFeedUrl,
-          value.automaticUpdatesEnabled ? 1 : 0,
           now(),
         );
       this.enqueueEntity('settings', 'settings');
     })();
     return this.getSettings();
+  }
+
+  getDeviceSettings(): DeviceSettings {
+    const row = this.connection
+      .prepare(
+        'SELECT update_feed_url, automatic_updates_enabled FROM device_settings WHERE singleton_id = 1',
+      )
+      .get() as Row;
+    return {
+      updateFeedUrl:
+        row.update_feed_url === null ||
+        row.update_feed_url === undefined ||
+        String(row.update_feed_url).trim() === ''
+          ? null
+          : String(row.update_feed_url),
+      automaticUpdatesEnabled: Number(row.automatic_updates_enabled ?? 1) === 1,
+    };
+  }
+
+  updateDeviceSettings(input: DeviceSettings): DeviceSettings {
+    const value = deviceSettingsSchema.parse(input);
+    this.connection
+      .prepare(
+        `UPDATE device_settings
+         SET update_feed_url = ?, automatic_updates_enabled = ?, updated_at = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(value.updateFeedUrl, value.automaticUpdatesEnabled ? 1 : 0, now());
+    return this.getDeviceSettings();
+  }
+
+  getCardProcessorConfigJson(): string | null {
+    const row = this.connection
+      .prepare(
+        'SELECT card_processor_config_secret FROM device_settings WHERE singleton_id = 1',
+      )
+      .get() as Row;
+    if (
+      row.card_processor_config_secret === null ||
+      row.card_processor_config_secret === undefined
+    )
+      return null;
+    return this.secretStore.decrypt(String(row.card_processor_config_secret));
+  }
+
+  getCardProcessorConfigStatus(): ProcessorConfigStatus {
+    const row = this.connection
+      .prepare(
+        'SELECT card_processor_config_secret, card_processor_config_encrypted FROM device_settings WHERE singleton_id = 1',
+      )
+      .get() as Row;
+    return {
+      configured:
+        row.card_processor_config_secret !== null &&
+        row.card_processor_config_secret !== undefined,
+      encrypted: Number(row.card_processor_config_encrypted ?? 0) === 1,
+    };
+  }
+
+  setCardProcessorConfigJson(value: string | null): ProcessorConfigStatus {
+    this.connection
+      .prepare(
+        `UPDATE device_settings
+         SET card_processor_config_secret = ?, card_processor_config_encrypted = ?, updated_at = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(
+        value === null ? null : this.secretStore.encrypt(value),
+        value === null ? 0 : this.secretStore.available ? 1 : 0,
+        now(),
+      );
+    return this.getCardProcessorConfigStatus();
+  }
+
+  private migrateLegacyProcessorConfig(): void {
+    const row = this.connection
+      .prepare(
+        'SELECT card_processor_config_secret, card_processor_config_encrypted FROM device_settings WHERE singleton_id = 1',
+      )
+      .get() as Row | undefined;
+    if (
+      !row ||
+      row.card_processor_config_secret === null ||
+      row.card_processor_config_secret === undefined
+    )
+      return;
+    const stored = String(row.card_processor_config_secret);
+    try {
+      JSON.parse(stored);
+    } catch {
+      return;
+    }
+    this.connection
+      .prepare(
+        `UPDATE device_settings
+         SET card_processor_config_secret = ?, card_processor_config_encrypted = ?, updated_at = ?
+         WHERE singleton_id = 1`,
+      )
+      .run(
+        this.secretStore.encrypt(stored),
+        this.secretStore.available ? 1 : 0,
+        now(),
+      );
   }
 
   // --- CATEGORIES ---

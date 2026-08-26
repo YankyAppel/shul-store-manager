@@ -520,8 +520,8 @@ describe('kiosk LAN API', () => {
 
     lan.db.updateSettings({
       ...lan.db.getSettings(),
-      cardProcessorConfigJson: JSON.stringify({ simulateDelayMs: 25 }),
     });
+    lan.db.setCardProcessorConfigJson(JSON.stringify({ simulateDelayMs: 25 }));
 
     const status = await api(
       lan,

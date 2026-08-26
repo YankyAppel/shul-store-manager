@@ -101,6 +101,10 @@ export interface PaymentActor {
   kioskId?: string | null;
 }
 
+interface ConfiguredProcessor {
+  configSchema: { parse(value: unknown): unknown };
+}
+
 export interface ProcessorIdentity {
   processorId: string;
   config: unknown;
@@ -462,11 +466,7 @@ export class PaymentService {
       throw new PaymentError('processor-not-found', 'Processor not found');
     let config: unknown;
     try {
-      config = settings.cardProcessorConfigJson
-        ? processor.configSchema.parse(
-            JSON.parse(settings.cardProcessorConfigJson),
-          )
-        : processor.configSchema.parse({});
+      config = this.currentProcessorConfig(processor);
     } catch {
       throw new PaymentError(
         'processor-config-invalid',
@@ -478,6 +478,13 @@ export class PaymentService {
       config,
       configHash: sha256(canonicalJson(config ?? {})),
     };
+  }
+
+  private currentProcessorConfig(processor: ConfiguredProcessor): unknown {
+    const stored = this.db.getCardProcessorConfigJson();
+    return stored
+      ? processor.configSchema.parse(JSON.parse(stored))
+      : processor.configSchema.parse({});
   }
 
   // -------------------------------------------------------------- idempotency
@@ -775,11 +782,7 @@ export class PaymentService {
         );
       } catch {
         try {
-          const currentConfig = settings.cardProcessorConfigJson
-            ? processor.configSchema.parse(
-                JSON.parse(settings.cardProcessorConfigJson),
-              )
-            : processor.configSchema.parse({});
+          const currentConfig = this.currentProcessorConfig(processor);
           const currentConfigHash = sha256(canonicalJson(currentConfig ?? {}));
           if (
             !tx.processor_config_hash ||
@@ -802,11 +805,7 @@ export class PaymentService {
     } else {
       let configHash: string;
       try {
-        config = settings.cardProcessorConfigJson
-          ? processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            )
-          : processor.configSchema.parse({});
+        config = this.currentProcessorConfig(processor);
         configHash = sha256(canonicalJson(config ?? {}));
       } catch {
         return this.block(
@@ -973,11 +972,7 @@ export class PaymentService {
             JSON.parse(this.secretStore.decrypt(tx.processor_config_secret)),
           );
         } catch {
-          const current = settings.cardProcessorConfigJson
-            ? processor.configSchema.parse(
-                JSON.parse(settings.cardProcessorConfigJson),
-              )
-            : processor.configSchema.parse({});
+          const current = this.currentProcessorConfig(processor);
           if (
             !tx.processor_config_hash ||
             tx.processor_config_hash !== sha256(canonicalJson(current))
@@ -986,11 +981,7 @@ export class PaymentService {
           config = current;
         }
       } else {
-        const current = settings.cardProcessorConfigJson
-          ? processor.configSchema.parse(
-              JSON.parse(settings.cardProcessorConfigJson),
-            )
-          : processor.configSchema.parse({});
+        const current = this.currentProcessorConfig(processor);
         if (
           tx.processor_config_hash &&
           tx.processor_config_hash !== sha256(canonicalJson(current))

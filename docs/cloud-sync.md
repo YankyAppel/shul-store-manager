@@ -287,3 +287,7 @@ relying on cloud backup:
       it is refused with a clear message and nothing changes.
 - [ ] **Disable:** turn off cloud backup; confirm all operations still work and
       nothing is pushed.
+
+Store settings sync contains only store-wide operational settings. It never
+carries processor credentials, the update-feed URL, or the automatic-update
+setting: these values are device-local and are not restored from cloud events.
