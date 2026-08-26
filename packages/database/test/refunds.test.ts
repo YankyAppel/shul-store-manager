@@ -170,6 +170,27 @@ describe('refunds', () => {
     );
   });
 
+  it('refunds tax-inclusive prices exactly once', () => {
+    store = new StoreDatabase(':memory:');
+    store.updateSettings({
+      ...store.getSettings(),
+      taxRateBps: 1000,
+      pricesIncludeTax: true,
+    });
+    const { productId } = seed(store, 110, true);
+    const sale = store.completeSale({
+      completionKey: randomUUID(),
+      lines: [{ productId, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'cash', cashReceivedCents: 110 },
+    });
+    const refund = store.recordRefund(
+      refundInput(sale.id, sale.items[0]!.id, 1),
+    );
+    expect(refund.subtotalCents).toBe(100);
+    expect(refund.taxCents).toBe(10);
+    expect(refund.amountCents).toBe(110);
+  });
+
   it('keeps not-resalable returns out of inventory', () => {
     store = new StoreDatabase(':memory:');
     const { productId } = seed(store);

@@ -20,6 +20,9 @@ export function SalesHistory({
     [],
   );
   const [pendingCount, setPendingCount] = useState(0);
+  const [refundAttention, setRefundAttention] = useState<
+    RefundIntentAttention[]
+  >([]);
   const [productNames, setProductNames] = useState<Record<string, string>>({});
   const [kioskNames, setKioskNames] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Sale>();

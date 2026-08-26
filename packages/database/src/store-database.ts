@@ -2380,6 +2380,7 @@ export class StoreDatabase {
       .prepare(
         `SELECT sale_item_id,
                 COALESCE(SUM(quantity), 0) AS refunded_quantity,
+                COALESCE(SUM(subtotal_cents), 0) AS refunded_subtotal_cents,
                 COALESCE(SUM(tax_cents), 0) AS refunded_tax_cents
          FROM refund_items
          WHERE refund_id IN (SELECT id FROM refunds WHERE sale_id = ?)
@@ -2391,12 +2392,20 @@ export class StoreDatabase {
         String(row.sale_item_id),
         {
           quantity: Number(row.refunded_quantity),
+          subtotalCents: readSafeCents(
+            row.refunded_subtotal_cents,
+            'refunded subtotal',
+          ),
           taxCents: readSafeCents(row.refunded_tax_cents, 'refunded tax'),
         },
       ]),
     );
     const items = sale.items.map((item) => {
-      const prior = refundedByItem.get(item.id) ?? { quantity: 0, taxCents: 0 };
+      const prior = refundedByItem.get(item.id) ?? {
+        quantity: 0,
+        subtotalCents: 0,
+        taxCents: 0,
+      };
       const remainingQuantity = item.quantity - prior.quantity;
       return {
         id: item.id,
@@ -2497,25 +2506,40 @@ export class StoreDatabase {
               'SELECT COALESCE(SUM(ri.quantity), 0) AS refunded FROM refund_items ri WHERE ri.sale_item_id = ?',
             )
             .get(requested.saleItemId) as { refunded: number };
-          const taxRow = this.connection
+          const subtotalRow = this.connection
             .prepare(
-              `SELECT COALESCE(SUM(ri.tax_cents), 0) AS tax
+              `SELECT COALESCE(SUM(ri.subtotal_cents), 0) AS subtotal,
+                      COALESCE(SUM(ri.tax_cents), 0) AS tax
                FROM refund_items ri
                JOIN refunds r ON r.id = ri.refund_id
                WHERE ri.sale_item_id = ?`,
             )
-            .get(requested.saleItemId) as { tax: number };
+            .get(requested.saleItemId) as {
+              subtotal: number;
+              tax: number;
+            };
           return {
             saleItemId: requested.saleItemId,
             productName: String(item.product_name),
             soldQuantity: Number(item.quantity),
-            refundedQuantity: Number(refundedRow.refunded),
-            taxAlreadyRefundedCents: readSafeCents(taxRow.tax, 'refunded tax'),
-            unitSellingPriceCents: readSafeCents(
-              item.unit_selling_price_cents,
-              'unit selling price',
+            saleLineSubtotalCents: readSafeCents(
+              item.line_subtotal_cents,
+              'sale line subtotal',
             ),
-            taxCents: readSafeCents(item.tax_cents, 'sale item tax'),
+            saleLineTaxCents: readSafeCents(item.tax_cents, 'sale line tax'),
+            saleLineTotalCents: readSafeCents(
+              item.line_total_cents,
+              'sale line total',
+            ),
+            refundedQuantity: Number(refundedRow.refunded),
+            subtotalAlreadyRefundedCents: readSafeCents(
+              subtotalRow.subtotal,
+              'refunded subtotal',
+            ),
+            taxAlreadyRefundedCents: readSafeCents(
+              subtotalRow.tax,
+              'refunded tax',
+            ),
             quantity: requested.quantity,
             restocked: requested.restocked,
           };
