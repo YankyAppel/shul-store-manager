@@ -28,6 +28,12 @@ export function SalesHistory({
   const [kioskNames, setKioskNames] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Sale>();
   const [message, setMessage] = useState('');
+  const [scanValue, setScanValue] = useState('');
+  const [accountPaymentCustomer, setAccountPaymentCustomer] = useState<{
+    customerId: string;
+    customerName: string;
+    receiptNumber: number;
+  } | null>(null);
   const [busyReference, setBusyReference] = useState('');
   const [checking, setChecking] = useState(false);
   const [notes, setNotes] = useState<Record<string, string>>({});
@@ -180,6 +186,44 @@ export function SalesHistory({
     }
   }
 
+  async function scanReceipt() {
+    const scanned = scanValue.trim();
+    if (!scanned) return;
+    setScanValue('');
+    setAccountPaymentCustomer(null);
+    try {
+      const result = await window.storeApi.sales.lookupReceiptBarcode(scanned);
+      if (!result) {
+        setMessage(`No receipt found for ${scanned}`);
+        return;
+      }
+      if (result.kind === 'sale') {
+        setMessage('');
+        setSelected(result.sale);
+        await loadRefundable(result.sale);
+        return;
+      }
+      if (result.kind === 'refund') {
+        setSelected(result.sale);
+        await loadRefundable(result.sale);
+        setMessage(`Refund #${result.refund.receiptNumber} of this sale`);
+        return;
+      }
+      setSelected(undefined);
+      setRefundable(undefined);
+      setMessage(
+        `Account payment #${result.payment.receiptNumber} for ${result.payment.customerName}`,
+      );
+      setAccountPaymentCustomer({
+        customerId: result.customerId,
+        customerName: result.payment.customerName,
+        receiptNumber: result.payment.receiptNumber,
+      });
+    } catch {
+      setMessage(`No receipt found for ${scanned}`);
+    }
+  }
+
   useEffect(() => {
     void refreshData();
   }, []);
@@ -263,6 +307,27 @@ export function SalesHistory({
 
   return (
     <div className="sales-history">
+      <div className="receipt-scan">
+        <label htmlFor="receipt-scan-input">Scan receipt</label>
+        <input
+          id="receipt-scan-input"
+          value={scanValue}
+          autoFocus
+          placeholder="Scan or type receipt barcode"
+          onChange={(event) => setScanValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') void scanReceipt();
+          }}
+        />
+        {accountPaymentCustomer && onViewCustomer && (
+          <button
+            type="button"
+            onClick={() => onViewCustomer(accountPaymentCustomer.customerId)}
+          >
+            Open {accountPaymentCustomer.customerName}
+          </button>
+        )}
+      </div>
       {message && <div className="alert">{message}</div>}
       {(needsAttention.length > 0 || pendingCount > 0) && (
         <section className="attention-panel">

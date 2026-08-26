@@ -50,6 +50,7 @@ import {
   type Refund,
   type RefundItem,
   type RefundableSale,
+  parseReceiptBarcode,
   type Sale,
   type SaleItemPayload,
   type SalePayload,
@@ -2253,6 +2254,52 @@ export class StoreDatabase {
         )
         .all() as Array<{ id: string }>
     ).map((row) => this.getSale(row.id));
+  }
+
+  lookupReceiptBarcode(value: string):
+    | { kind: 'sale'; sale: Sale }
+    | { kind: 'refund'; refund: Refund; sale: Sale }
+    | {
+        kind: 'account_payment';
+        payment: AccountPayment;
+        customerId: string;
+      }
+    | null {
+    const parsed = parseReceiptBarcode(value);
+    if (!parsed) return null;
+
+    if (parsed.kind === 'sale') {
+      const row = this.connection
+        .prepare('SELECT id FROM sales WHERE receipt_number = ?')
+        .get(parsed.receiptNumber) as { id: string } | undefined;
+      return row ? { kind: 'sale', sale: this.getSale(row.id) } : null;
+    }
+
+    if (parsed.kind === 'refund') {
+      const row = this.connection
+        .prepare('SELECT id, sale_id FROM refunds WHERE receipt_number = ?')
+        .get(parsed.receiptNumber) as
+        { id: string; sale_id: string } | undefined;
+      if (!row) return null;
+      const refund = this.getRefund(row.id);
+      return refund
+        ? { kind: 'refund', refund, sale: this.getSale(row.sale_id) }
+        : null;
+    }
+
+    const row = this.connection
+      .prepare(
+        'SELECT id, customer_id FROM account_payments WHERE receipt_number = ?',
+      )
+      .get(parsed.receiptNumber) as
+      { id: string; customer_id: string } | undefined;
+    return row
+      ? {
+          kind: 'account_payment',
+          payment: this.getAccountPayment(row.id),
+          customerId: String(row.customer_id),
+        }
+      : null;
   }
 
   getSale(id: string): Sale {

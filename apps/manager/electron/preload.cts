@@ -82,6 +82,8 @@ const api: StoreApi = {
     get: (id) => ipcRenderer.invoke('sales:get', id),
     receipt: (id) => ipcRenderer.invoke('sales:receipt', id),
     print: (id) => ipcRenderer.invoke('sales:print', id),
+    lookupReceiptBarcode: (value) =>
+      ipcRenderer.invoke('sales:lookupReceiptBarcode', value),
   },
   refunds: {
     refundable: (saleId) => ipcRenderer.invoke('refunds:refundable', saleId),

@@ -552,6 +552,11 @@ function registerIpc(): void {
   ipcMain.handle('sales:print', (_event, id) =>
     printReceipt(idSchema.parse(id)),
   );
+  ipcMain.handle('sales:lookupReceiptBarcode', (_event, value) =>
+    database.lookupReceiptBarcode(
+      z.string().trim().min(1).max(200).parse(value),
+    ),
+  );
   ipcMain.handle('refunds:refundable', (_event, id) =>
     database.refundableSale(idSchema.parse(id)),
   );
@@ -1047,9 +1052,10 @@ async function printAccountPayment(paymentId: string): Promise<PrintResult> {
 async function printRefund(refundId: string): Promise<PrintResult> {
   const refund = database.getRefund(refundId);
   if (!refund) throw new Error('Refund not found');
+  const settings = database.getSettings();
   const result = await printHtmlDocument(
-    refundReceiptHtml({ refund, storeName: database.getSettings().storeName }),
-    database.getSettings().receiptPrinterName,
+    refundReceiptHtml({ refund, storeName: settings.storeName, settings }),
+    settings.receiptPrinterName,
   );
   return result;
 }

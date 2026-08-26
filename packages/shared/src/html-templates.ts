@@ -4,7 +4,10 @@ import type {
   DailyReport,
   Refund,
   ReceiptData,
+  StoreSettings,
 } from './index.js';
+import { renderCode128Svg } from './barcode.js';
+import { receiptBarcodeValue } from './receipt-barcode.js';
 
 export function escapeHtml(value: string | null | undefined): string {
   if (value === null || value === undefined) return '';
@@ -36,7 +39,18 @@ function receiptBodyCss(settings: {
 }): string {
   const widthMm = receiptPaperWidthMm(settings);
   return `body{font:14px system-ui,-apple-system,BlinkMacSystemFont,sans-serif;width:${widthMm}mm;max-width:${widthMm}mm;margin:auto;padding:4mm;color:#111;box-sizing:border-box}
-    @page{size:${widthMm}mm auto;margin:0}`;
+    @page{size:${widthMm}mm auto;margin:0}
+    .receipt-barcode{text-align:center;margin:16px 0 8px;break-inside:avoid}
+    .receipt-barcode svg{display:block;width:100%;max-width:100%;height:16mm;margin:0 auto}
+    .receipt-barcode-value{font-size:10px;letter-spacing:.2px;margin-top:2px}`;
+}
+
+function receiptBarcodeMarkup(
+  kind: 'sale' | 'refund' | 'account_payment',
+  receiptNumber: number,
+): string {
+  const value = receiptBarcodeValue(kind, receiptNumber);
+  return `<div class="receipt-barcode">${renderCode128Svg(value)}<div class="receipt-barcode-value">${escapeHtml(value)}</div></div>`;
 }
 
 export function receiptHtml({ sale, settings }: ReceiptData): string {
@@ -93,6 +107,7 @@ export function receiptHtml({ sale, settings }: ReceiptData): string {
     <hr style="border:none;border-top:1px dotted #aaa;margin:8px 0">
     ${paymentDetails}
   </div>
+  ${receiptBarcodeMarkup('sale', sale.receiptNumber)}
   ${settings.receiptFooter ? `<div class="footer">${escapeHtml(settings.receiptFooter)}</div>` : ''}
 </body>
 </html>`;
@@ -140,6 +155,7 @@ export function accountPaymentReceiptHtml({
     <b>New balance: ${formatCents(payment.newBalanceCents)}</b>
   </div>
 
+  ${receiptBarcodeMarkup('account_payment', payment.receiptNumber)}
   ${settings.receiptFooter ? `<div class="footer">${escapeHtml(settings.receiptFooter)}</div>` : ''}
 </body>
 </html>`;
@@ -331,6 +347,7 @@ export function dailyReportHtml(data: {
 export function refundReceiptHtml(data: {
   refund: Refund;
   storeName: string;
+  settings?: Pick<StoreSettings, 'receiptPaperWidthMm'>;
 }): string {
   const refund = data.refund;
   const lines = refund.items
@@ -346,11 +363,12 @@ export function refundReceiptHtml(data: {
     '—';
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>Refund #${refund.receiptNumber}</title>
-<style>${receiptBodyCss({ receiptPaperWidthMm: 80 })}h1{text-align:center;margin:0 0 6px;font-size:18px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{padding:5px 2px;border-bottom:1px solid #eee;text-align:left}th:last-child,td:last-child{text-align:right}.total{font-weight:700;border-top:2px solid #333}</style></head>
+<style>${receiptBodyCss(data.settings ?? { receiptPaperWidthMm: 80 })}h1{text-align:center;margin:0 0 6px;font-size:18px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{padding:5px 2px;border-bottom:1px solid #eee;text-align:left}th:last-child,td:last-child{text-align:right}.total{font-weight:700;border-top:2px solid #333}</style></head>
 <body><h1>${escapeHtml(data.storeName)}</h1>
 <div style="text-align:center">Refund #${refund.receiptNumber}<br>Original sale: ${escapeHtml(refund.saleId)}<br>${escapeHtml(refund.createdAt)}</div>
 <table><thead><tr><th>Returned item</th><th>Restock</th><th>Amount</th></tr></thead><tbody>${lines}</tbody>
 <tfoot><tr><td colspan="2">Subtotal</td><td>${formatCents(refund.subtotalCents)}</td></tr><tr><td colspan="2">Tax</td><td>${formatCents(refund.taxCents)}</td></tr><tr class="total"><td colspan="2">Total</td><td>${formatCents(refund.amountCents)}</td></tr></tfoot></table>
 <div><b>Method:</b> ${escapeHtml(refund.method)}<br><b>Reference:</b> ${escapeHtml(reference)}<br><b>Reason:</b> ${escapeHtml(refund.reason)}</div>
+${receiptBarcodeMarkup('refund', refund.receiptNumber)}
 </body></html>`;
 }
