@@ -5,12 +5,15 @@ import type {
   CloudEntitlement,
   SecretStore,
 } from '@shul-store/shared';
+import { cloudEntitlementSchema } from '@shul-store/shared';
 
 const SITE_URL = 'https://skvershul.softhere.work';
 const GRACE_MS = 14 * 24 * 60 * 60 * 1000;
+const REFRESH_THROTTLE_MS = 5 * 60 * 1000;
 type FetchImpl = typeof globalThis.fetch;
 interface Stored {
   accountStarted: boolean;
+  onboardingDismissed: boolean;
   siteUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
@@ -20,11 +23,13 @@ interface Stored {
   expiresAt: number | null;
   entitlement: CloudEntitlement | null;
   entitlementFetchedAt: number | null;
+  entitlementOffline: boolean;
 }
 
 function initial(): Stored {
   return {
     accountStarted: false,
+    onboardingDismissed: false,
     siteUrl: SITE_URL,
     supabaseUrl: '',
     supabaseAnonKey: '',
@@ -34,6 +39,7 @@ function initial(): Stored {
     expiresAt: null,
     entitlement: null,
     entitlementFetchedAt: null,
+    entitlementOffline: false,
   };
 }
 
@@ -48,6 +54,7 @@ export class CloudAccountManager {
     private readonly secretStore: SecretStore,
     private readonly fetchImpl: FetchImpl = globalThis.fetch,
     private readonly openExternal?: (url: string) => Promise<void>,
+    private readonly hasLegacySync?: () => boolean,
   ) {}
 
   async load(): Promise<void> {
@@ -89,11 +96,20 @@ export class CloudAccountManager {
       this.stored.entitlement?.active &&
       this.stored.entitlementFetchedAt !== null &&
       Date.now() - this.stored.entitlementFetchedAt <= GRACE_MS;
+    const cachedUntil =
+      this.stored.entitlementOffline &&
+      this.stored.entitlementFetchedAt !== null
+        ? new Date(this.stored.entitlementFetchedAt + GRACE_MS).toISOString()
+        : undefined;
     return {
       email: this.stored.email,
       signedIn: Boolean(this.stored.accessToken && this.stored.refreshToken),
       entitlement: this.stored.entitlement
-        ? { ...this.stored.entitlement, active: Boolean(active) }
+        ? {
+            ...this.stored.entitlement,
+            active: Boolean(active),
+            ...(cachedUntil ? { cached_until: cachedUntil } : {}),
+          }
         : null,
     };
   }
@@ -124,6 +140,24 @@ export class CloudAccountManager {
     return this.state();
   }
 
+  async shouldShowOnboarding(): Promise<boolean> {
+    await this.load();
+    if (this.stored.accountStarted || this.stored.onboardingDismissed)
+      return false;
+    if (this.hasLegacySync?.()) {
+      this.stored.onboardingDismissed = true;
+      await this.save();
+      return false;
+    }
+    return true;
+  }
+
+  async dismissOnboarding(): Promise<void> {
+    await this.load();
+    this.stored.onboardingDismissed = true;
+    await this.save();
+  }
+
   private async config(): Promise<CloudAccountConfig> {
     await this.load();
     if (this.stored.supabaseUrl && this.stored.supabaseAnonKey)
@@ -148,7 +182,8 @@ export class CloudAccountManager {
   private async auth(
     pathname: string,
     body: Record<string, string>,
-  ): Promise<void> {
+    isSignUp = false,
+  ): Promise<boolean> {
     const config = await this.config();
     const response = await this.fetchImpl(
       `${config.supabaseUrl}/auth/v1/${pathname}`,
@@ -161,14 +196,37 @@ export class CloudAccountManager {
         body: JSON.stringify(body),
       },
     );
-    if (!response.ok)
+    if (!response.ok) {
+      if (isSignUp) {
+        const error = (await response.json().catch(() => null)) as {
+          msg?: unknown;
+          error_description?: unknown;
+        } | null;
+        const detail =
+          typeof error?.msg === 'string'
+            ? error.msg
+            : typeof error?.error_description === 'string'
+              ? error.error_description
+              : 'Sign-up failed. Please check your details and try again.';
+        throw new Error(detail);
+      }
       throw new Error('Sign-in failed. Check your email and password.');
+    }
     const value = (await response.json()) as {
       access_token?: string;
       refresh_token?: string;
       expires_in?: number;
       user?: { email?: string };
     };
+    if (isSignUp && (!value.access_token || !value.refresh_token)) {
+      this.stored.accessToken = null;
+      this.stored.refreshToken = null;
+      this.stored.expiresAt = null;
+      this.stored.email = value.user?.email ?? body.email ?? null;
+      this.stored.accountStarted = true;
+      await this.save();
+      return false;
+    }
     if (!value.access_token || !value.refresh_token)
       throw new Error('Sign-in failed. Check your email and password.');
     this.stored.accessToken = value.access_token;
@@ -177,6 +235,7 @@ export class CloudAccountManager {
     this.stored.email = value.user?.email ?? this.stored.email;
     this.stored.accountStarted = true;
     await this.save();
+    return true;
   }
 
   async signIn(email: string, password: string): Promise<CloudAccountState> {
@@ -185,8 +244,8 @@ export class CloudAccountManager {
     return this.publish();
   }
   async signUp(email: string, password: string): Promise<CloudAccountState> {
-    await this.auth('signup', { email, password });
-    await this.afterSignIn();
+    const signedIn = await this.auth('signup', { email, password }, true);
+    if (signedIn) await this.afterSignIn();
     return this.publish();
   }
   private async afterSignIn(): Promise<void> {
@@ -270,17 +329,29 @@ export class CloudAccountManager {
   }
   private async fetchEntitlement(): Promise<void> {
     const response = await this.request('/api/store/entitlement', 'GET');
-    this.stored.entitlement = (await response.json()) as CloudEntitlement;
+    const parsed = cloudEntitlementSchema.safeParse(await response.json());
+    if (!parsed.success)
+      throw new Error('Could not read the cloud subscription status.');
+    this.stored.entitlement = parsed.data;
     this.stored.entitlementFetchedAt = Date.now();
+    this.stored.entitlementOffline = false;
     await this.save();
   }
-  async refresh(): Promise<CloudAccountState> {
+  async refresh(force = false): Promise<CloudAccountState> {
     await this.load();
     if (!this.stored.accessToken) return this.state();
+    if (
+      !force &&
+      this.stored.entitlementFetchedAt !== null &&
+      Date.now() - this.stored.entitlementFetchedAt < REFRESH_THROTTLE_MS
+    )
+      return this.state();
     try {
       await this.fetchEntitlement();
     } catch {
-      return this.state();
+      this.stored.entitlementOffline = this.stored.entitlement !== null;
+      await this.save();
+      return this.publish();
     }
     return this.publish();
   }
@@ -310,10 +381,12 @@ export class CloudAccountManager {
     const value = await this.request('/api/store/checkout', 'POST', {});
     const body = (await value.json()) as { url?: string };
     if (body.url && this.openExternal) await this.openExternal(body.url);
+    await this.refresh(true);
   }
   async portal(): Promise<void> {
     const value = await this.request('/api/store/portal', 'POST', {});
     const body = (await value.json()) as { url?: string };
     if (body.url && this.openExternal) await this.openExternal(body.url);
+    await this.refresh(true);
   }
 }

@@ -185,6 +185,10 @@ const api: StoreApi = {
   },
   cloudAccount: {
     getState: () => ipcRenderer.invoke('cloudAccount:getState'),
+    shouldShowOnboarding: () =>
+      ipcRenderer.invoke('cloudAccount:shouldShowOnboarding'),
+    dismissOnboarding: () =>
+      ipcRenderer.invoke('cloudAccount:dismissOnboarding'),
     signIn: (email, password) =>
       ipcRenderer.invoke('cloudAccount:signIn', email, password),
     signUp: (email, password) =>

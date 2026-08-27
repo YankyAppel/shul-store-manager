@@ -7,6 +7,7 @@ export const cloudEntitlementSchema = z.object({
   status: z.string(),
   current_period_end: z.string().nullable(),
   linked_shul_name: z.string().optional(),
+  cached_until: z.string().optional(),
 });
 export type CloudEntitlement = z.infer<typeof cloudEntitlementSchema>;
 

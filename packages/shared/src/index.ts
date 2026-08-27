@@ -335,6 +335,8 @@ export interface StoreApi {
   };
   cloudAccount: {
     getState(): Promise<import('./cloud-account.js').CloudAccountState>;
+    shouldShowOnboarding(): Promise<boolean>;
+    dismissOnboarding(): Promise<void>;
     signIn(
       email: string,
       password: string,

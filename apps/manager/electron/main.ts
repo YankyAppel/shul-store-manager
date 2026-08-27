@@ -113,6 +113,7 @@ let backupTimer: ReturnType<typeof setInterval> | null = null;
 let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let cloudAccount: CloudAccountManager;
+let cloudWasSyncAllowed = false;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_INITIAL_DELAY_MS = 30 * 1000;
@@ -210,6 +211,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'auth:elevate': 'public',
   'auth:createFirstOwner': 'public',
   'cloudAccount:getState': 'public',
+  'cloudAccount:shouldShowOnboarding': 'public',
+  'cloudAccount:dismissOnboarding': 'public',
   'cloudAccount:signIn': 'public',
   'cloudAccount:signUp': 'public',
   'cloudAccount:signOut': 'public',
@@ -538,6 +541,12 @@ function registerIpc(): void {
     return owner;
   });
   ipcMain.handle('cloudAccount:getState', () => cloudAccount.getState());
+  ipcMain.handle('cloudAccount:shouldShowOnboarding', () =>
+    cloudAccount.shouldShowOnboarding(),
+  );
+  ipcMain.handle('cloudAccount:dismissOnboarding', () =>
+    cloudAccount.dismissOnboarding(),
+  );
   ipcMain.handle('cloudAccount:signIn', (_event, email, password) =>
     cloudAccount.signIn(
       z.string().trim().email().parse(email),
@@ -1370,13 +1379,22 @@ app.whenReady().then(async () => {
     async (url) => {
       await shell.openExternal(url);
     },
+    () => {
+      if (!database) return false;
+      const config = database.getSyncConfigRecord();
+      return Boolean(
+        config.enabled && config.supabaseUrl && config.apiKeySecret,
+      );
+    },
   );
   cloudAccount.subscribe((state) => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed())
         window.webContents.send('cloudAccount:state', state);
     }
-    recreateSyncEngine();
+    const syncAllowed = state.entitlement?.active === true;
+    if (syncAllowed && !cloudWasSyncAllowed) void engine?.syncNow();
+    cloudWasSyncAllowed = syncAllowed;
   });
   await cloudAccount.load();
   database = new StoreDatabase(databasePath, secretStore, {

@@ -2,6 +2,30 @@ import { useEffect, useState, type FormEvent } from 'react';
 import type { CloudAccountState } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 
+function subscriptionDescription(
+  entitlement: CloudAccountState['entitlement'],
+): string {
+  if (!entitlement)
+    return 'No cloud subscription — $10/month, or $5 if you already use Shul Task Manager';
+  const price =
+    entitlement.price === null
+      ? entitlement.tier === 'linked'
+        ? '$5/month'
+        : '$10/month'
+      : `$${entitlement.price}/month`;
+  const description =
+    entitlement.tier === 'linked'
+      ? `Linked to ${entitlement.linked_shul_name ?? 'Shul Task Manager'}`
+      : price;
+  const pricedDescription =
+    entitlement.tier === 'linked' ? `${description} — ${price}` : description;
+  const cacheNote =
+    entitlement.active && entitlement.cached_until
+      ? ` (cached until ${new Date(entitlement.cached_until).toLocaleDateString()})`
+      : '';
+  return `${pricedDescription}, ${entitlement.active ? 'active' : 'inactive'}${cacheNote}`;
+}
+
 export function CloudAccountSection() {
   const [state, setState] = useState<CloudAccountState>();
   const [email, setEmail] = useState('');
@@ -46,11 +70,15 @@ export function CloudAccountSection() {
           : await window.storeApi.cloudAccount.signUp(email, password);
       setState(next);
       setPassword('');
-      setLinkOffered(await window.storeApi.cloudAccount.linkHint());
+      setLinkOffered(
+        next.signedIn ? await window.storeApi.cloudAccount.linkHint() : false,
+      );
       setMessage(
-        mode === 'signUp'
-          ? 'Account created. Check your email if confirmation is required.'
-          : 'Signed in.',
+        mode === 'signUp' && !next.signedIn
+          ? 'Account created — confirm the link in your email, then sign in.'
+          : mode === 'signUp'
+            ? 'Account created.'
+            : 'Signed in.',
       );
     } catch (error) {
       setMessage(messageFrom(error));
@@ -142,12 +170,7 @@ export function CloudAccountSection() {
             Signed in as <strong>{state.email}</strong>
           </p>
           <p>
-            Tier:{' '}
-            <strong>
-              {state.entitlement?.tier === 'linked' ? 'Linked' : 'Standalone'}
-            </strong>{' '}
-            · Status:{' '}
-            <strong>{state.entitlement?.active ? 'Active' : 'Inactive'}</strong>
+            <strong>{subscriptionDescription(state.entitlement)}</strong>
           </p>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <button

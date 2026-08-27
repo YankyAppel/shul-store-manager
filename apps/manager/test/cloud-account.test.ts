@@ -134,6 +134,78 @@ describe('CloudAccountManager', () => {
     });
   });
 
+  it('keeps the cached entitlement when the server response is invalid', async () => {
+    const file = accountFile();
+    const entitlement = {
+      tier: 'linked',
+      active: true,
+      price: 5,
+      status: 'active',
+      current_period_end: null,
+    };
+    const fetchedAt = Date.now() - 60_000;
+    await writeFile(
+      file,
+      JSON.stringify({
+        accountStarted: true,
+        siteUrl: 'https://site.example',
+        supabaseUrl: 'https://supabase.example',
+        supabaseAnonKey: 'anon-key',
+        email: 'owner@example.com',
+        accessToken: secretStore.encrypt('access'),
+        refreshToken: secretStore.encrypt('refresh'),
+        expiresAt: Date.now() + 3600000,
+        entitlement,
+        entitlementFetchedAt: fetchedAt,
+      }),
+    );
+    const manager = new CloudAccountManager(file, secretStore, async () =>
+      jsonResponse({ active: 'yes' }),
+    );
+
+    await expect(manager.refresh(true)).resolves.toMatchObject({
+      entitlement: { tier: 'linked', active: true },
+    });
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as {
+      entitlement: unknown;
+      entitlementFetchedAt: number;
+    };
+    expect(persisted.entitlement).toEqual(entitlement);
+    expect(persisted.entitlementFetchedAt).toBe(fetchedAt);
+  });
+
+  it('returns a confirmation state for sign-up without an access token', async () => {
+    const file = accountFile();
+    const calls: string[] = [];
+    const manager = new CloudAccountManager(
+      file,
+      secretStore,
+      async (input) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith('/api/store/config'))
+          return jsonResponse({
+            supabase_url: 'https://supabase.example',
+            supabase_anon_key: 'anon-key',
+          });
+        if (url.includes('/auth/v1/signup'))
+          return jsonResponse({
+            user: { email: 'new@example.com' },
+          });
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    );
+
+    await expect(
+      manager.signUp('new@example.com', 'password123'),
+    ).resolves.toEqual({
+      email: 'new@example.com',
+      signedIn: false,
+      entitlement: null,
+    });
+    expect(calls.some((url) => url.endsWith('/api/store/account'))).toBe(false);
+  });
+
   it('uses cached entitlement only during the 14-day offline grace window', async () => {
     const file = accountFile();
     const entitlement = {
@@ -194,6 +266,50 @@ describe('CloudAccountManager', () => {
       entitlement: { tier: 'linked', active: false },
     });
     expect(expired.isSyncAllowed()).toBe(false);
+  });
+
+  it('throttles repeated entitlement refreshes unless forced', async () => {
+    const file = accountFile();
+    let entitlementRequests = 0;
+    await writeFile(
+      file,
+      JSON.stringify({
+        accountStarted: true,
+        siteUrl: 'https://site.example',
+        supabaseUrl: 'https://supabase.example',
+        supabaseAnonKey: 'anon-key',
+        email: 'owner@example.com',
+        accessToken: secretStore.encrypt('access'),
+        refreshToken: secretStore.encrypt('refresh'),
+        expiresAt: Date.now() + 3600000,
+        entitlement: null,
+        entitlementFetchedAt: null,
+      }),
+    );
+    const manager = new CloudAccountManager(
+      file,
+      secretStore,
+      async (input) => {
+        const url = String(input);
+        if (url.endsWith('/api/store/entitlement')) {
+          entitlementRequests += 1;
+          return jsonResponse({
+            tier: 'standalone',
+            active: false,
+            price: 10,
+            status: 'inactive',
+            current_period_end: null,
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    );
+
+    await manager.refresh();
+    await manager.refresh();
+    expect(entitlementRequests).toBe(1);
+    await manager.refresh(true);
+    expect(entitlementRequests).toBe(2);
   });
 
   it('does not gate an existing pasted-credentials sync configuration', async () => {
