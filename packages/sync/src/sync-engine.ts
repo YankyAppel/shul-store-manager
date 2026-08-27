@@ -8,6 +8,7 @@ export interface SyncEngineOptions {
   batchSize?: number;
   /** Normal interval between cycles in milliseconds (default 5 minutes). */
   intervalMs?: number;
+  canSync?: () => boolean;
 }
 
 export interface PushCycleResult {
@@ -66,6 +67,7 @@ export class SyncEngine {
   private readonly transport: SyncTransport;
   private readonly batchSize: number;
   private readonly intervalMs: number;
+  private readonly canSync: () => boolean;
   private inFlight = false;
   private consecutiveFailures = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -80,6 +82,7 @@ export class SyncEngine {
     this.transport = transport;
     this.batchSize = options?.batchSize ?? DEFAULT_BATCH_SIZE;
     this.intervalMs = options?.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.canSync = options?.canSync ?? (() => true);
   }
 
   /** One push cycle. Safe to call directly (tests) or via the scheduler. */
@@ -96,6 +99,16 @@ export class SyncEngine {
     this.inFlight = true;
     try {
       const config = this.db.getSyncConfigRecord();
+      if (!this.canSync()) {
+        return {
+          pushed: 0,
+          remaining: this.db.pendingSyncEventCount(),
+          error:
+            'Cloud sync is paused until the Store Manager subscription is active.',
+          consecutiveFailures: 0,
+          skipped: false,
+        };
+      }
       if (
         !config.enabled ||
         !config.storeId ||

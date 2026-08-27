@@ -19,6 +19,7 @@ import { KioskScreen } from './features/KioskScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
 import { ReportsScreen } from './features/ReportsScreen';
 import { FirstOwnerSetup, LockScreen } from './features/AuthScreens';
+import { CloudAccountOnboarding } from './features/CloudAccountOnboarding';
 
 type View =
   | 'checkout'
@@ -63,6 +64,9 @@ export function App() {
   const [error, setError] = useState('');
   const [authState, setAuthState] = useState<AuthState>();
   const [needsOwner, setNeedsOwner] = useState(false);
+  const [showCloudOnboarding, setShowCloudOnboarding] = useState<
+    boolean | undefined
+  >();
   const [approvalPermission, setApprovalPermission] = useState<string | null>(
     null,
   );
@@ -76,10 +80,12 @@ export function App() {
     void Promise.all([
       window.storeApi.auth.getState(),
       window.storeApi.auth.listAccounts(),
-    ]).then(([state, accounts]) => {
+      window.storeApi.cloudAccount.shouldShowOnboarding(),
+    ]).then(([state, accounts, shouldShow]) => {
       if (!mounted) return;
       setAuthState(state);
       setNeedsOwner(!state.staffModeEnabled && accounts.length === 0);
+      setShowCloudOnboarding(shouldShow);
     });
     const unsubscribe = window.storeApi.auth.subscribe(setAuthState);
     const unsubscribeLocked = window.storeApi.auth.subscribeLocked(() => {
@@ -177,6 +183,10 @@ export function App() {
           void window.storeApi.auth.getState().then(setAuthState)
         }
       />
+    );
+  if (showCloudOnboarding)
+    return (
+      <CloudAccountOnboarding onDone={() => setShowCloudOnboarding(false)} />
     );
 
   async function toggleProduct(product: Product) {

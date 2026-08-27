@@ -156,130 +156,139 @@ export function CloudBackupSection() {
       className="settings-form"
       style={{ borderTop: '1px solid #e0e5e2', marginTop: 16, paddingTop: 16 }}
     >
-      <h3 style={{ margin: '0 0 4px 0' }}>Cloud backup (optional)</h3>
-      <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
-        Cloud backup is <strong>optional</strong>. The store works fully offline
-        and the local database is always the source of truth. Enable it to keep
-        a durable backup in your own Supabase project and to restore onto a
-        fresh install. See <code>docs/cloud-sync.md</code> for setup.
-      </p>
+      <details>
+        <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+          Advanced cloud backup configuration
+        </summary>
+        <div style={{ paddingTop: 12 }}>
+          <h3 style={{ margin: '0 0 4px 0' }}>Cloud backup (optional)</h3>
+          <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
+            Cloud backup is <strong>optional</strong>. The store works fully
+            offline and the local database is always the source of truth. Enable
+            it to keep a durable backup in your own Supabase project and to
+            restore onto a fresh install. See <code>docs/cloud-sync.md</code>{' '}
+            for setup.
+          </p>
 
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={config.enabled}
-          onChange={(e) => void toggleEnabled(e.target.checked)}
-        />{' '}
-        Enable automatic cloud backup
-      </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={config.enabled}
+              onChange={(e) => void toggleEnabled(e.target.checked)}
+            />{' '}
+            Enable automatic cloud backup
+          </label>
 
-      <div className="form-grid">
-        <label>
-          Supabase project URL
-          <input
-            value={url}
-            placeholder="https://your-project.supabase.co"
-            onChange={(e) => setUrl(e.target.value)}
-          />
-        </label>
-        <label>
-          API key{' '}
-          {config.configured && config.apiKeyHint && (
-            <em>Current: {config.apiKeyHint}</em>
+          <div className="form-grid">
+            <label>
+              Supabase project URL
+              <input
+                value={url}
+                placeholder="https://your-project.supabase.co"
+                onChange={(e) => setUrl(e.target.value)}
+              />
+            </label>
+            <label>
+              API key{' '}
+              {config.configured && config.apiKeyHint && (
+                <em>Current: {config.apiKeyHint}</em>
+              )}
+              <input
+                type="password"
+                value={apiKey}
+                placeholder={
+                  config.configured
+                    ? 'Enter a new key to replace it'
+                    : 'Service role or anon key'
+                }
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </label>
+          </div>
+
+          {config.configured && !config.apiKeyEncryptionAvailable && (
+            <div className="alert" style={{ marginBottom: 12 }}>
+              OS keychain encryption is unavailable on this device, so the API
+              key is stored without encryption. Consider enabling OS encryption.
+            </div>
           )}
-          <input
-            type="password"
-            value={apiKey}
-            placeholder={
-              config.configured
-                ? 'Enter a new key to replace it'
-                : 'Service role or anon key'
-            }
-            onChange={(e) => setApiKey(e.target.value)}
-          />
-        </label>
-      </div>
 
-      {config.configured && !config.apiKeyEncryptionAvailable && (
-        <div className="alert" style={{ marginBottom: 12 }}>
-          OS keychain encryption is unavailable on this device, so the API key
-          is stored without encryption. Consider enabling OS encryption.
+          <div
+            style={{
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <button
+              className="primary"
+              disabled={!keyReady || saving}
+              onClick={() => void saveCredentials()}
+            >
+              {saving ? 'Saving…' : 'Save credentials'}
+            </button>
+            <button
+              disabled={!keyReady || testing}
+              onClick={() => void testConnection()}
+            >
+              {testing ? 'Testing…' : 'Test connection'}
+            </button>
+            <button
+              disabled={!config.enabled || syncing}
+              onClick={() => void syncNow()}
+            >
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </button>
+            {savedMessage && (
+              <span style={{ color: '#1c6448', fontSize: '13px' }}>
+                {savedMessage}
+              </span>
+            )}
+          </div>
+
+          {testResult && (
+            <div
+              className="alert"
+              style={{
+                marginTop: 12,
+                color: testResult.ok ? '#1c6448' : undefined,
+              }}
+            >
+              {testResult.message}
+            </div>
+          )}
+
+          {syncResult && syncResult.error && (
+            <div className="alert" style={{ marginTop: 12 }}>
+              Last sync attempt: {syncResult.error}
+            </div>
+          )}
+          {syncResult && !syncResult.error && (
+            <div className="alert" style={{ marginTop: 12, color: '#1c6448' }}>
+              Pushed {syncResult.pushed} event(s); {syncResult.remaining}{' '}
+              pending.
+              {syncResult.skipped ? ' (A sync was already running.)' : ''}
+            </div>
+          )}
+
+          <SyncStatusDisplay status={status} config={config} />
+
+          {canRestore && (
+            <RestorePanel
+              restoreUrl={restoreUrl}
+              restoreKey={restoreKey}
+              restoreStoreId={restoreStoreId}
+              restoring={restoring}
+              restoreResult={restoreResult}
+              setRestoreUrl={setRestoreUrl}
+              setRestoreKey={setRestoreKey}
+              setRestoreStoreId={setRestoreStoreId}
+              performRestore={performRestore}
+            />
+          )}
         </div>
-      )}
-
-      <div
-        style={{
-          display: 'flex',
-          gap: 12,
-          alignItems: 'center',
-          flexWrap: 'wrap',
-        }}
-      >
-        <button
-          className="primary"
-          disabled={!keyReady || saving}
-          onClick={() => void saveCredentials()}
-        >
-          {saving ? 'Saving…' : 'Save credentials'}
-        </button>
-        <button
-          disabled={!keyReady || testing}
-          onClick={() => void testConnection()}
-        >
-          {testing ? 'Testing…' : 'Test connection'}
-        </button>
-        <button
-          disabled={!config.enabled || syncing}
-          onClick={() => void syncNow()}
-        >
-          {syncing ? 'Syncing…' : 'Sync now'}
-        </button>
-        {savedMessage && (
-          <span style={{ color: '#1c6448', fontSize: '13px' }}>
-            {savedMessage}
-          </span>
-        )}
-      </div>
-
-      {testResult && (
-        <div
-          className="alert"
-          style={{
-            marginTop: 12,
-            color: testResult.ok ? '#1c6448' : undefined,
-          }}
-        >
-          {testResult.message}
-        </div>
-      )}
-
-      {syncResult && syncResult.error && (
-        <div className="alert" style={{ marginTop: 12 }}>
-          Last sync attempt: {syncResult.error}
-        </div>
-      )}
-      {syncResult && !syncResult.error && (
-        <div className="alert" style={{ marginTop: 12, color: '#1c6448' }}>
-          Pushed {syncResult.pushed} event(s); {syncResult.remaining} pending.
-          {syncResult.skipped ? ' (A sync was already running.)' : ''}
-        </div>
-      )}
-
-      <SyncStatusDisplay status={status} config={config} />
-
-      {canRestore && (
-        <RestorePanel
-          restoreUrl={restoreUrl}
-          restoreKey={restoreKey}
-          restoreStoreId={restoreStoreId}
-          restoring={restoring}
-          restoreResult={restoreResult}
-          setRestoreUrl={setRestoreUrl}
-          setRestoreKey={setRestoreKey}
-          setRestoreStoreId={setRestoreStoreId}
-          performRestore={performRestore}
-        />
-      )}
+      </details>
     </section>
   );
 }

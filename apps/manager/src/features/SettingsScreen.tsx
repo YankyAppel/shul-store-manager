@@ -9,6 +9,7 @@ import {
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 import { CloudBackupSection } from './CloudBackupSection';
+import { CloudAccountSection } from './CloudAccountSection';
 import { LocalBackupSection } from './LocalBackupSection';
 import { StaffSection } from './StaffSection';
 
@@ -543,6 +544,7 @@ export function SettingsScreen() {
         }}
       />
 
+      <CloudAccountSection />
       <CloudBackupSection />
       <LocalBackupSection />
       <StaffSection />

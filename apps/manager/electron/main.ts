@@ -79,6 +79,7 @@ import {
 } from '@shul-store/sync';
 import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
 import { ManagerSession, type IpcRequirement } from './session.js';
+import { CloudAccountManager } from './cloud-account.js';
 
 /**
  * electron-updater is CommonJS, so its bindings are only reachable through the
@@ -111,6 +112,8 @@ let imageDirectory = '';
 let backupTimer: ReturnType<typeof setInterval> | null = null;
 let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
+let cloudAccount: CloudAccountManager;
+let cloudWasSyncAllowed = false;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_INITIAL_DELAY_MS = 30 * 1000;
@@ -207,6 +210,17 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'auth:touch': 'public',
   'auth:elevate': 'public',
   'auth:createFirstOwner': 'public',
+  'cloudAccount:getState': 'public',
+  'cloudAccount:shouldShowOnboarding': 'public',
+  'cloudAccount:dismissOnboarding': 'public',
+  'cloudAccount:signIn': 'public',
+  'cloudAccount:signUp': 'public',
+  'cloudAccount:signOut': 'public',
+  'cloudAccount:refresh': 'public',
+  'cloudAccount:link': 'public',
+  'cloudAccount:linkHint': 'public',
+  'cloudAccount:checkout': 'owner',
+  'cloudAccount:portal': 'owner',
   'staff:list': 'owner',
   'staff:create': 'owner',
   'staff:update': 'owner',
@@ -446,7 +460,9 @@ function recreateSyncEngine(): void {
     supabaseUrl: config.supabaseUrl,
     apiKey,
   });
-  engine = new SyncEngine(database, transport);
+  engine = new SyncEngine(database, transport, {
+    canSync: () => cloudAccount?.isSyncAllowed() ?? true,
+  });
   engine.start();
 }
 const idSchema = z.string().uuid();
@@ -489,6 +505,7 @@ async function createWindow(): Promise<void> {
     if (!developmentUrl || !url.startsWith(developmentUrl))
       event.preventDefault();
   });
+  window.on('focus', () => void cloudAccount?.refresh());
 
   database.runStartupReconciliation().catch(console.error);
 
@@ -523,6 +540,36 @@ function registerIpc(): void {
     session.signIn(owner.id, cleanPin);
     return owner;
   });
+  ipcMain.handle('cloudAccount:getState', () => cloudAccount.getState());
+  ipcMain.handle('cloudAccount:shouldShowOnboarding', () =>
+    cloudAccount.shouldShowOnboarding(),
+  );
+  ipcMain.handle('cloudAccount:dismissOnboarding', () =>
+    cloudAccount.dismissOnboarding(),
+  );
+  ipcMain.handle('cloudAccount:signIn', (_event, email, password) =>
+    cloudAccount.signIn(
+      z.string().trim().email().parse(email),
+      z.string().min(1).max(500).parse(password),
+    ),
+  );
+  ipcMain.handle('cloudAccount:signUp', (_event, email, password) =>
+    cloudAccount.signUp(
+      z.string().trim().email().parse(email),
+      z.string().min(8).max(500).parse(password),
+    ),
+  );
+  ipcMain.handle('cloudAccount:signOut', () => cloudAccount.signOut());
+  ipcMain.handle('cloudAccount:refresh', () => cloudAccount.refresh());
+  ipcMain.handle('cloudAccount:link', (_event, username, password) =>
+    cloudAccount.link(
+      z.string().trim().min(1).max(320).parse(username),
+      z.string().min(1).max(500).parse(password),
+    ),
+  );
+  ipcMain.handle('cloudAccount:linkHint', () => cloudAccount.linkHint());
+  ipcMain.handle('cloudAccount:checkout', () => cloudAccount.checkout());
+  ipcMain.handle('cloudAccount:portal', () => cloudAccount.portal());
   ipcMain.handle('staff:list', () => database.listStaffAccounts());
   ipcMain.handle('staff:create', (_event, input) =>
     database.createStaff(staffCreateInputSchema.parse(input)),
@@ -1325,6 +1372,31 @@ app.whenReady().then(async () => {
   imageDirectory = path.join(dataDirectory, 'images');
   databasePath = path.join(dataDirectory, 'shul-store.sqlite');
   secretStore = new ElectronSafeStorageSyncSecretStore();
+  cloudAccount = new CloudAccountManager(
+    path.join(dataDirectory, 'cloud-account.json'),
+    secretStore,
+    globalThis.fetch,
+    async (url) => {
+      await shell.openExternal(url);
+    },
+    () => {
+      if (!database) return false;
+      const config = database.getSyncConfigRecord();
+      return Boolean(
+        config.enabled && config.supabaseUrl && config.apiKeySecret,
+      );
+    },
+  );
+  cloudAccount.subscribe((state) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed())
+        window.webContents.send('cloudAccount:state', state);
+    }
+    const syncAllowed = state.entitlement?.active === true;
+    if (syncAllowed && !cloudWasSyncAllowed) void engine?.syncNow();
+    cloudWasSyncAllowed = syncAllowed;
+  });
+  await cloudAccount.load();
   database = new StoreDatabase(databasePath, secretStore, {
     backupDirectory,
     imageDirectory,

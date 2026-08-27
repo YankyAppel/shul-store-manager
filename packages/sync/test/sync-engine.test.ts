@@ -118,6 +118,42 @@ describe('sync engine push cycle', () => {
     disposeDb(db, file);
   });
 
+  it('keeps queued events while entitlement pauses sync and resumes later', async () => {
+    const { db, file } = createDb();
+    const transport = new FakeTransport();
+    let allowed = false;
+    const engine = new SyncEngine(db, transport, {
+      canSync: () => allowed,
+    });
+    enableSync(db);
+    db.createCategory({ name: 'Queued offline' });
+
+    const paused = await engine.pushCycle();
+    expect(paused.error).toContain('subscription');
+    expect(paused.pushed).toBe(0);
+    expect(db.pendingSyncEventCount()).toBe(1);
+    expect(transport.pushCallCount).toBe(0);
+
+    allowed = true;
+    const resumed = await engine.pushCycle();
+    expect(resumed.pushed).toBe(1);
+    expect(db.pendingSyncEventCount()).toBe(0);
+    disposeDb(db, file);
+  });
+
+  it('keeps legacy pasted sync credentials active before cloud onboarding', async () => {
+    const { db, file } = createDb();
+    const transport = new FakeTransport();
+    enableSync(db);
+    db.createCategory({ name: 'Legacy configured' });
+    const engine = new SyncEngine(db, transport, { canSync: () => true });
+
+    const result = await engine.pushCycle();
+    expect(result.pushed).toBe(1);
+    expect(db.pendingSyncEventCount()).toBe(0);
+    disposeDb(db, file);
+  });
+
   it('respects single-flight: a concurrent syncNow is skipped', async () => {
     const { db, file } = createDb();
     const transport = new FakeTransport();

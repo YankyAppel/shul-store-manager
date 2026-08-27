@@ -183,6 +183,32 @@ const api: StoreApi = {
     restore: (input) => ipcRenderer.invoke('sync:restore', input),
     isRestoreAvailable: () => ipcRenderer.invoke('sync:isRestoreAvailable'),
   },
+  cloudAccount: {
+    getState: () => ipcRenderer.invoke('cloudAccount:getState'),
+    shouldShowOnboarding: () =>
+      ipcRenderer.invoke('cloudAccount:shouldShowOnboarding'),
+    dismissOnboarding: () =>
+      ipcRenderer.invoke('cloudAccount:dismissOnboarding'),
+    signIn: (email, password) =>
+      ipcRenderer.invoke('cloudAccount:signIn', email, password),
+    signUp: (email, password) =>
+      ipcRenderer.invoke('cloudAccount:signUp', email, password),
+    signOut: () => ipcRenderer.invoke('cloudAccount:signOut'),
+    refresh: () => ipcRenderer.invoke('cloudAccount:refresh'),
+    link: (username, password) =>
+      ipcRenderer.invoke('cloudAccount:link', username, password),
+    linkHint: () => ipcRenderer.invoke('cloudAccount:linkHint'),
+    checkout: () => ipcRenderer.invoke('cloudAccount:checkout'),
+    portal: () => ipcRenderer.invoke('cloudAccount:portal'),
+    subscribe: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        state: import('@shul-store/shared').CloudAccountState,
+      ) => listener(state);
+      ipcRenderer.on('cloudAccount:state', handler);
+      return () => ipcRenderer.removeListener('cloudAccount:state', handler);
+    },
+  },
   backups: {
     list: () => ipcRenderer.invoke('backups:list'),
     create: () => ipcRenderer.invoke('backups:create'),
