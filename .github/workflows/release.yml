@@ -31,7 +31,7 @@ jobs:
         run: |
           gh release view "${{ github.ref_name }}" --repo "$env:RELEASE_REPOSITORY" *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create "${{ github.ref_name }}" --repo "$env:RELEASE_REPOSITORY" --title "${{ github.ref_name }}" --draft
+            gh release create "${{ github.ref_name }}" --repo "$env:RELEASE_REPOSITORY" --title "${{ github.ref_name }}" --notes "Windows installers for ${{ github.ref_name }}." --draft
           }
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
