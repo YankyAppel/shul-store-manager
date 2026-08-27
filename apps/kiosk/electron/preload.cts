@@ -4,6 +4,7 @@ import type {
   KioskCartLine,
   KioskCloudSignInInput,
   KioskPairInput,
+  UpdateCheckResult,
 } from '@shul-store/shared';
 
 const api: KioskApi = {
@@ -21,6 +22,18 @@ const api: KioskApi = {
     ipcRenderer.invoke('kiosk:getExplanationDismissed', id),
   dismissExplanation: (id) =>
     ipcRenderer.invoke('kiosk:dismissExplanation', id),
+  updates: {
+    check: () => ipcRenderer.invoke('updates:check'),
+    getState: () => ipcRenderer.invoke('updates:getState'),
+    subscribe: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        state: UpdateCheckResult,
+      ) => listener(state);
+      ipcRenderer.on('updates:state', handler);
+      return () => ipcRenderer.removeListener('updates:state', handler);
+    },
+  },
   startDiscovery: () => ipcRenderer.invoke('kiosk:startDiscovery'),
   stopDiscovery: () => ipcRenderer.invoke('kiosk:stopDiscovery'),
   refreshCatalog: () => ipcRenderer.invoke('kiosk:refreshCatalog'),

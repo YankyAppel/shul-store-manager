@@ -8,6 +8,7 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build": "npm run build:electron && vite build",
     "package": "electron-builder --config electron-builder.config.cjs --win --x64",
+    "package:publish": "electron-builder --config electron-builder.config.cjs --win --x64 --publish always",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint electron src --max-warnings=0"
   },
@@ -16,6 +17,7 @@
     "@shul-store/payments": "1.0.0",
     "@shul-store/shared": "0.1.0",
     "@shul-store/sync": "0.1.0",
+    "electron-updater": "6.8.9",
     "react": "^19.0.0",
     "react-dom": "^19.0.2"
   },

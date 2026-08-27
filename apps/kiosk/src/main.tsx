@@ -5,6 +5,7 @@ import {
   type KioskPriceQuote,
   type KioskPublicState,
   type KioskReaderConfig,
+  type UpdateCheckResult,
 } from '@shul-store/shared';
 import './style.css';
 
@@ -563,6 +564,17 @@ function AdminOverlay({
   const [message, setMessage] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(
+    null,
+  );
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+
+  useEffect(() => {
+    if (!unlocked) return;
+    void window.kioskApi.updates.getState().then(setUpdateResult);
+    return window.kioskApi.updates.subscribe(setUpdateResult);
+  }, [unlocked]);
+
   async function verify() {
     setBusy(true);
     const result = await window.kioskApi.verifyAdminPin(pin);
@@ -570,6 +582,25 @@ function AdminOverlay({
     if (result.ok) setUnlocked(true);
     else setMessage(result.message);
   }
+
+  async function checkForUpdates() {
+    setCheckingForUpdates(true);
+    try {
+      setUpdateResult(await window.kioskApi.updates.check());
+    } catch (error) {
+      setUpdateResult({
+        status: 'error',
+        currentVersion: updateResult?.currentVersion ?? '',
+        availableVersion: null,
+        message:
+          error instanceof Error ? error.message : 'Update check failed.',
+        checkedAt: new Date().toISOString(),
+      });
+    } finally {
+      setCheckingForUpdates(false);
+    }
+  }
+
   return (
     <div className="admin-overlay">
       <section className="admin-dialog">
@@ -598,6 +629,46 @@ function AdminOverlay({
         ) : (
           <>
             <KioskReaderSetup status={readerStatus} />
+            <section className="kiosk-updates">
+              <KioskExplain
+                id="kiosk-automatic-updates"
+                sentence="The kiosk checks for updates in the background and installs them when it closes."
+              >
+                Updates are downloaded quietly so customers do not see an
+                installer. The kiosk restarts with the new version after it is
+                closed.
+              </KioskExplain>
+              <div className="settings-version-row">
+                <span>
+                  Installed version:{' '}
+                  <strong>{updateResult?.currentVersion || 'Loading…'}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void checkForUpdates()}
+                  disabled={checkingForUpdates}
+                >
+                  {checkingForUpdates ? 'Checking…' : 'Check for updates'}
+                </button>
+              </div>
+              {updateResult && (
+                <p
+                  className={`settings-update-result settings-update-result-${updateResult.status}`}
+                >
+                  {updateResult.status === 'downloaded' && (
+                    <strong>Update ready: </strong>
+                  )}
+                  {updateResult.message}
+                  {updateResult.checkedAt && (
+                    <small>
+                      {' '}
+                      (last checked{' '}
+                      {new Date(updateResult.checkedAt).toLocaleString()})
+                    </small>
+                  )}
+                </p>
+              )}
+            </section>
             <div className="admin-actions">
               <button
                 type="button"

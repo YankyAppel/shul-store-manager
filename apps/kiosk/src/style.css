@@ -378,6 +378,24 @@ input {
   margin: 20px 0;
 }
 
+.kiosk-updates {
+  margin: 20px 0;
+  text-align: left;
+}
+
+.kiosk-updates .settings-version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.kiosk-updates .settings-update-result {
+  margin: 12px 0 0;
+  font-size: 0.85rem;
+}
+
 @media (max-width: 850px) {
   .shopping-layout {
     grid-template-columns: 1fr;

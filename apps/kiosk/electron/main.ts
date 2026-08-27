@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import dgram from 'node:dgram';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
   app,
@@ -9,6 +10,7 @@ import {
   powerMonitor,
   safeStorage,
 } from 'electron';
+import electronUpdater from 'electron-updater';
 import { z } from 'zod';
 import { StoreDatabase } from '@shul-store/database';
 import {
@@ -45,6 +47,7 @@ import {
   type KioskPublicState,
   type KioskResolvedLine,
   type KioskStateFile,
+  type UpdateCheckResult,
   PlaintextSecretStore,
   type SecretStore,
   isTerminalKioskChargeStatus,
@@ -55,11 +58,20 @@ import {
   checkCardknoxBbposReader,
 } from '@shul-store/payments';
 
+const { autoUpdater } = electronUpdater;
+const require = createRequire(import.meta.url);
+const { githubUpdateRepository } = require('../update-config.cjs') as {
+  githubUpdateRepository: { owner: string; repo: string };
+};
+
 const DEFAULT_PORT = 3939;
 const CATALOG_REFRESH_MS = 600000;
 const CHARGE_RETRY_MS = 5000;
 const LOCAL_PIN_LOCKOUT_MS = 30000;
 const STATE_VERSION = 1;
+const KIOSK_UPDATE_CHANNEL = 'kiosk';
+const UPDATE_INITIAL_DELAY_MS = 30 * 1000;
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 class NetworkError extends Error {}
 class RevokedError extends Error {}
@@ -85,8 +97,153 @@ let cloudRefreshToken: string | null = null;
 const CLOUD_SITE_URL = 'https://skvershul.softhere.work';
 let discoverySocket: dgram.Socket | null = null;
 let discoveryTimer: ReturnType<typeof setInterval> | null = null;
+let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
+let updateTimer: ReturnType<typeof setInterval> | null = null;
 const discoveredManagers = new Map<string, KioskDiscoveredManager>();
 const DISCOVERY_STALE_MS = 7000;
+
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.channel = KIOSK_UPDATE_CHANNEL;
+
+let updateState: UpdateCheckResult = {
+  status: 'not_configured',
+  currentVersion: '',
+  availableVersion: null,
+  message: 'Automatic updates have not been checked yet.',
+  checkedAt: null,
+};
+
+function publishUpdateState(
+  changes: Partial<UpdateCheckResult>,
+): UpdateCheckResult {
+  updateState = {
+    ...updateState,
+    ...changes,
+    currentVersion: app.getVersion(),
+  };
+  for (const kioskWindow of BrowserWindow.getAllWindows()) {
+    if (kioskWindow.isDestroyed()) continue;
+    try {
+      kioskWindow.webContents.send('updates:state', updateState);
+    } catch {
+      // A window can close while an updater event is being delivered.
+    }
+  }
+  return updateState;
+}
+
+function configureAutoUpdater(): void {
+  autoUpdater.channel = KIOSK_UPDATE_CHANNEL;
+  autoUpdater.setFeedURL({
+    provider: 'github',
+    ...githubUpdateRepository,
+    channel: KIOSK_UPDATE_CHANNEL,
+  });
+}
+
+async function checkForUpdates(manual = false): Promise<UpdateCheckResult> {
+  if (manual && !unlocked) throw new Error('Unlock required');
+  if (!app.isPackaged) {
+    return publishUpdateState({
+      status: 'not_configured',
+      availableVersion: null,
+      message: 'Update checks are available only in packaged builds.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+
+  try {
+    publishUpdateState({
+      status: 'checking',
+      message: 'Checking for kiosk updates…',
+    });
+    configureAutoUpdater();
+    const result = await autoUpdater.checkForUpdates();
+    const currentVersion = app.getVersion();
+    const availableVersion = result?.updateInfo.version ?? null;
+    return publishUpdateState({
+      status:
+        availableVersion && availableVersion !== currentVersion
+          ? 'available'
+          : 'up_to_date',
+      availableVersion,
+      message:
+        availableVersion && availableVersion !== currentVersion
+          ? `Version ${availableVersion} is downloading in the background and will install when the kiosk is closed.`
+          : `You are running the latest kiosk version (${currentVersion}).`,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    return publishUpdateState({
+      status: 'error',
+      availableVersion: null,
+      message:
+        error instanceof Error ? error.message : 'Kiosk update check failed.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+}
+
+function startAutomaticUpdates(): void {
+  if (!app.isPackaged) return;
+  try {
+    configureAutoUpdater();
+  } catch (error) {
+    publishUpdateState({
+      status: 'error',
+      message:
+        error instanceof Error ? error.message : 'Kiosk update setup failed.',
+      checkedAt: new Date().toISOString(),
+    });
+  }
+  updateInitialTimer = setTimeout(() => {
+    void checkForUpdates();
+  }, UPDATE_INITIAL_DELAY_MS);
+  updateTimer = setInterval(() => {
+    void checkForUpdates();
+  }, UPDATE_INTERVAL_MS);
+}
+
+autoUpdater.on('checking-for-update', () => {
+  publishUpdateState({
+    status: 'checking',
+    message: 'Checking for kiosk updates…',
+  });
+});
+autoUpdater.on('update-available', (info) => {
+  publishUpdateState({
+    status: 'available',
+    availableVersion: info.version,
+    message: `Version ${info.version} is available and is downloading in the background.`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('update-not-available', () => {
+  publishUpdateState({
+    status: 'up_to_date',
+    availableVersion: null,
+    message: `You are running the latest kiosk version (${app.getVersion()}).`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('update-downloaded', (info) => {
+  publishUpdateState({
+    status: 'downloaded',
+    availableVersion: info.version,
+    message: `Version ${info.version} is ready and will install when the kiosk is closed.`,
+    checkedAt: new Date().toISOString(),
+  });
+});
+autoUpdater.on('error', (error) => {
+  publishUpdateState({
+    status: 'error',
+    availableVersion: null,
+    message:
+      error instanceof Error ? error.message : 'Kiosk update check failed.',
+    checkedAt: new Date().toISOString(),
+  });
+});
 
 class KioskSecretStore implements SecretStore {
   readonly available = encryptionAvailable;
@@ -1132,6 +1289,11 @@ function registerIpc(): void {
   ipcMain.handle('kiosk:dismissExplanation', (_event, id) =>
     handlers.dismissExplanation(id),
   );
+  ipcMain.handle('updates:check', () => checkForUpdates(true));
+  ipcMain.handle('updates:getState', () => ({
+    ...updateState,
+    currentVersion: app.getVersion(),
+  }));
   ipcMain.handle('kiosk:refreshCatalog', () => handlers.refreshCatalog());
   ipcMain.handle('kiosk:priceCart', (_event, lines: KioskCartLine[]) =>
     handlers.priceCart(lines),
@@ -1239,6 +1401,7 @@ app.whenReady().then(async () => {
   registerIpc();
   await createWindow();
   window?.webContents.send('kiosk:state', publicState());
+  startAutomaticUpdates();
   if (token || cloudAccessToken) {
     void refreshCatalog();
     void pollInFlight();
@@ -1247,5 +1410,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', (event) => {
-  if (!allowQuit && !sessionEnding) event.preventDefault();
+  if (!allowQuit && !sessionEnding) {
+    event.preventDefault();
+    return;
+  }
+  if (updateInitialTimer) clearTimeout(updateInitialTimer);
+  if (updateTimer) clearInterval(updateTimer);
 });

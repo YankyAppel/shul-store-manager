@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { kioskCatalogResponseSchema } from './kiosk.js';
+import type { UpdateCheckResult } from './index.js';
 
 export type KioskConnection =
   'unpaired' | 'online' | 'manager-unreachable' | 'revoked';
@@ -234,6 +235,11 @@ export interface KioskMainHandlers {
 }
 
 export interface KioskApi extends KioskMainHandlers {
+  updates: {
+    check(): Promise<UpdateCheckResult>;
+    getState(): Promise<UpdateCheckResult>;
+    subscribe(listener: (state: UpdateCheckResult) => void): () => void;
+  };
   subscribe(listener: (state: KioskPublicState) => void): () => void;
 }
 
