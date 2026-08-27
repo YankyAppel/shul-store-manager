@@ -179,7 +179,7 @@ export const processors: PaymentProcessor<any>[] = [simulatedProcessor];
 
 export const processorConnectionConfigSchema = z.object({
   processorId: z.enum(['sola', 'cardknox', 'usaepay', 'other']),
-  apiKey: z.string().trim().min(1).max(1000),
+  apiKey: z.string().trim().max(1000),
   mode: z.enum(['test', 'live']),
 });
 export type ProcessorConnectionConfig = z.infer<
@@ -194,6 +194,7 @@ export interface ProcessorConnectionTestResult {
 const TEST_CARD = '4444333322221111';
 const TEST_EXPIRY = '1230';
 const TEST_AMOUNT = '0.01';
+const SOLA_TEST_KEY = 'SolaSupport_Test';
 
 async function jsonResponse(
   response: Response,
@@ -217,38 +218,62 @@ function reference(value: Record<string, unknown>): string | null {
   return null;
 }
 
+function endpoint(
+  processorId: Exclude<ProcessorConnectionConfig['processorId'], 'other'>,
+  mode: ProcessorConnectionConfig['mode'],
+): string {
+  if (processorId === 'usaepay')
+    return mode === 'test'
+      ? 'https://sandbox.usaepay.com/api/v2/transactions'
+      : 'https://usaepay.com/api/v2/transactions';
+  if (processorId === 'sola')
+    return mode === 'test'
+      ? 'https://x1.cardknox.com/gatewayjson'
+      : 'https://x1.cardknox.com/gatewayjson';
+  return 'https://x1.cardknox.com/gatewayjson';
+}
+
 export async function testProcessorConnection(
-  config: ProcessorConnectionConfig,
+  input: ProcessorConnectionConfig,
   fetchImpl: typeof fetch = fetch,
 ): Promise<ProcessorConnectionTestResult> {
   try {
-    processorConnectionConfigSchema.parse(config);
+    const config = processorConnectionConfigSchema.parse(input);
     if (config.processorId === 'other')
       return {
         ok: false,
         message: 'Choose Sola, Cardknox, or USAePay to test a connection.',
       };
+    if (config.mode === 'live')
+      return {
+        ok: false,
+        message:
+          'Live keys are not charged for a test. They are proven by the first real sale.',
+      };
 
     if (config.processorId === 'usaepay') {
-      const response = await fetchImpl(
-        'https://sandbox.usaepay.com/api/v2/transactions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${config.apiKey}:`).toString('base64')}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            command: 'authonly',
-            amount: TEST_AMOUNT,
-            creditcard: {
-              number: TEST_CARD,
-              expiration: TEST_EXPIRY,
-              cvc: '123',
-            },
-          }),
+      if (!config.apiKey)
+        return {
+          ok: false,
+          message: 'Enter the USAePay key before testing the connection.',
+        };
+      const usaepayEndpoint = endpoint(config.processorId, config.mode);
+      const response = await fetchImpl(usaepayEndpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${config.apiKey}:`).toString('base64')}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({
+          command: 'authonly',
+          amount: TEST_AMOUNT,
+          creditcard: {
+            number: TEST_CARD,
+            expiration: TEST_EXPIRY,
+            cvc: '123',
+          },
+        }),
+      });
       const auth = await jsonResponse(response);
       if (!response.ok || !approved(auth))
         return {
@@ -261,17 +286,14 @@ export async function testProcessorConnection(
           ok: false,
           message: 'USAePay approved the test but returned no reference.',
         };
-      const voidResponse = await fetchImpl(
-        'https://sandbox.usaepay.com/api/v2/transactions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${config.apiKey}:`).toString('base64')}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ command: 'void', refnum: ref }),
+      const voidResponse = await fetchImpl(usaepayEndpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${config.apiKey}:`).toString('base64')}`,
+          'Content-Type': 'application/json',
         },
-      );
+        body: JSON.stringify({ command: 'void', refnum: ref }),
+      });
       const voided = await jsonResponse(voidResponse);
       if (!voidResponse.ok || !approved(voided))
         return {
@@ -284,12 +306,10 @@ export async function testProcessorConnection(
       };
     }
 
-    const gateway =
-      config.processorId === 'sola'
-        ? 'https://secure.solapayments.com/gatewayjson'
-        : 'https://x1.cardknox.com/gatewayjson';
+    const gateway = endpoint(config.processorId, config.mode);
+    const apiKey = config.apiKey || SOLA_TEST_KEY;
     const base = {
-      xKey: config.apiKey,
+      xKey: apiKey,
       xVersion: '5.0.0',
       xSoftwareName: 'Shul Store Manager',
       xSoftwareVersion: '0.1.0',
