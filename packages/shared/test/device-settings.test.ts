@@ -27,7 +27,12 @@ describe('device settings', () => {
         updateFeedUrl: '',
         automaticUpdatesEnabled: true,
       }),
-    ).toEqual({ updateFeedUrl: null, automaticUpdatesEnabled: true });
+    ).toEqual({
+      updateFeedUrl: null,
+      automaticUpdatesEnabled: true,
+      idleLockMinutes: 5,
+      staffModeEnabled: false,
+    });
     expect(
       processorConfigInputSchema.safeParse('{"token":"value"}').success,
     ).toBe(true);

@@ -3,7 +3,11 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { StoreDatabase, type ValidatedRestoreEvent } from '../src/index.js';
+import {
+  StoreDatabase,
+  hasBusinessRows,
+  type ValidatedRestoreEvent,
+} from '../src/index.js';
 
 function tempFile(): string {
   return path.join(tmpdir(), `shul-restore-${randomUUID()}.sqlite`);
@@ -32,6 +36,12 @@ describe('restore guards', () => {
   it('allows cloud restore when the only local row is a paired kiosk', () => {
     store.createKiosk(randomUUID(), 'Front kiosk', 'token-hash', 'pin-hash');
     expect(store.isRestoreAllowed()).toBe(true);
+  });
+
+  it('keeps a first-owner setup eligible for cloud restore', () => {
+    store.createFirstOwner('Shames', '1234');
+    expect(store.isRestoreAllowed()).toBe(true);
+    expect(hasBusinessRows(store.connection)).toBe(false);
   });
 
   it('rolls back the whole replay when a database invariant is violated', () => {

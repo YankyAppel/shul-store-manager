@@ -1,7 +1,40 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { StoreApi, UpdateCheckResult } from '@shul-store/shared';
+import type {
+  AuthState,
+  StoreApi,
+  UpdateCheckResult,
+} from '@shul-store/shared';
 
 const api: StoreApi = {
+  auth: {
+    getState: () => ipcRenderer.invoke('auth:getState'),
+    listAccounts: () => ipcRenderer.invoke('auth:listAccounts'),
+    signIn: (staffId, pin) => ipcRenderer.invoke('auth:signIn', staffId, pin),
+    signOut: () => ipcRenderer.invoke('auth:signOut'),
+    touch: () => ipcRenderer.invoke('auth:touch'),
+    elevate: (permission, pin) =>
+      ipcRenderer.invoke('auth:elevate', permission, pin),
+    createFirstOwner: (name, pin) =>
+      ipcRenderer.invoke('auth:createFirstOwner', name, pin),
+    subscribe: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, state: AuthState) =>
+        listener(state);
+      ipcRenderer.on('auth:state', handler);
+      return () => ipcRenderer.removeListener('auth:state', handler);
+    },
+    subscribeLocked: (listener) => {
+      const handler = () => listener();
+      ipcRenderer.on('auth:locked', handler);
+      return () => ipcRenderer.removeListener('auth:locked', handler);
+    },
+  },
+  staff: {
+    list: () => ipcRenderer.invoke('staff:list'),
+    create: (input) => ipcRenderer.invoke('staff:create', input),
+    update: (id, input) => ipcRenderer.invoke('staff:update', id, input),
+    setPin: (id, pin) => ipcRenderer.invoke('staff:setPin', id, pin),
+    setIdleLock: (minutes) => ipcRenderer.invoke('staff:setIdleLock', minutes),
+  },
   app: {
     getVersion: () => ipcRenderer.invoke('app:getVersion'),
   },

@@ -100,6 +100,8 @@ describe('printer settings', () => {
     expect(store.getDeviceSettings()).toEqual({
       updateFeedUrl: 'https://updates.example.test/feed',
       automaticUpdatesEnabled: false,
+      idleLockMinutes: 5,
+      staffModeEnabled: false,
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');
     expect(

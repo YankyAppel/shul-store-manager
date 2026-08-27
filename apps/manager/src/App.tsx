@@ -5,7 +5,12 @@ import {
   useState,
   type FormEvent,
 } from 'react';
-import type { Category, Product, StoredImage } from '@shul-store/shared';
+import type {
+  AuthState,
+  Category,
+  Product,
+  StoredImage,
+} from '@shul-store/shared';
 import { CheckoutScreen } from './features/CheckoutScreen';
 import { LabelPrintModal } from './features/labels/LabelPrintModal';
 import { SalesHistory } from './features/SalesHistory';
@@ -13,6 +18,7 @@ import { SettingsScreen } from './features/SettingsScreen';
 import { KioskScreen } from './features/KioskScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
 import { ReportsScreen } from './features/ReportsScreen';
+import { FirstOwnerSetup, LockScreen } from './features/AuthScreens';
 
 type View =
   | 'checkout'
@@ -55,9 +61,65 @@ export function App() {
     string[] | undefined
   >();
   const [error, setError] = useState('');
+  const [authState, setAuthState] = useState<AuthState>();
+  const [needsOwner, setNeedsOwner] = useState(false);
+  const [approvalPermission, setApprovalPermission] = useState<string | null>(
+    null,
+  );
+  const [approvalPin, setApprovalPin] = useState('');
 
   // Cross-screen navigation
   const [targetCustomerId, setTargetCustomerId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    void Promise.all([
+      window.storeApi.auth.getState(),
+      window.storeApi.auth.listAccounts(),
+    ]).then(([state, accounts]) => {
+      if (!mounted) return;
+      setAuthState(state);
+      setNeedsOwner(!state.staffModeEnabled && accounts.length === 0);
+    });
+    const unsubscribe = window.storeApi.auth.subscribe(setAuthState);
+    const unsubscribeLocked = window.storeApi.auth.subscribeLocked(() => {
+      void window.storeApi.auth.getState().then(setAuthState);
+    });
+    return () => {
+      mounted = false;
+      unsubscribe();
+      unsubscribeLocked();
+    };
+  }, []);
+
+  const can = useCallback(
+    (permission: string) =>
+      !authState?.staffModeEnabled ||
+      authState.signedInStaff?.role === 'owner' ||
+      authState.permissions.includes(permission as never),
+    [authState],
+  );
+
+  useEffect(() => {
+    if (
+      !can(
+        view === 'checkout'
+          ? 'checkout'
+          : view === 'products' || view === 'categories'
+            ? 'products.edit'
+            : view === 'inventory'
+              ? 'inventory.adjust'
+              : view === 'customers'
+                ? 'customers.manage'
+                : view === 'sales'
+                  ? 'sales.history'
+                  : view === 'reports'
+                    ? 'reports.view'
+                    : 'owner',
+      )
+    )
+      setView('checkout');
+  }, [can, view]);
 
   const refresh = useCallback(async () => {
     try {
@@ -91,6 +153,31 @@ export function App() {
   const visibleCategories = categories.filter(
     (category) => showInactive || category.active,
   );
+
+  if (!authState)
+    return (
+      <div className="auth-screen">
+        <p>Loading…</p>
+      </div>
+    );
+  if (needsOwner)
+    return (
+      <FirstOwnerSetup
+        onComplete={() => {
+          setNeedsOwner(false);
+          void window.storeApi.auth.getState().then(setAuthState);
+        }}
+        onSkip={() => setNeedsOwner(false)}
+      />
+    );
+  if (authState.staffModeEnabled && !authState.signedInStaff)
+    return (
+      <LockScreen
+        onSignedIn={() =>
+          void window.storeApi.auth.getState().then(setAuthState)
+        }
+      />
+    );
 
   async function toggleProduct(product: Product) {
     try {
@@ -126,63 +213,81 @@ export function App() {
           </div>
         </div>
         <nav>
-          <button
-            className={view === 'checkout' ? 'active' : ''}
-            onClick={() => setView('checkout')}
-          >
-            ▣ <span>Checkout</span>
-          </button>
-          <button
-            className={view === 'products' ? 'active' : ''}
-            onClick={() => setView('products')}
-          >
-            ▦ <span>Products</span>
-          </button>
-          <button
-            className={view === 'categories' ? 'active' : ''}
-            onClick={() => setView('categories')}
-          >
-            ◫ <span>Categories</span>
-          </button>
-          <button
-            className={view === 'inventory' ? 'active' : ''}
-            onClick={() => setView('inventory')}
-          >
-            ↕ <span>Inventory</span>
-          </button>
-          <button
-            className={view === 'customers' ? 'active' : ''}
-            onClick={() => {
-              setTargetCustomerId(null);
-              setView('customers');
-            }}
-          >
-            ☺ <span>Customers</span>
-          </button>
-          <button
-            className={view === 'sales' ? 'active' : ''}
-            onClick={() => setView('sales')}
-          >
-            ▤ <span>Sales history</span>
-          </button>
-          <button
-            className={view === 'reports' ? 'active' : ''}
-            onClick={() => setView('reports')}
-          >
-            ▤ <span>Reports</span>
-          </button>
-          <button
-            className={view === 'settings' ? 'active' : ''}
-            onClick={() => setView('settings')}
-          >
-            ⚙ <span>Settings</span>
-          </button>
-          <button
-            className={view === 'kiosk' ? 'active' : ''}
-            onClick={() => setView('kiosk')}
-          >
-            ▣ <span>Kiosk</span>
-          </button>
+          {can('checkout') && (
+            <button
+              className={view === 'checkout' ? 'active' : ''}
+              onClick={() => setView('checkout')}
+            >
+              ▣ <span>Checkout</span>
+            </button>
+          )}
+          {can('products.edit') && (
+            <button
+              className={view === 'products' ? 'active' : ''}
+              onClick={() => setView('products')}
+            >
+              ▦ <span>Products</span>
+            </button>
+          )}
+          {can('products.edit') && (
+            <button
+              className={view === 'categories' ? 'active' : ''}
+              onClick={() => setView('categories')}
+            >
+              ◫ <span>Categories</span>
+            </button>
+          )}
+          {can('inventory.adjust') && (
+            <button
+              className={view === 'inventory' ? 'active' : ''}
+              onClick={() => setView('inventory')}
+            >
+              ↕ <span>Inventory</span>
+            </button>
+          )}
+          {can('customers.manage') && (
+            <button
+              className={view === 'customers' ? 'active' : ''}
+              onClick={() => {
+                setTargetCustomerId(null);
+                setView('customers');
+              }}
+            >
+              ☺ <span>Customers</span>
+            </button>
+          )}
+          {can('sales.history') && (
+            <button
+              className={view === 'sales' ? 'active' : ''}
+              onClick={() => setView('sales')}
+            >
+              ▤ <span>Sales history</span>
+            </button>
+          )}
+          {can('reports.view') && (
+            <button
+              className={view === 'reports' ? 'active' : ''}
+              onClick={() => setView('reports')}
+            >
+              ▤ <span>Reports</span>
+            </button>
+          )}
+          {can('owner') && (
+            <button
+              className={view === 'settings' ? 'active' : ''}
+              onClick={() => setView('settings')}
+            >
+              ⚙ <span>Settings</span>
+            </button>
+          )}
+          {can('owner') && (
+            <button
+              className={view === 'kiosk' ? 'active' : ''}
+              onClick={() => setView('kiosk')}
+            >
+              ▣ <span>Kiosk</span>
+            </button>
+          )}
         </nav>
         <div className="offline">
           <i /> Local database
@@ -226,30 +331,106 @@ export function App() {
                             : `Manage your store ${view}.`}
             </p>
           </div>
-          {(view === 'products' || view === 'categories') && (
-            <div className="header-actions">
-              {view === 'products' && (
-                <button type="button" onClick={() => setLabelProductIds([])}>
-                  Print labels
+          <div className="header-actions">
+            {authState.staffModeEnabled && authState.signedInStaff && (
+              <>
+                <span className="staff-badge">
+                  {authState.signedInStaff.name} ·{' '}
+                  {authState.signedInStaff.role}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void window.storeApi.auth.signOut()}
+                >
+                  Lock
                 </button>
-              )}
-              <button
-                className="primary"
-                onClick={() =>
-                  view === 'categories'
-                    ? setCategoryEditor(null)
-                    : setProductEditor(null)
-                }
-              >
-                {view === 'categories' ? '+ New category' : '+ New product'}
-              </button>
-            </div>
-          )}
+              </>
+            )}
+            {(view === 'products' || view === 'categories') && (
+              <div className="header-actions">
+                {view === 'products' && (
+                  <button type="button" onClick={() => setLabelProductIds([])}>
+                    Print labels
+                  </button>
+                )}
+                <button
+                  className="primary"
+                  onClick={() =>
+                    view === 'categories'
+                      ? setCategoryEditor(null)
+                      : setProductEditor(null)
+                  }
+                >
+                  {view === 'categories' ? '+ New category' : '+ New product'}
+                </button>
+              </div>
+            )}
+          </div>
         </header>
         {error && (
           <div className="alert">
             <span>{error}</span>
+            {error.startsWith('PERMISSION_DENIED:') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setApprovalPermission(
+                    error.slice('PERMISSION_DENIED:'.length),
+                  );
+                  setApprovalPin('');
+                }}
+              >
+                Ask the shames to approve
+              </button>
+            )}
             <button onClick={() => setError('')}>×</button>
+          </div>
+        )}
+        {approvalPermission && (
+          <div className="modal-backdrop">
+            <div className="modal">
+              <div className="modal-title">
+                <h2>Owner approval</h2>
+                <button onClick={() => setApprovalPermission(null)}>×</button>
+              </div>
+              <p>
+                Ask an owner to enter their PIN to approve this action once.
+              </p>
+              <label>
+                Owner PIN
+                <input
+                  autoFocus
+                  type="password"
+                  inputMode="numeric"
+                  value={approvalPin}
+                  onChange={(event) =>
+                    setApprovalPin(
+                      event.target.value.replace(/\D/g, '').slice(0, 8),
+                    )
+                  }
+                />
+              </label>
+              <footer>
+                <button onClick={() => setApprovalPermission(null)}>
+                  Cancel
+                </button>
+                <button
+                  className="primary"
+                  disabled={approvalPin.length < 4}
+                  onClick={() =>
+                    void window.storeApi.auth
+                      .elevate(approvalPermission as never, approvalPin)
+                      .then(() => {
+                        setApprovalPermission(null);
+                        setError('Owner approved. Please retry the action.');
+                      })
+                      .catch((reason) => setError(messageFrom(reason)))
+                  }
+                >
+                  Approve once
+                </button>
+              </footer>
+            </div>
           </div>
         )}
         {(['products', 'categories', 'inventory'] as View[]).includes(view) && (

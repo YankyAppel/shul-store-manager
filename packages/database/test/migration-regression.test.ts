@@ -128,6 +128,8 @@ describe('migration upgrades and regressions', () => {
         expect(upgraded.getDeviceSettings()).toEqual({
           updateFeedUrl: expectedFeedUrl,
           automaticUpdatesEnabled: false,
+          idleLockMinutes: 5,
+          staffModeEnabled: false,
         });
         expect(upgraded.getCardProcessorConfigJson()).toBe(
           '{"apiKey":"legacy"}',

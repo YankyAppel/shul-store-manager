@@ -1208,6 +1208,28 @@ export const migrations: Migration[] = [
       WHERE singleton_id = 1;
     `,
   },
+  {
+    version: 25,
+    name: 'staff_accounts',
+    sql: `
+      ALTER TABLE device_settings ADD COLUMN idle_lock_minutes INTEGER NOT NULL DEFAULT 5 CHECK (idle_lock_minutes BETWEEN 0 AND 1440);
+      ALTER TABLE device_settings ADD COLUMN staff_mode_enabled INTEGER NOT NULL DEFAULT 0 CHECK (staff_mode_enabled IN (0, 1));
+
+      CREATE TABLE staff (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('owner', 'cashier')),
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        pin_hash TEXT NOT NULL,
+        permissions_json TEXT NOT NULL,
+        failed_attempts INTEGER NOT NULL DEFAULT 0,
+        locked_until TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX staff_name_idx ON staff(name);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

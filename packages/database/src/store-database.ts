@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
 import { PaymentService } from './payment-service.js';
 import {
@@ -59,6 +59,19 @@ import {
   type SalePayload,
   type SalePaymentPayload,
   type SecretStore,
+  type GrantablePermission,
+  type StaffAccount,
+  type StaffCreateInput,
+  type StaffPickerAccount,
+  type StaffUpdateInput,
+  GRANTABLE_PERMISSIONS,
+  encodeScryptPinHash,
+  staffCreateInputSchema,
+  staffPinSchema,
+  staffUpdateInputSchema,
+  staffNameSchema,
+  staffPermissionsSchema,
+  verifyScryptPinHash,
   type SettingsPayload,
   type StatementEntry,
   type StatementOptions,
@@ -114,6 +127,30 @@ export interface RefundIntent {
 }
 
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const STAFF_PIN_SCRYPT = {
+  N: 16384,
+  r: 8,
+  p: 1,
+};
+
+function hashStaffPin(pin: string): string {
+  const salt = randomBytes(16);
+  const derived = new Uint8Array(scryptSync(pin, salt, 32, STAFF_PIN_SCRYPT));
+  return encodeScryptPinHash(salt, derived);
+}
+
+function verifyStaffPinHash(stored: string, pin: string): boolean {
+  try {
+    return verifyScryptPinHash(
+      stored,
+      pin,
+      (value, salt, length) =>
+        new Uint8Array(scryptSync(value, salt, length, STAFF_PIN_SCRYPT)),
+    );
+  } catch {
+    return false;
+  }
+}
 
 export function readSafeCents(value: unknown, label = 'value'): number {
   if (value === null || value === undefined) {
@@ -595,7 +632,9 @@ export class StoreDatabase {
   getDeviceSettings(): DeviceSettings {
     const row = this.connection
       .prepare(
-        'SELECT update_feed_url, automatic_updates_enabled FROM device_settings WHERE singleton_id = 1',
+        `SELECT update_feed_url, automatic_updates_enabled,
+          idle_lock_minutes, staff_mode_enabled
+         FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
     return {
@@ -606,6 +645,11 @@ export class StoreDatabase {
           ? null
           : String(row.update_feed_url),
       automaticUpdatesEnabled: Number(row.automatic_updates_enabled ?? 1) === 1,
+      idleLockMinutes: readSafeCents(
+        row.idle_lock_minutes ?? 5,
+        'idleLockMinutes',
+      ),
+      staffModeEnabled: Number(row.staff_mode_enabled ?? 0) === 1,
     };
   }
 
@@ -614,11 +658,338 @@ export class StoreDatabase {
     this.connection
       .prepare(
         `UPDATE device_settings
-         SET update_feed_url = ?, automatic_updates_enabled = ?, updated_at = ?
+         SET update_feed_url = ?, automatic_updates_enabled = ?,
+             idle_lock_minutes = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
-      .run(value.updateFeedUrl, value.automaticUpdatesEnabled ? 1 : 0, now());
+      .run(
+        value.updateFeedUrl,
+        value.automaticUpdatesEnabled ? 1 : 0,
+        value.idleLockMinutes,
+        now(),
+      );
     return this.getDeviceSettings();
+  }
+
+  setIdleLockMinutes(minutes: number): DeviceSettings {
+    const value = deviceSettingsSchema.shape.idleLockMinutes.parse(minutes);
+    this.connection
+      .prepare(
+        'UPDATE device_settings SET idle_lock_minutes = ?, updated_at = ? WHERE singleton_id = 1',
+      )
+      .run(value, now());
+    return this.getDeviceSettings();
+  }
+
+  isStaffModeEnabled(): boolean {
+    return this.getDeviceSettings().staffModeEnabled;
+  }
+
+  listStaffAccounts(): StaffAccount[] {
+    const rows = this.connection
+      .prepare(
+        `SELECT id, name, role, active, permissions_json, locked_until,
+          created_at, updated_at FROM staff ORDER BY name COLLATE NOCASE`,
+      )
+      .all() as Row[];
+    return rows.map((row) => this.mapStaffAccount(row));
+  }
+
+  listStaffPickerAccounts(): StaffPickerAccount[] {
+    return this.connection
+      .prepare(
+        'SELECT id, name, role, locked_until FROM staff WHERE active = 1 ORDER BY name COLLATE NOCASE',
+      )
+      .all()
+      .map((row) => {
+        const value = row as Row;
+        return {
+          id: String(value.id),
+          name: String(value.name),
+          role: value.role as 'owner' | 'cashier',
+          lockedUntil: value.locked_until ? String(value.locked_until) : null,
+        };
+      });
+  }
+
+  staffCount(): number {
+    const row = this.connection
+      .prepare('SELECT COUNT(*) AS count FROM staff')
+      .get() as Row;
+    return Number(row.count ?? 0);
+  }
+
+  createFirstOwner(name: string, pin: string): StaffAccount {
+    const cleanName = staffNameSchema.parse(name);
+    const cleanPin = staffPinSchema.parse(pin);
+    return this.connection.transaction(() => {
+      if (this.staffCount() > 0)
+        throw new Error('An owner account already exists.');
+      const id = randomUUID();
+      const timestamp = now();
+      this.connection
+        .prepare(
+          `INSERT INTO staff
+           (id, name, role, active, pin_hash, permissions_json, created_at, updated_at)
+           VALUES (?, ?, 'owner', 1, ?, '[]', ?, ?)`,
+        )
+        .run(id, cleanName, hashStaffPin(cleanPin), timestamp, timestamp);
+      this.connection
+        .prepare(
+          'UPDATE device_settings SET staff_mode_enabled = 1, updated_at = ? WHERE singleton_id = 1',
+        )
+        .run(timestamp);
+      this.addStaffAudit('staff.created', id, {
+        name: cleanName,
+        role: 'owner',
+      });
+      return this.getStaffAccount(id)!;
+    })();
+  }
+
+  createStaff(input: StaffCreateInput): StaffAccount {
+    const value = staffCreateInputSchema.parse(input);
+    const id = randomUUID();
+    const timestamp = now();
+    this.connection
+      .prepare(
+        `INSERT INTO staff
+         (id, name, role, active, pin_hash, permissions_json, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        value.name,
+        value.role,
+        hashStaffPin(value.pin),
+        JSON.stringify(value.permissions),
+        timestamp,
+        timestamp,
+      );
+    this.addStaffAudit('staff.created', id, {
+      name: value.name,
+      role: value.role,
+    });
+    return this.getStaffAccount(id)!;
+  }
+
+  updateStaff(id: string, input: StaffUpdateInput): StaffAccount {
+    const value = staffUpdateInputSchema.parse(input);
+    const existing = this.getStaffRow(id);
+    if (!existing) throw new Error('Staff account not found.');
+    if (
+      existing.role === 'owner' &&
+      existing.active === 1 &&
+      (value.role !== 'owner' || !value.active) &&
+      this.activeOwnerCount() <= 1
+    ) {
+      throw new Error(
+        'The last active owner cannot be deactivated or demoted.',
+      );
+    }
+    this.connection
+      .prepare(
+        `UPDATE staff SET name = ?, role = ?, active = ?, permissions_json = ?,
+          updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        value.name,
+        value.role,
+        value.active ? 1 : 0,
+        JSON.stringify(value.permissions),
+        now(),
+        id,
+      );
+    this.addStaffAudit('staff.updated', id, {
+      name: value.name,
+      role: value.role,
+      active: value.active,
+    });
+    return this.getStaffAccount(id)!;
+  }
+
+  setStaffPin(id: string, pin: string): StaffAccount {
+    const value = staffPinSchema.parse(pin);
+    if (!this.getStaffRow(id)) throw new Error('Staff account not found.');
+    this.connection
+      .prepare(
+        'UPDATE staff SET pin_hash = ?, failed_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?',
+      )
+      .run(hashStaffPin(value), now(), id);
+    this.addStaffAudit('staff.pin_reset', id, {});
+    return this.getStaffAccount(id)!;
+  }
+
+  recordStaffAudit(
+    eventType: string,
+    staffId: string,
+    payload: Record<string, unknown> = {},
+  ): void {
+    this.addStaffAudit(eventType, staffId, payload);
+  }
+
+  verifyStaffPin(
+    id: string,
+    pin: string,
+  ):
+    | { ok: true; account: StaffAccount }
+    | {
+        ok: false;
+        reason: 'not_found' | 'inactive' | 'locked' | 'invalid';
+        lockedUntil: string | null;
+      } {
+    const value = staffPinSchema.parse(pin);
+    const row = this.getStaffRow(id);
+    if (!row) return { ok: false, reason: 'not_found', lockedUntil: null };
+    if (Number(row.active) !== 1)
+      return { ok: false, reason: 'inactive', lockedUntil: null };
+    const timestamp = now();
+    if (row.locked_until && String(row.locked_until) > timestamp)
+      return {
+        ok: false,
+        reason: 'locked',
+        lockedUntil: String(row.locked_until),
+      };
+    if (verifyStaffPinHash(String(row.pin_hash), value)) {
+      this.connection
+        .prepare(
+          'UPDATE staff SET failed_attempts = 0, locked_until = NULL, updated_at = ? WHERE id = ?',
+        )
+        .run(timestamp, id);
+      return { ok: true, account: this.getStaffAccount(id)! };
+    }
+    const attempts =
+      (row.locked_until && String(row.locked_until) <= timestamp
+        ? 0
+        : Number(row.failed_attempts ?? 0)) + 1;
+    const lockedUntil =
+      attempts >= 5 ? new Date(Date.now() + 5 * 60 * 1000).toISOString() : null;
+    this.connection
+      .prepare(
+        'UPDATE staff SET failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?',
+      )
+      .run(attempts >= 5 ? 0 : attempts, lockedUntil, timestamp, id);
+    return {
+      ok: false,
+      reason: lockedUntil ? 'locked' : 'invalid',
+      lockedUntil,
+    };
+  }
+
+  verifyActiveOwnerPin(pin: string): StaffAccount | null {
+    const value = staffPinSchema.parse(pin);
+    const timestamp = now();
+    const rows = this.connection
+      .prepare(
+        `SELECT * FROM staff
+         WHERE role = 'owner' AND active = 1
+         ORDER BY name COLLATE NOCASE`,
+      )
+      .all() as Row[];
+    for (const row of rows) {
+      if (row.locked_until && String(row.locked_until) > timestamp) continue;
+      if (!verifyStaffPinHash(String(row.pin_hash), value)) continue;
+      const result = this.verifyStaffPin(String(row.id), value);
+      if (result.ok) return result.account;
+    }
+    for (const row of rows) {
+      if (row.locked_until && String(row.locked_until) > timestamp) continue;
+      const attempts = Number(row.failed_attempts ?? 0) + 1;
+      const lockedUntil =
+        attempts >= 5
+          ? new Date(Date.now() + 5 * 60 * 1000).toISOString()
+          : null;
+      this.connection
+        .prepare(
+          'UPDATE staff SET failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(
+          attempts >= 5 ? 0 : attempts,
+          lockedUntil,
+          timestamp,
+          String(row.id),
+        );
+    }
+    return null;
+  }
+
+  staffPermissions(id: string): GrantablePermission[] {
+    const row = this.getStaffRow(id);
+    if (!row) throw new Error('Staff account not found.');
+    if (row.role === 'owner') return [...GRANTABLE_PERMISSIONS];
+    const parsed = JSON.parse(String(row.permissions_json)) as unknown;
+    const valid = staffPermissionsSchema.safeParse(parsed);
+    return valid.success ? [...new Set(valid.data)] : [];
+  }
+
+  resolveStaffPermissions(id: string): GrantablePermission[] {
+    return this.staffPermissions(id);
+  }
+
+  private addStaffAudit(
+    eventType: string,
+    staffId: string,
+    payload: Record<string, unknown>,
+  ): void {
+    this.connection
+      .prepare(
+        'INSERT INTO audit_events (id, event_type, entity_type, entity_id, payload_json, occurred_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        randomUUID(),
+        eventType,
+        'staff',
+        staffId,
+        JSON.stringify(payload),
+        now(),
+      );
+  }
+
+  private getStaffRow(id: string): Row | undefined {
+    return this.connection
+      .prepare('SELECT * FROM staff WHERE id = ?')
+      .get(id) as Row | undefined;
+  }
+
+  private getStaffAccount(id: string): StaffAccount | null {
+    const row = this.getStaffRow(id);
+    return row ? this.mapStaffAccount(row) : null;
+  }
+
+  private mapStaffAccount(row: Row): StaffAccount {
+    return {
+      id: String(row.id),
+      name: String(row.name),
+      role: row.role as 'owner' | 'cashier',
+      active: Number(row.active) === 1,
+      permissions:
+        row.role === 'owner'
+          ? [...GRANTABLE_PERMISSIONS]
+          : this.parseStaffPermissions(row.permissions_json),
+      lockedUntil: row.locked_until ? String(row.locked_until) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private parseStaffPermissions(value: unknown): GrantablePermission[] {
+    let decoded = value;
+    try {
+      decoded = typeof value === 'string' ? JSON.parse(value) : value;
+    } catch {
+      decoded = [];
+    }
+    const parsed = staffPermissionsSchema.safeParse(decoded);
+    return parsed.success ? [...new Set(parsed.data)] : [];
+  }
+
+  private activeOwnerCount(): number {
+    const row = this.connection
+      .prepare(
+        "SELECT COUNT(*) AS count FROM staff WHERE role = 'owner' AND active = 1",
+      )
+      .get() as Row;
+    return Number(row.count ?? 0);
   }
 
   getCardProcessorConfigJson(): string | null {
@@ -3688,7 +4059,7 @@ export class StoreDatabase {
       );
       enqueued += this.backfillRows(
         'audit_event',
-        'SELECT id FROM audit_events ORDER BY occurred_at, rowid',
+        "SELECT id FROM audit_events WHERE entity_type <> 'staff' ORDER BY occurred_at, rowid",
       );
       this.markBackfillCompleted();
     })();

@@ -52,6 +52,7 @@ export * from './refunds.js';
 export * from './secret-store.js';
 export * from './sync.js';
 export * from './ui-helpers.js';
+export * from './ipc-requirements.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -211,6 +212,42 @@ export interface RefundIntentAttention {
 }
 
 export interface StoreApi {
+  auth: {
+    getState(): Promise<import('./staff.js').AuthState>;
+    listAccounts(): Promise<import('./staff.js').StaffPickerAccount[]>;
+    signIn(
+      staffId: string,
+      pin: string,
+    ): Promise<import('./staff.js').SignedInStaff>;
+    signOut(): Promise<void>;
+    touch(): Promise<void>;
+    elevate(
+      permission: import('./staff.js').GrantablePermission,
+      pin: string,
+    ): Promise<void>;
+    createFirstOwner(
+      name: string,
+      pin: string,
+    ): Promise<import('./staff.js').StaffAccount>;
+    subscribe(
+      listener: (state: import('./staff.js').AuthState) => void,
+    ): () => void;
+    subscribeLocked(listener: () => void): () => void;
+  };
+  staff: {
+    list(): Promise<import('./staff.js').StaffAccount[]>;
+    create(
+      input: import('./staff.js').StaffCreateInput,
+    ): Promise<import('./staff.js').StaffAccount>;
+    update(
+      id: string,
+      input: import('./staff.js').StaffUpdateInput,
+    ): Promise<import('./staff.js').StaffAccount>;
+    setPin(id: string, pin: string): Promise<import('./staff.js').StaffAccount>;
+    setIdleLock(
+      minutes: number,
+    ): Promise<import('./checkout.js').DeviceSettings>;
+  };
   app: {
     getVersion(): Promise<string>;
   };
@@ -418,3 +455,26 @@ export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return 'An unexpected error occurred';
 }
+
+export {
+  DEFAULT_CASHIER_PERMISSIONS,
+  GRANTABLE_PERMISSIONS,
+  grantablePermissionSchema,
+  idleLockMinutesSchema,
+  permissionLabels,
+  staffCreateInputSchema,
+  staffNameSchema,
+  staffPermissionsSchema,
+  staffPinInputSchema,
+  staffPinSchema,
+  staffRoleSchema,
+  staffUpdateInputSchema,
+  type AuthState,
+  type GrantablePermission,
+  type SignedInStaff,
+  type StaffAccount,
+  type StaffCreateInput,
+  type StaffPickerAccount,
+  type StaffPinInput,
+  type StaffUpdateInput,
+} from './staff.js';

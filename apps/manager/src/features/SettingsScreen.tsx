@@ -10,6 +10,7 @@ import {
 import { messageFrom } from '../utils/formatters';
 import { CloudBackupSection } from './CloudBackupSection';
 import { LocalBackupSection } from './LocalBackupSection';
+import { StaffSection } from './StaffSection';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
@@ -544,6 +545,7 @@ export function SettingsScreen() {
 
       <CloudBackupSection />
       <LocalBackupSection />
+      <StaffSection />
     </>
   );
 }

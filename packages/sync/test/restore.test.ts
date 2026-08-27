@@ -96,6 +96,8 @@ describe('restore validation', () => {
     expect(db.getDeviceSettings()).toEqual({
       updateFeedUrl: null,
       automaticUpdatesEnabled: true,
+      idleLockMinutes: 5,
+      staffModeEnabled: false,
     });
     expect(db.getCardProcessorConfigStatus().configured).toBe(false);
     disposeDb(db, file);

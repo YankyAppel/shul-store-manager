@@ -135,6 +135,17 @@ describe('sync outbox migration & append-only guarantees', () => {
 });
 
 describe('sync backfill', () => {
+  it('does not backfill device-local staff audit events', () => {
+    store.createFirstOwner('Shames', '1234');
+
+    expect(store.backfillOutbox()).toBe(1);
+    expect(
+      store
+        .exportOutboxSnapshot()
+        .some((event) => event.entityType === 'audit_event'),
+    ).toBe(false);
+  });
+
   it('snapshots all pre-existing data exactly once and is idempotent', () => {
     // Populate business data via raw SQL so nothing is enqueued yet — this
     // simulates rows that existed before the outbox migration (or before sync
