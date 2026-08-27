@@ -23,6 +23,16 @@ export function SettingsScreen() {
   const [processorMode, setProcessorMode] = useState<'test' | 'live'>('test');
   const [processorMessage, setProcessorMessage] = useState('');
   const [testingProcessor, setTestingProcessor] = useState(false);
+  const [readerDeviceName, setReaderDeviceName] = useState('BBPOS');
+  const [readerConnection, setReaderConnection] = useState<'usb' | 'ip'>('usb');
+  const [readerComPort, setReaderComPort] = useState('COM3');
+  const [readerAddress, setReaderAddress] = useState('');
+  const [readerPort, setReaderPort] = useState('8887');
+  const [readerSilentMode, setReaderSilentMode] = useState(true);
+  const [readerKeyedEntry, setReaderKeyedEntry] = useState(true);
+  const [readerAmountPrompt, setReaderAmountPrompt] = useState(false);
+  const [readerTimeout, setReaderTimeout] = useState('120');
+  const [checkingReader, setCheckingReader] = useState(false);
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
@@ -48,6 +58,9 @@ export function SettingsScreen() {
             : current,
         );
       if (processor.mode) setProcessorMode(processor.mode);
+      void window.storeApi.settings
+        .getProcessorConfigStatus()
+        .then(() => undefined);
     });
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
@@ -73,11 +86,31 @@ export function SettingsScreen() {
 
   async function saveProcessorConfig() {
     try {
-      const next = JSON.stringify({
-        processorId: settings!.cardProcessorId,
-        apiKey: processorKey,
-        mode: processorMode,
-      });
+      const next =
+        settings!.cardProcessorId === 'cardknox-bbpos'
+          ? JSON.stringify({
+              apiKey: processorKey,
+              deviceName: readerDeviceName,
+              connection:
+                readerConnection === 'usb'
+                  ? { kind: 'usb', comPort: readerComPort }
+                  : {
+                      kind: 'ip',
+                      address: readerAddress,
+                      port: Number(readerPort),
+                    },
+              silentMode: readerSilentMode,
+              keyedEntry: readerKeyedEntry,
+              amountConfirmationPrompt: readerAmountPrompt,
+              deviceTimeoutSeconds: Number(readerTimeout),
+              mode: processorMode,
+              processorId: 'cardknox-bbpos',
+            })
+          : JSON.stringify({
+              processorId: settings!.cardProcessorId,
+              apiKey: processorKey,
+              mode: processorMode,
+            });
       const status = await window.storeApi.settings.setProcessorConfig(next);
       setProcessorStatus(status);
       setProcessorKey('');
@@ -88,6 +121,19 @@ export function SettingsScreen() {
       );
     } catch (error) {
       setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function checkReader() {
+    setCheckingReader(true);
+    try {
+      setProcessorMessage(
+        (await window.storeApi.settings.checkReader()).message,
+      );
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    } finally {
+      setCheckingReader(false);
     }
   }
 
@@ -567,6 +613,9 @@ export function SettingsScreen() {
                 <option value="simulated">Simulated (training)</option>
                 <option value="sola">Sola</option>
                 <option value="cardknox">Cardknox</option>
+                <option value="cardknox-bbpos">
+                  Sola / Cardknox BBPOS reader
+                </option>
                 <option value="usaepay">USAePay</option>
                 <option value="other">Other (request)</option>
               </select>
@@ -581,6 +630,109 @@ export function SettingsScreen() {
                 autoComplete="off"
               />
             </label>
+            {settings.cardProcessorId === 'cardknox-bbpos' && (
+              <>
+                <Explain
+                  id="bbpos-reader-setup"
+                  sentence="This reader lets this PC take card payments without a countertop terminal."
+                >
+                  Install BBPOS on this PC from
+                  https://cdn.cardknox.com/dl/bbpos.exe. Sola must activate
+                  BBPOS on your account, and the reader must be bought
+                  key-injected from Sola. PIN debit is not supported, and
+                  Augusta does not support tap. The reader must stay connected
+                  to this manager or kiosk computer.
+                </Explain>
+                <label>
+                  Reader device name
+                  <input
+                    value={readerDeviceName}
+                    onChange={(event) =>
+                      setReaderDeviceName(event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Reader connection
+                  <select
+                    value={readerConnection}
+                    onChange={(event) =>
+                      setReaderConnection(event.target.value as 'usb' | 'ip')
+                    }
+                  >
+                    <option value="usb">USB</option>
+                    <option value="ip">Network reader</option>
+                  </select>
+                </label>
+                {readerConnection === 'usb' ? (
+                  <label>
+                    USB COM port
+                    <input
+                      value={readerComPort}
+                      onChange={(event) => setReaderComPort(event.target.value)}
+                      placeholder="COM3"
+                    />
+                  </label>
+                ) : (
+                  <>
+                    <label>
+                      Reader IP address
+                      <input
+                        value={readerAddress}
+                        onChange={(event) =>
+                          setReaderAddress(event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      Reader IP port
+                      <input
+                        value={readerPort}
+                        onChange={(event) => setReaderPort(event.target.value)}
+                      />
+                    </label>
+                  </>
+                )}
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={readerSilentMode}
+                    onChange={(event) =>
+                      setReaderSilentMode(event.target.checked)
+                    }
+                  />
+                  Silent reader operation
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={readerKeyedEntry}
+                    onChange={(event) =>
+                      setReaderKeyedEntry(event.target.checked)
+                    }
+                  />
+                  Allow BBPOS keyed-entry fallback
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={readerAmountPrompt}
+                    onChange={(event) =>
+                      setReaderAmountPrompt(event.target.checked)
+                    }
+                  />
+                  Ask customer to confirm amount
+                </label>
+                <label>
+                  Reader timeout (seconds)
+                  <input
+                    inputMode="numeric"
+                    value={readerTimeout}
+                    onChange={(event) => setReaderTimeout(event.target.value)}
+                  />
+                </label>
+              </>
+            )}
             <label>
               Mode
               <select
@@ -627,11 +779,21 @@ export function SettingsScreen() {
                 disabled={
                   testingProcessor ||
                   !processorKey.trim() ||
-                  settings.cardProcessorId === 'other'
+                  settings.cardProcessorId === 'other' ||
+                  settings.cardProcessorId === 'cardknox-bbpos'
                 }
               >
                 {testingProcessor ? 'Testing…' : 'Test connection'}
               </button>
+              {settings.cardProcessorId === 'cardknox-bbpos' && (
+                <button
+                  type="button"
+                  onClick={() => void checkReader()}
+                  disabled={checkingReader || !processorStatus.configured}
+                >
+                  {checkingReader ? 'Checking reader…' : 'Check reader'}
+                </button>
+              )}
               {processorMessage && <span>{processorMessage}</span>}
             </div>
           </>

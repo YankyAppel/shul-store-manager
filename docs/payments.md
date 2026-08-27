@@ -109,6 +109,37 @@ The deterministic `simulated` processor allows testing state transitions by pass
 - `XX.03` ➔ `unknown` (Simulates a crash-mid-charge: throws during create, but resolves to `approved` on subsequent status checks)
 - Any other amount ➔ `approved`
 
+## USB Card Readers (BBPOS)
+
+The supported card-present path is a small USB reader connected to the specific
+manager or self-checkout kiosk PC. It uses Sola/Cardknox's Windows **BBPOS**
+local service; the application never asks for, receives, or stores a card
+number, security code, or expiration date. There is no countertop terminal and
+there is no Windows SDK helper in this application.
+
+Before setup, install BBPOS from
+<https://cdn.cardknox.com/dl/bbpos.exe>. Sola must activate BBPOS on the
+merchant account, and the reader must be purchased key-injected from Sola.
+Supported readers are ID TECH VP3300, VP8300, and Augusta. These readers work
+as signature/credit devices: PIN debit is not supported, and Augusta does not
+support tap.
+
+The reader configuration is encrypted and stored locally on each computer. USB
+readers use their device name and COM port; an IP-connected reader uses its
+device name, IP address, and IP port. BBPOS's own keyed-entry popup may be
+enabled as a fallback; Shul Store Manager never provides a card-number form.
+Silent mode, amount confirmation, and the reader timeout are configurable.
+
+Sales use BBPOS's local service. Refunds and voids use the remote Cardknox
+gateway, so the reader does not need to be plugged in for those operations.
+The offline `cc:encrypt` store-and-forward flow is not implemented. USAePay
+card-present hardware is also out of scope.
+
+If BBPOS cannot be reached, times out, exits, returns malformed data, or gives
+an otherwise ambiguous answer, the payment is left unresolved and sent to
+**needs attention**. It is never automatically treated as approved or
+declined, and the customer must not simply try the card again.
+
 ## PCI Guidance for Future Adapters
 
 Any future real integration (e.g., Stripe, Square, PayPal) MUST use out-of-scope methods:

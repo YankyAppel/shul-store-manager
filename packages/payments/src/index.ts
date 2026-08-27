@@ -21,6 +21,7 @@ export interface RefundRequest {
   chargeReference: string;
   refundReference: string;
   amountCents: number;
+  processorTransactionId?: string;
 }
 
 export interface RefundResult {
@@ -60,7 +61,13 @@ export interface PaymentProcessor<TConfig> {
     storage: ProcessorStorage,
   ): Promise<RefundResult>;
   getRefundStatus?(
-    request: Pick<RefundRequest, 'chargeReference' | 'refundReference'>,
+    request: Pick<
+      RefundRequest,
+      | 'chargeReference'
+      | 'refundReference'
+      | 'processorTransactionId'
+      | 'amountCents'
+    >,
     config: TConfig,
     storage: ProcessorStorage,
   ): Promise<RefundResult>;
@@ -175,7 +182,361 @@ export const simulatedProcessor: PaymentProcessor<SimulatedConfig> = {
   },
 };
 
-export const processors: PaymentProcessor<any>[] = [simulatedProcessor];
+export const cardknoxBbposConfigSchema = z.object({
+  apiKey: z.string().trim().min(1).max(1000),
+  deviceName: z.string().trim().min(1).max(200),
+  connection: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('usb'),
+      comPort: z.string().trim().min(1).max(100),
+    }),
+    z.object({
+      kind: z.literal('ip'),
+      address: z.string().trim().min(1).max(255),
+      port: z.number().int().min(1).max(65535),
+    }),
+  ]),
+  silentMode: z.boolean().default(true),
+  keyedEntry: z.boolean().default(true),
+  amountConfirmationPrompt: z.boolean().default(false),
+  deviceTimeoutSeconds: z.number().int().min(1).max(600).default(120),
+  mode: z.enum(['test', 'live']).default('live'),
+});
+export type CardknoxBbposConfig = z.infer<typeof cardknoxBbposConfigSchema>;
+
+const BBPOS_ENDPOINT = 'https://localemv.com:8887';
+const CARDKNOX_GATEWAY_ENDPOINT = 'https://x1.cardknox.com/gatewayjson';
+const BBPOS_INSTALL_URL = 'https://cdn.cardknox.com/dl/bbpos.exe';
+
+type FetchImplementation = typeof fetch;
+
+function bbposFields(
+  config: CardknoxBbposConfig,
+  command: string,
+  invoice?: string,
+): Record<string, string> {
+  const fields: Record<string, string> = {
+    xResponseFormat: 'JSON',
+    xKey: config.apiKey,
+    xCommand: command,
+    xDeviceName: config.deviceName,
+    xDeviceTimeOut: String(config.deviceTimeoutSeconds),
+    xEnableSilentMode: config.silentMode ? '1' : '0',
+    xEnableKeyedEntry: config.keyedEntry ? '1' : '0',
+    xEnableAmountConfirmationPrompt: config.amountConfirmationPrompt
+      ? '1'
+      : '0',
+  };
+  if (invoice) fields.xInvoice = invoice;
+  if (config.connection.kind === 'usb') {
+    fields.xDeviceComPort = config.connection.comPort;
+  } else {
+    fields.xDeviceIPAddress = config.connection.address;
+    fields.xDeviceIPPort = String(config.connection.port);
+  }
+  return fields;
+}
+
+function formBody(fields: Record<string, string>): string {
+  return new URLSearchParams(fields).toString();
+}
+
+async function bbposJson(
+  response: Response,
+): Promise<Record<string, unknown> | null> {
+  if (!response.ok) return null;
+  try {
+    const value: unknown = await response.json();
+    return value && typeof value === 'object'
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function resultCode(value: Record<string, unknown>): string {
+  for (const key of ['xResult', 'result_code', 'result', 'xStatus']) {
+    const candidate = value[key];
+    if (typeof candidate === 'string') return candidate.trim().toLowerCase();
+  }
+  return '';
+}
+
+function approvedCharge(value: Record<string, unknown>): boolean {
+  const code = resultCode(value);
+  return code === 'a' || code === 'approved' || code === 'success';
+}
+
+function declinedCharge(value: Record<string, unknown>): boolean {
+  const code = resultCode(value);
+  return code === 'd' || code === 'declined' || code === 'decline';
+}
+
+function responseText(value: Record<string, unknown>): string | undefined {
+  for (const key of ['xError', 'xErrorMessage', 'xMessage', 'message']) {
+    if (typeof value[key] === 'string' && value[key].trim())
+      return value[key].trim();
+  }
+  return undefined;
+}
+
+function transactionReference(
+  value: Record<string, unknown>,
+): string | undefined {
+  for (const key of ['xRefNum', 'xTransactionId', 'refnum', 'ref_num']) {
+    if (typeof value[key] === 'string' || typeof value[key] === 'number')
+      return String(value[key]);
+  }
+  return undefined;
+}
+
+function cardBrand(value: Record<string, unknown>): string | undefined {
+  for (const key of ['xCardType', 'xCardBrand', 'cardBrand']) {
+    if (typeof value[key] === 'string' && value[key].trim())
+      return value[key].trim();
+  }
+  return undefined;
+}
+
+function cardLast4(value: Record<string, unknown>): string | undefined {
+  for (const key of [
+    'xMaskedCardNumber',
+    'xCardNumber',
+    'xCardNum',
+    'cardLast4',
+  ]) {
+    if (typeof value[key] !== 'string' && typeof value[key] !== 'number')
+      continue;
+    const digits = String(value[key]).replace(/\D/g, '');
+    if (digits.length >= 4) return digits.slice(-4);
+  }
+  return undefined;
+}
+
+function bbposPending(message: string): ChargeResult {
+  return { status: 'pending', errorMessage: message };
+}
+
+function unreachableMessage(): string {
+  return `The card reader could not be reached. Install BBPOS (${BBPOS_INSTALL_URL}), ask Sola to activate BBPOS on the account, and use a reader bought key-injected from Sola.`;
+}
+
+async function postBbpos(
+  fields: Record<string, string>,
+  fetchImpl: FetchImplementation,
+): Promise<Record<string, unknown> | null> {
+  const response = await fetchImpl(BBPOS_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: formBody(fields),
+  });
+  return bbposJson(response);
+}
+
+export function createCardknoxBbposProcessor(
+  fetchImpl: FetchImplementation = fetch,
+): PaymentProcessor<CardknoxBbposConfig> {
+  return {
+    id: 'cardknox-bbpos',
+    displayName: 'Sola / Cardknox BBPOS card reader',
+    configSchema: cardknoxBbposConfigSchema,
+    async createCharge(request, rawConfig, storage) {
+      const config = cardknoxBbposConfigSchema.parse(rawConfig);
+      let body: Record<string, unknown> | null;
+      try {
+        body = await postBbpos(
+          {
+            ...bbposFields(config, 'cc:sale', request.chargeReference),
+            xAmount: (request.amountCents / 100).toFixed(2),
+          },
+          fetchImpl,
+        );
+      } catch {
+        const result = bbposPending(unreachableMessage());
+        await storage.set(request.chargeReference, result);
+        return result;
+      }
+      if (!body) {
+        const result = bbposPending(
+          'The card reader did not answer. The payment needs attention; do not try the card again.',
+        );
+        await storage.set(request.chargeReference, result);
+        return result;
+      }
+      let result: ChargeResult;
+      if (approvedCharge(body)) {
+        const processorTransactionId = transactionReference(body);
+        const brand = cardBrand(body);
+        const last4 = cardLast4(body);
+        result = processorTransactionId
+          ? {
+              status: 'approved',
+              processorTransactionId,
+              ...(brand !== undefined ? { cardBrand: brand } : {}),
+              ...(last4 !== undefined ? { cardLast4: last4 } : {}),
+            }
+          : {
+              status: 'pending',
+              errorMessage:
+                'The reader approved a payment but returned no transaction reference. The payment needs attention.',
+            };
+      } else if (declinedCharge(body)) {
+        result = {
+          status: 'declined',
+          declineReason:
+            responseText(body) ?? 'The card was declined by the processor.',
+        };
+      } else {
+        result = bbposPending(
+          responseText(body) ??
+            'The card reader returned an unclear response. The payment needs attention.',
+        );
+      }
+      await storage.set(request.chargeReference, result);
+      return result;
+    },
+    async getChargeStatus(chargeReference, _config, storage) {
+      const stored = await storage.get(chargeReference);
+      if (stored?.status === 'approved' || stored?.status === 'declined')
+        return stored;
+      throw new Error(
+        'BBPOS does not provide a safe status lookup for a lost response. This payment needs attention.',
+      );
+    },
+    async cancelCharge(chargeReference, rawConfig) {
+      const config = cardknoxBbposConfigSchema.parse(rawConfig);
+      const body = await postBbpos(
+        { ...bbposFields(config, 'cc:sale', chargeReference), xCancel: '1' },
+        fetchImpl,
+      );
+      if (!body)
+        throw new Error(
+          'The reader did not confirm cancellation. The payment needs attention.',
+        );
+    },
+    async refundCharge(request, rawConfig, storage) {
+      const config = cardknoxBbposConfigSchema.parse(rawConfig);
+      try {
+        const response = await fetchImpl(CARDKNOX_GATEWAY_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            xKey: config.apiKey,
+            xCommand: 'cc:refund',
+            xRefNum: request.processorTransactionId ?? request.chargeReference,
+            xAmount: (request.amountCents / 100).toFixed(2),
+            xInvoice: request.refundReference,
+          }),
+        });
+        const body = await bbposJson(response);
+        if (!body)
+          return {
+            status: 'error',
+            errorMessage: 'The refund processor did not answer.',
+          };
+        if (!approvedCharge(body))
+          return {
+            status: 'declined',
+            errorMessage: responseText(body) ?? 'The refund was declined.',
+          };
+        const processorRefundId = transactionReference(body);
+        const result: RefundResult = {
+          status: 'refunded',
+          ...(processorRefundId ? { processorRefundId } : {}),
+        };
+        await storage.set(request.refundReference, {
+          status: 'approved',
+          ...(processorRefundId
+            ? { processorTransactionId: processorRefundId }
+            : {}),
+        });
+        return result;
+      } catch {
+        return {
+          status: 'error',
+          errorMessage: 'The refund could not be sent.',
+        };
+      }
+    },
+    async getRefundStatus(request, rawConfig, storage) {
+      const config = cardknoxBbposConfigSchema.parse(rawConfig);
+      const stored = await storage.get(request.refundReference);
+      if (stored?.status === 'approved')
+        return {
+          status: 'refunded',
+          ...(stored.processorTransactionId
+            ? { processorRefundId: stored.processorTransactionId }
+            : {}),
+        };
+      try {
+        const response = await fetchImpl(CARDKNOX_GATEWAY_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            xKey: config.apiKey,
+            xCommand: 'cc:refund',
+            xRefNum: request.processorTransactionId ?? request.chargeReference,
+            xAmount: (request.amountCents / 100).toFixed(2),
+            xInvoice: request.refundReference,
+          }),
+        });
+        const body = await bbposJson(response);
+        if (body && approvedCharge(body)) {
+          const processorRefundId = transactionReference(body);
+          await storage.set(request.refundReference, {
+            status: 'approved',
+            ...(processorRefundId
+              ? { processorTransactionId: processorRefundId }
+              : {}),
+          });
+          return {
+            status: 'refunded',
+            ...(processorRefundId
+              ? { processorRefundId: processorRefundId }
+              : {}),
+          };
+        }
+      } catch {
+        // Fall through to the operator-facing unresolved state below.
+      }
+      return {
+        status: 'error',
+        errorMessage:
+          'The refund status is unavailable; the refund needs attention.',
+      };
+    },
+  };
+}
+
+export const cardknoxBbposProcessor = createCardknoxBbposProcessor();
+
+export async function checkCardknoxBbposReader(
+  rawConfig: CardknoxBbposConfig,
+  fetchImpl: FetchImplementation = fetch,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const config = cardknoxBbposConfigSchema.parse(rawConfig);
+    const body = await postBbpos(
+      bbposFields(config, 'Device_ShowWelcomeScreen'),
+      fetchImpl,
+    );
+    if (!body) return { ok: false, message: unreachableMessage() };
+    if (approvedCharge(body) || resultCode(body) === 'ok')
+      return { ok: true, message: 'The BBPOS reader was found and woke up.' };
+    return {
+      ok: false,
+      message: responseText(body) ?? 'BBPOS could not wake the reader.',
+    };
+  } catch {
+    return { ok: false, message: unreachableMessage() };
+  }
+}
+
+export const processors: PaymentProcessor<any>[] = [
+  simulatedProcessor,
+  cardknoxBbposProcessor,
+];
 
 export const processorConnectionConfigSchema = z.object({
   processorId: z.enum(['sola', 'cardknox', 'usaepay', 'other']),

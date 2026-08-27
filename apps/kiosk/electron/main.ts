@@ -46,9 +46,14 @@ import {
   type KioskResolvedLine,
   type KioskStateFile,
   PlaintextSecretStore,
+  type SecretStore,
   isTerminalKioskChargeStatus,
   verifyScryptPinHash,
 } from '@shul-store/shared';
+import {
+  cardknoxBbposConfigSchema,
+  checkCardknoxBbposReader,
+} from '@shul-store/payments';
 
 const DEFAULT_PORT = 3939;
 const CATALOG_REFRESH_MS = 600000;
@@ -82,6 +87,27 @@ let discoverySocket: dgram.Socket | null = null;
 let discoveryTimer: ReturnType<typeof setInterval> | null = null;
 const discoveredManagers = new Map<string, KioskDiscoveredManager>();
 const DISCOVERY_STALE_MS = 7000;
+
+class KioskSecretStore implements SecretStore {
+  readonly available = encryptionAvailable;
+
+  encrypt(value: string): string {
+    return this.available
+      ? safeStorage.encryptString(value).toString('base64')
+      : new PlaintextSecretStore().encrypt(value);
+  }
+
+  decrypt(value: string): string {
+    if (this.available) {
+      try {
+        return safeStorage.decryptString(Buffer.from(value, 'base64'));
+      } catch {
+        // Existing kiosk installations used the plaintext fallback.
+      }
+    }
+    return new PlaintextSecretStore().decrypt(value);
+  }
+}
 
 function startTimers(): void {
   catalogTimer ??= setInterval(() => void refreshCatalog(), CATALOG_REFRESH_MS);
@@ -161,7 +187,54 @@ function publicState(): KioskPublicState {
     discoveredManagers: [...discoveredManagers.values()].sort((a, b) =>
       a.storeName.localeCompare(b.storeName),
     ),
+    readerStatus: readerStatus(),
   };
+}
+
+function readerStatus() {
+  return (
+    localDatabase?.getCardProcessorConfigStatus() ?? {
+      configured: false,
+      encrypted: false,
+    }
+  );
+}
+
+function saveReaderConfig(input: unknown) {
+  if (!localDatabase) throw new Error('The kiosk database is not ready.');
+  const config = cardknoxBbposConfigSchema.parse(input);
+  return localDatabase.setCardProcessorConfigJson(
+    JSON.stringify({ ...config, processorId: 'cardknox-bbpos' }),
+  );
+}
+
+async function checkReader(): Promise<{ ok: boolean; message: string }> {
+  if (!localDatabase)
+    return { ok: false, message: 'The kiosk database is not ready.' };
+  const raw = localDatabase.getCardProcessorConfigJson();
+  if (!raw)
+    return { ok: false, message: 'Save the BBPOS reader settings first.' };
+  try {
+    return checkCardknoxBbposReader(
+      cardknoxBbposConfigSchema.parse(JSON.parse(raw)),
+    );
+  } catch {
+    return { ok: false, message: 'Save valid BBPOS reader settings first.' };
+  }
+}
+
+async function getExplanationDismissed(id: string): Promise<boolean> {
+  const explanationId = z.string().trim().min(1).max(100).parse(id);
+  return (
+    localDatabase
+      ?.getDeviceSettings()
+      .explainDismissals.includes(explanationId) ?? false
+  );
+}
+
+async function dismissExplanation(id: string): Promise<void> {
+  const explanationId = z.string().trim().min(1).max(100).parse(id);
+  localDatabase?.dismissDeviceExplanation(explanationId);
 }
 
 function stopDiscovery(): void {
@@ -627,7 +700,32 @@ function scheduleChargePoll(delay = CHARGE_RETRY_MS): void {
 
 async function pollInFlight(): Promise<void> {
   const inFlight = state.inFlightCharge;
-  if (!inFlight || !token) return;
+  if (!inFlight) return;
+  if (cloudEngine && localDatabase) {
+    try {
+      const result = await localDatabase.payments.reconcile(
+        inFlight.chargeReference,
+      );
+      if (!result) return;
+      const outcome = kioskChargeOutcomeSchema.parse({
+        status: result.status,
+        chargeReference: result.chargeReference,
+        totalCents: result.totalCents,
+        processorTransactionId: result.processorTransactionId,
+        cardBrand: result.cardBrand,
+        cardLast4: result.cardLast4,
+        declineReason: result.declineReason,
+        errorMessage: result.errorMessage,
+        attentionReason: result.attentionReason,
+        receiptNumber: result.receiptNumber,
+      });
+      await finishCharge(outcome);
+    } catch {
+      // Keep the local charge pending until an operator resolves it.
+    }
+    return;
+  }
+  if (!token) return;
   try {
     const response = await request(`/api/charges/${inFlight.chargeReference}`, {
       method: 'GET',
@@ -789,6 +887,44 @@ async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
     };
   if (cloudEngine && localDatabase) {
     try {
+      const settings = localDatabase.getSettings();
+      if (
+        settings.cardProcessingEnabled &&
+        settings.cardProcessorId === 'cardknox-bbpos'
+      ) {
+        const inFlight: KioskInFlightCharge = {
+          chargeReference: randomUUID(),
+          idempotencyKey: randomUUID(),
+          lines: resolved.lines,
+          startedAt: new Date().toISOString(),
+        };
+        state.inFlightCharge = inFlight;
+        await persist();
+        publish();
+        const result = await localDatabase.payments.charge(
+          {
+            chargeReference: inFlight.chargeReference,
+            idempotencyKey: inFlight.idempotencyKey,
+            lines: inFlight.lines,
+          },
+          { channel: 'kiosk', kioskId: state.kioskId },
+        );
+        const outcome = kioskChargeOutcomeSchema.parse({
+          status: result.status,
+          chargeReference: result.chargeReference,
+          totalCents: result.totalCents,
+          processorTransactionId: result.processorTransactionId,
+          cardBrand: result.cardBrand,
+          cardLast4: result.cardLast4,
+          declineReason: result.declineReason,
+          errorMessage: result.errorMessage,
+          attentionReason: result.attentionReason,
+          receiptNumber: result.receiptNumber,
+        });
+        await finishCharge(outcome);
+        if (!isTerminalKioskChargeStatus(outcome.status)) scheduleChargePoll();
+        return { ok: true, outcome };
+      }
       const sale = localDatabase.completeSale(
         {
           completionKey: randomUUID(),
@@ -964,6 +1100,11 @@ function registerIpc(): void {
     stopDiscovery: async () => stopDiscovery(),
     cloudSignIn,
     cloudSignUp,
+    getReaderStatus: async () => readerStatus(),
+    saveReaderConfig: async (input) => saveReaderConfig(input),
+    checkReader,
+    getExplanationDismissed,
+    dismissExplanation,
   };
   ipcMain.handle('kiosk:getState', () => handlers.getState());
   ipcMain.handle('kiosk:pair', (_event, input: KioskPairInput) =>
@@ -974,6 +1115,17 @@ function registerIpc(): void {
   );
   ipcMain.handle('kiosk:cloudSignUp', (_event, input: KioskCloudSignInInput) =>
     handlers.cloudSignUp(input),
+  );
+  ipcMain.handle('kiosk:getReaderStatus', () => handlers.getReaderStatus());
+  ipcMain.handle('kiosk:saveReaderConfig', (_event, input) =>
+    handlers.saveReaderConfig(input),
+  );
+  ipcMain.handle('kiosk:checkReader', () => handlers.checkReader());
+  ipcMain.handle('kiosk:getExplanationDismissed', (_event, id) =>
+    handlers.getExplanationDismissed(id),
+  );
+  ipcMain.handle('kiosk:dismissExplanation', (_event, id) =>
+    handlers.dismissExplanation(id),
   );
   ipcMain.handle('kiosk:refreshCatalog', () => handlers.refreshCatalog());
   ipcMain.handle('kiosk:priceCart', (_event, lines: KioskCartLine[]) =>
@@ -1051,7 +1203,7 @@ app.whenReady().then(async () => {
   await loadState();
   localDatabase = new StoreDatabase(
     path.join(app.getPath('userData'), 'kiosk.sqlite'),
-    new PlaintextSecretStore(),
+    new KioskSecretStore(),
   );
   if (
     cloudAccessToken &&

@@ -69,6 +69,25 @@ export interface KioskCloudSignInInput {
   adminPin: string;
 }
 
+export interface KioskReaderConfig {
+  apiKey: string;
+  deviceName: string;
+  connection:
+    | { kind: 'usb'; comPort: string }
+    | { kind: 'ip'; address: string; port: number };
+  silentMode: boolean;
+  keyedEntry: boolean;
+  amountConfirmationPrompt: boolean;
+  deviceTimeoutSeconds: number;
+  mode: 'test' | 'live';
+}
+
+export interface KioskReaderStatus {
+  configured: boolean;
+  encrypted: boolean;
+  keyHint?: string | null;
+}
+
 export const kioskChargeOutcomeSchema = z.object({
   status: z.string(),
   chargeReference: z.string().uuid(),
@@ -189,6 +208,7 @@ export interface KioskPublicState {
   inFlightCharge: KioskInFlightCharge | null;
   adminLockedUntil: number | null;
   discoveredManagers: KioskDiscoveredManager[];
+  readerStatus: KioskReaderStatus;
 }
 
 export type KioskAdminResult = { ok: true } | { ok: false; message: string };
@@ -206,6 +226,11 @@ export interface KioskMainHandlers {
   stopDiscovery(): Promise<void>;
   cloudSignIn(input: KioskCloudSignInInput): Promise<KioskPublicState>;
   cloudSignUp(input: KioskCloudSignInInput): Promise<KioskPublicState>;
+  getReaderStatus(): Promise<KioskReaderStatus>;
+  saveReaderConfig(input: KioskReaderConfig): Promise<KioskReaderStatus>;
+  checkReader(): Promise<{ ok: boolean; message: string }>;
+  getExplanationDismissed(id: string): Promise<boolean>;
+  dismissExplanation(id: string): Promise<void>;
 }
 
 export interface KioskApi extends KioskMainHandlers {

@@ -74,6 +74,8 @@ import {
   staffUpdateInputSchema,
 } from '@shul-store/shared';
 import {
+  cardknoxBbposConfigSchema,
+  checkCardknoxBbposReader,
   processorConnectionConfigSchema,
   testProcessorConnection,
 } from '@shul-store/payments';
@@ -167,6 +169,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'settings:setProcessorConfig': 'owner',
   'settings:getProcessorConfigStatus': 'owner',
   'settings:testProcessorConnection': 'owner',
+  'settings:checkReader': 'owner',
   'settings:listPrinters': 'owner',
   'labels:render': 'products.edit',
   'labels:print': 'products.edit',
@@ -907,6 +910,17 @@ function registerIpc(): void {
   ipcMain.handle('settings:testProcessorConnection', async (_event, input) => {
     const config = processorConnectionConfigSchema.parse(input);
     return testProcessorConnection(config);
+  });
+  ipcMain.handle('settings:checkReader', async () => {
+    const raw = database.getCardProcessorConfigJson();
+    if (!raw)
+      return { ok: false, message: 'Save the BBPOS reader settings first.' };
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return checkCardknoxBbposReader(cardknoxBbposConfigSchema.parse(parsed));
+    } catch {
+      return { ok: false, message: 'Save valid BBPOS reader settings first.' };
+    }
   });
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
 
