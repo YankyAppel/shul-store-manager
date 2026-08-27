@@ -21,7 +21,7 @@ import {
   safeStorage,
   shell,
 } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import electronUpdater from 'electron-updater';
 import { z } from 'zod';
 import {
   KioskServer,
@@ -73,6 +73,12 @@ import {
   type SyncSecretStore,
 } from '@shul-store/sync';
 import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
+
+/**
+ * electron-updater is CommonJS, so its bindings are only reachable through the
+ * default export from this ESM entrypoint.
+ */
+const { autoUpdater } = electronUpdater;
 
 const require = createRequire(import.meta.url);
 const { githubUpdateRepository } = require('../update-config.cjs') as {
