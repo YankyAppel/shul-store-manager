@@ -6,6 +6,7 @@ import {
   validatePort,
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
+import { Explain } from '../components/Explain';
 
 const DEFAULT_PORT = '3939';
 const PAIRING_WINDOW_MS = 5 * 60 * 1000;
@@ -18,6 +19,7 @@ export function KioskScreen() {
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [discoveryActive, setDiscoveryActive] = useState(false);
 
   async function refresh() {
     const next = await window.storeApi.kiosk.getSettings();
@@ -34,6 +36,13 @@ export function KioskScreen() {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [pairingExpiresAt]);
+
+  useEffect(
+    () => () => {
+      void window.storeApi.kiosk.stopDiscovery();
+    },
+    [],
+  );
 
   async function setServer(enabled: boolean) {
     const validation = validatePort(port);
@@ -62,6 +71,8 @@ export function KioskScreen() {
     setBusy(true);
     try {
       const code = await window.storeApi.kiosk.pairCode();
+      await window.storeApi.kiosk.startDiscovery();
+      setDiscoveryActive(true);
       setPairingCode(code);
       setPairingExpiresAt(Date.now() + PAIRING_WINDOW_MS);
       setNow(Date.now());
@@ -76,6 +87,15 @@ export function KioskScreen() {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!discoveryActive || !pairingExpiresAt) return;
+    const timer = window.setTimeout(() => {
+      void window.storeApi.kiosk.stopDiscovery();
+      setDiscoveryActive(false);
+    }, PAIRING_WINDOW_MS + 30000);
+    return () => window.clearTimeout(timer);
+  }, [discoveryActive, pairingExpiresAt]);
 
   async function revoke(id: string, name: string) {
     if (
@@ -163,11 +183,13 @@ export function KioskScreen() {
           )}
           {settings?.enabled && settings.addresses.length > 0 && (
             <div className="kiosk-addresses">
-              <strong>Enter one of these addresses on the kiosk:</strong>
+              <strong>Detected kiosk addresses:</strong>
               <ul>
                 {settings.addresses.map((address) => (
                   <li key={address}>
-                    <code>{formatKioskAddress(address, settings.port)}</code>
+                    <code>
+                      {formatKioskAddress(address, settings.port)} (change)
+                    </code>
                   </li>
                 ))}
               </ul>
@@ -186,6 +208,13 @@ export function KioskScreen() {
       <section className="card kiosk-section">
         <div className="card-body">
           <h2>Pair a kiosk</h2>
+          <Explain
+            id="kiosk-pairing"
+            sentence="Pairing connects a self-checkout kiosk to this manager on your shul network."
+          >
+            Generate a temporary code and enter it on the kiosk. The code is
+            only used to connect that kiosk and can be revoked at any time.
+          </Explain>
           <p>
             Generate a single-use code and enter it on the kiosk within five
             minutes.

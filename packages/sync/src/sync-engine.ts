@@ -2,6 +2,7 @@ import type { StoreDatabase } from '@shul-store/database';
 import type { OutboxEvent } from '@shul-store/database';
 import type { CloudEvent } from '@shul-store/shared';
 import type { PushAck, SyncTransport } from './transport.js';
+import { parseRestoreEvent } from './restore.js';
 
 export interface SyncEngineOptions {
   /** Maximum events pushed per cycle (default 200). */
@@ -112,8 +113,8 @@ export class SyncEngine {
       if (
         !config.enabled ||
         !config.storeId ||
-        !config.supabaseUrl ||
-        !config.apiKeySecret
+        (!config.supabaseUrl && !this.transport.listEventsSince) ||
+        (!config.apiKeySecret && !this.transport.listEventsSince)
       ) {
         return {
           pushed: 0,
@@ -126,16 +127,20 @@ export class SyncEngine {
       const batch = this.db.pendingSyncEvents(this.batchSize);
       if (batch.length === 0) {
         this.consecutiveFailures = 0;
+        const pullResult = await this.pullCycleInternal(
+          config.storeId,
+          config.deviceId,
+        );
         return {
           pushed: 0,
           remaining: 0,
-          error: null,
+          error: pullResult.error,
           consecutiveFailures: 0,
           skipped: false,
         };
       }
       const cloudEvents = batch.map((event) =>
-        toCloudEvent(event, config.storeId!),
+        toCloudEvent(event, config.storeId!, config.deviceId),
       );
       let ack: PushAck;
       try {
@@ -144,6 +149,7 @@ export class SyncEngine {
         this.consecutiveFailures += 1;
         const message = sanitizeError(error);
         this.db.recordSyncResult(false, message);
+        await this.pullCycleInternal(config.storeId, config.deviceId);
         return {
           pushed: 0,
           remaining: this.db.pendingSyncEventCount(),
@@ -158,10 +164,14 @@ export class SyncEngine {
       this.db.markSyncEventsPushed(ack.acknowledgedEventIds);
       this.consecutiveFailures = 0;
       this.db.recordSyncResult(true, null);
+      const pullResult = await this.pullCycleInternal(
+        config.storeId,
+        config.deviceId,
+      );
       return {
         pushed: ack.acknowledgedEventIds.length,
         remaining: this.db.pendingSyncEventCount(),
-        error: null,
+        error: pullResult.error,
         consecutiveFailures: 0,
         skipped: false,
       };
@@ -173,6 +183,65 @@ export class SyncEngine {
   /** Manual "Sync now". Respects single-flight (returns skipped if busy). */
   async syncNow(): Promise<PushCycleResult> {
     return this.pushCycle();
+  }
+
+  async pullCycle(): Promise<{ pulled: number; error: string | null }> {
+    if (this.inFlight) return { pulled: 0, error: null };
+    this.inFlight = true;
+    try {
+      const config = this.db.getSyncConfigRecord();
+      if (!this.canSync() || !config.enabled || !config.storeId)
+        return { pulled: 0, error: null };
+      return await this.pullCycleInternal(config.storeId, config.deviceId);
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async pullCycleInternal(
+    storeId: string,
+    deviceId: string | null,
+  ): Promise<{ pulled: number; error: string | null }> {
+    if (!deviceId || !this.transport.listEventsSince)
+      return { pulled: 0, error: null };
+    try {
+      const rawEvents = await this.transport.listEventsSince(
+        storeId,
+        this.db.getSyncConfigRecord().pullCursor,
+        deviceId,
+      );
+      if (rawEvents.length === 0) return { pulled: 0, error: null };
+      const validated = [];
+      let maximumCloudId = this.db.getSyncConfigRecord().pullCursor;
+      for (const event of rawEvents) {
+        const cloudId = Number(event.cloudId);
+        if (!Number.isInteger(cloudId) || cloudId <= 0) {
+          console.warn('Cloud sync skipped an event with invalid server id.');
+          continue;
+        }
+        maximumCloudId = Math.max(maximumCloudId, cloudId);
+        if (event.storeId !== storeId) {
+          console.warn('Cloud sync skipped an event for another store.');
+          continue;
+        }
+        try {
+          const parsed = parseRestoreEvent(event);
+          validated.push({ ...parsed, cloudId });
+        } catch {
+          console.warn('Cloud sync skipped an invalid event payload.');
+        }
+      }
+      if (validated.length > 0)
+        this.db.applyPulledEvents(validated, maximumCloudId);
+      else {
+        this.db.setPullCursor(maximumCloudId);
+      }
+      return { pulled: validated.length, error: null };
+    } catch (error) {
+      const message = sanitizeError(error);
+      this.db.recordSyncResult(false, message);
+      return { pulled: 0, error: message };
+    }
   }
 
   /** Start the background loop: an immediate cycle, then periodic cycles with
@@ -205,10 +274,15 @@ export class SyncEngine {
   }
 }
 
-function toCloudEvent(event: OutboxEvent, storeId: string): CloudEvent {
+function toCloudEvent(
+  event: OutboxEvent,
+  storeId: string,
+  deviceId: string | null,
+): CloudEvent {
   return {
     eventId: event.eventId,
     storeId,
+    ...(deviceId ? { deviceId } : {}),
     sequence: event.sequence,
     entityType: event.entityType,
     entityId: event.entityId,

@@ -58,7 +58,9 @@ describe('CloudAccountManager', () => {
         storeRequestCount += 1;
         return storeRequestCount === 1
           ? jsonResponse({ error: 'expired' }, 401)
-          : jsonResponse({ account: {} });
+          : jsonResponse({
+              account: { store_id: '11111111-1111-4111-8111-111111111111' },
+            });
       }
       if (url.endsWith('/api/store/entitlement'))
         return jsonResponse({

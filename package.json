@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run dev -w @shul-store/manager",
     "build": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run build -w @shul-store/manager && npm run build -w @shul-store/kiosk && node scripts/verify-file-url-assets.mjs",
-    "test": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run test -w @shul-store/shared && npm run test -w @shul-store/database && npm run test -w @shul-store/sync && npm run test -w @shul-store/manager",
+    "test": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run test -w @shul-store/payments && npm run test -w @shul-store/shared && npm run test -w @shul-store/database && npm run test -w @shul-store/sync && npm run test -w @shul-store/manager",
     "lint": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run lint --workspaces --if-present",
     "typecheck": "npm run build -w @shul-store/payments && npm run build -w @shul-store/shared && npm run build -w @shul-store/database && npm run build -w @shul-store/sync && npm run typecheck --workspaces --if-present",
     "format": "prettier --write .",

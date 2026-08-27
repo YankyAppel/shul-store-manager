@@ -28,4 +28,11 @@ export interface SyncTransport {
   /** Fetch every event for the store at or after `afterSequence`, in ascending
    *  sequence order, for restore onto a fresh install. */
   listEvents(storeId: string, afterSequence: number): Promise<CloudEvent[]>;
+
+  /** Fetch one server-arrival-ordered page for account-based two-way sync. */
+  listEventsSince?(
+    storeId: string,
+    pullCursor: number,
+    deviceId: string,
+  ): Promise<CloudEvent[]>;
 }

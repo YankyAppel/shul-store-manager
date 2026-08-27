@@ -70,7 +70,19 @@ export function App() {
   const [approvalPermission, setApprovalPermission] = useState<string | null>(
     null,
   );
+  const [approvalAction, setApprovalAction] = useState<
+    (() => Promise<void>) | null
+  >(null);
   const [approvalPin, setApprovalPin] = useState('');
+
+  const requestApproval = useCallback(
+    (permission: string, action: () => Promise<void>) => {
+      setApprovalPermission(permission);
+      setApprovalAction(() => action);
+      setApprovalPin('');
+    },
+    [],
+  );
 
   // Cross-screen navigation
   const [targetCustomerId, setTargetCustomerId] = useState<string | null>(null);
@@ -352,7 +364,7 @@ export function App() {
                   type="button"
                   onClick={() => void window.storeApi.auth.signOut()}
                 >
-                  Lock
+                  Lock / switch user
                 </button>
               </>
             )}
@@ -387,6 +399,7 @@ export function App() {
                   setApprovalPermission(
                     error.slice('PERMISSION_DENIED:'.length),
                   );
+                  setApprovalAction(null);
                   setApprovalPin('');
                 }}
               >
@@ -401,7 +414,14 @@ export function App() {
             <div className="modal">
               <div className="modal-title">
                 <h2>Owner approval</h2>
-                <button onClick={() => setApprovalPermission(null)}>×</button>
+                <button
+                  onClick={() => {
+                    setApprovalPermission(null);
+                    setApprovalAction(null);
+                  }}
+                >
+                  ×
+                </button>
               </div>
               <p>
                 Ask an owner to enter their PIN to approve this action once.
@@ -421,7 +441,12 @@ export function App() {
                 />
               </label>
               <footer>
-                <button onClick={() => setApprovalPermission(null)}>
+                <button
+                  onClick={() => {
+                    setApprovalPermission(null);
+                    setApprovalAction(null);
+                  }}
+                >
                   Cancel
                 </button>
                 <button
@@ -430,9 +455,13 @@ export function App() {
                   onClick={() =>
                     void window.storeApi.auth
                       .elevate(approvalPermission as never, approvalPin)
-                      .then(() => {
+                      .then(async () => {
+                        const action = approvalAction;
                         setApprovalPermission(null);
-                        setError('Owner approved. Please retry the action.');
+                        setApprovalAction(null);
+                        if (action) await action();
+                        else
+                          setError('Owner approved. Please retry the action.');
                       })
                       .catch((reason) => setError(messageFrom(reason)))
                   }
@@ -465,7 +494,12 @@ export function App() {
         )}
 
         {view === 'checkout' && (
-          <CheckoutScreen products={products} onInventoryChanged={refresh} />
+          <CheckoutScreen
+            products={products}
+            categories={categories}
+            onInventoryChanged={refresh}
+            onRequestApproval={requestApproval}
+          />
         )}
         {view === 'customers' && (
           <CustomersScreen
@@ -645,6 +679,10 @@ export function App() {
           categories={categories.filter(
             (c) => c.active || c.id === productEditor?.categoryId,
           )}
+          onCategoryCreated={(category) => {
+            setCategories((current) => [...current, category]);
+          }}
+          onRequestApproval={requestApproval}
           onClose={() => setProductEditor(undefined)}
           onSaved={async () => {
             setProductEditor(undefined);
@@ -851,6 +889,8 @@ function ProductModal({
   onSaved,
   onPrintLabels,
   setError,
+  onCategoryCreated,
+  onRequestApproval,
 }: {
   product: Product | null;
   categories: Category[];
@@ -858,6 +898,8 @@ function ProductModal({
   onSaved(): Promise<void>;
   onPrintLabels(product: Product): void;
   setError(value: string): void;
+  onCategoryCreated(category: Category): void;
+  onRequestApproval(permission: string, action: () => Promise<void>): void;
 }) {
   const [categoryId, setCategoryId] = useState(
     product?.categoryId ?? categories[0]?.id ?? '',
@@ -882,6 +924,9 @@ function ProductModal({
   );
   const [barcode, setBarcode] = useState('');
   const [saving, setSaving] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [newCategorySecondaryName, setNewCategorySecondaryName] = useState('');
+  const [creatingCategory, setCreatingCategory] = useState(false);
   function addBarcode(value = barcode) {
     const clean = value.trim();
     if (clean && !barcodes.includes(clean)) setBarcodes([...barcodes, clean]);
@@ -894,6 +939,9 @@ function ProductModal({
   async function submit(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
+    await saveProduct();
+  }
+  async function saveProduct() {
     try {
       const input = {
         categoryId,
@@ -911,8 +959,33 @@ function ProductModal({
       await images.saved();
       await onSaved();
     } catch (e) {
-      setError(messageFrom(e));
+      const message = messageFrom(e);
+      if (message.startsWith('PERMISSION_DENIED:')) {
+        onRequestApproval('products.edit', saveProduct);
+      } else setError(message);
       setSaving(false);
+    }
+  }
+  async function createCategory() {
+    if (!newCategoryName.trim() || creatingCategory) return;
+    setCreatingCategory(true);
+    try {
+      const category = await window.storeApi.categories.createInline({
+        name: newCategoryName,
+        secondaryName: newCategorySecondaryName || null,
+        imageId: null,
+      });
+      onCategoryCreated(category);
+      setCategoryId(category.id);
+      setNewCategoryName('');
+      setNewCategorySecondaryName('');
+    } catch (e) {
+      const message = messageFrom(e);
+      if (message.startsWith('PERMISSION_DENIED:'))
+        onRequestApproval('create_category', createCategory);
+      else setError(message);
+    } finally {
+      setCreatingCategory(false);
     }
   }
   return (
@@ -959,6 +1032,27 @@ function ProductModal({
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              onClick={() => void createCategory()}
+              disabled={creatingCategory}
+            >
+              + New category
+            </button>
+            <input
+              placeholder="New category name"
+              value={newCategoryName}
+              onChange={(event) => setNewCategoryName(event.target.value)}
+            />
+            {newCategoryName && (
+              <input
+                placeholder="Secondary name (optional)"
+                value={newCategorySecondaryName}
+                onChange={(event) =>
+                  setNewCategorySecondaryName(event.target.value)
+                }
+              />
+            )}
           </label>
           <label>
             Low-stock alert

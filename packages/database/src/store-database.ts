@@ -103,7 +103,9 @@ import {
   isBusinessDataEmpty,
   hasBusinessRows,
   restoreFromEvents,
+  applyOne,
   type RestoreOutcome,
+  type RestoreCounts,
   type ValidatedRestoreEvent,
 } from './sync-restore.js';
 import { dailyReport as buildDailyReport } from './reports.js';
@@ -199,6 +201,10 @@ export function readNullableSafeCents(
 /** Raw cloud-sync configuration as stored locally (key secret is opaque). */
 export interface SyncConfigRecord {
   storeId: string | null;
+  deviceId: string | null;
+  pullCursor: number;
+  deviceReceiptPrefix: number;
+  deviceReceiptPrefixClaimed: boolean;
   supabaseUrl: string | null;
   apiKeySecret: string | null;
   apiKeyEncrypted: boolean;
@@ -633,10 +639,22 @@ export class StoreDatabase {
     const row = this.connection
       .prepare(
         `SELECT update_feed_url, automatic_updates_enabled,
-          idle_lock_minutes, staff_mode_enabled
+          idle_lock_minutes, staff_mode_enabled, explain_dismissals_json
          FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
+    let explainDismissals: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(
+        String(row.explain_dismissals_json ?? '[]'),
+      );
+      if (Array.isArray(parsed))
+        explainDismissals = parsed.filter(
+          (value): value is string => typeof value === 'string',
+        );
+    } catch {
+      explainDismissals = [];
+    }
     return {
       updateFeedUrl:
         row.update_feed_url === null ||
@@ -650,6 +668,7 @@ export class StoreDatabase {
         'idleLockMinutes',
       ),
       staffModeEnabled: Number(row.staff_mode_enabled ?? 0) === 1,
+      explainDismissals,
     };
   }
 
@@ -659,15 +678,25 @@ export class StoreDatabase {
       .prepare(
         `UPDATE device_settings
          SET update_feed_url = ?, automatic_updates_enabled = ?,
-             idle_lock_minutes = ?, updated_at = ?
+             idle_lock_minutes = ?, explain_dismissals_json = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
         value.updateFeedUrl,
         value.automaticUpdatesEnabled ? 1 : 0,
         value.idleLockMinutes,
+        JSON.stringify(value.explainDismissals),
         now(),
       );
+    return this.getDeviceSettings();
+  }
+
+  dismissDeviceExplanation(id: string): DeviceSettings {
+    const settings = this.getDeviceSettings();
+    if (!settings.explainDismissals.includes(id)) {
+      settings.explainDismissals = [...settings.explainDismissals, id];
+      this.updateDeviceSettings(settings);
+    }
     return this.getDeviceSettings();
   }
 
@@ -1012,11 +1041,32 @@ export class StoreDatabase {
         'SELECT card_processor_config_secret, card_processor_config_encrypted FROM device_settings WHERE singleton_id = 1',
       )
       .get() as Row;
+    let processorId: string | null = null;
+    let mode: 'test' | 'live' | null = null;
+    let keyHint: string | null = null;
+    if (row.card_processor_config_secret) {
+      try {
+        const parsed = JSON.parse(
+          this.secretStore.decrypt(String(row.card_processor_config_secret)),
+        ) as { processorId?: unknown; mode?: unknown; apiKey?: unknown };
+        if (typeof parsed.processorId === 'string')
+          processorId = parsed.processorId;
+        if (parsed.mode === 'test' || parsed.mode === 'live')
+          mode = parsed.mode;
+        if (typeof parsed.apiKey === 'string' && parsed.apiKey.length > 0)
+          keyHint = `${parsed.apiKey.slice(0, 2)}••••${parsed.apiKey.slice(-2)}`;
+      } catch {
+        // A malformed legacy value remains reported as configured.
+      }
+    }
     return {
       configured:
         row.card_processor_config_secret !== null &&
         row.card_processor_config_secret !== undefined,
       encrypted: Number(row.card_processor_config_encrypted ?? 0) === 1,
+      ...(processorId ? { processorId } : {}),
+      ...(mode ? { mode } : {}),
+      ...(keyHint ? { keyHint } : {}),
     };
   }
 
@@ -1999,9 +2049,9 @@ export class StoreDatabase {
   ): void {
     this.connection
       .prepare(
-        'INSERT INTO kiosks (id,name,token_hash,admin_pin_hash,created_at) VALUES (?,?,?,?,?)',
+        'INSERT INTO kiosks (id,name,token_hash,admin_pin_hash,created_at,updated_at) VALUES (?,?,?,?,?,?)',
       )
-      .run(id, name, tokenHash, pinHash, now());
+      .run(id, name, tokenHash, pinHash, now(), now());
     this.enqueueEntity('kiosk', id);
   }
   getKioskAdminPinHash(id: string): string | null {
@@ -2049,9 +2099,9 @@ export class StoreDatabase {
   revokeKiosk(id: string): void {
     const result = this.connection
       .prepare(
-        'UPDATE kiosks SET revoked_at=? WHERE id=? AND revoked_at IS NULL',
+        'UPDATE kiosks SET revoked_at=?, updated_at=? WHERE id=? AND revoked_at IS NULL',
       )
-      .run(now(), id);
+      .run(now(), now(), id);
     if (result.changes === 0)
       throw new Error('Kiosk not found or already revoked');
     this.enqueueEntity('kiosk', id);
@@ -2326,15 +2376,7 @@ export class StoreDatabase {
         }
 
         const timestamp = now();
-        const receipt = Number(
-          (
-            this.connection
-              .prepare(
-                'SELECT COALESCE(MAX(receipt_number),0)+1 AS next FROM sales',
-              )
-              .get() as Row
-          ).next,
-        );
+        const receipt = this.nextReceiptNumber('sales');
 
         this.connection
           .prepare(
@@ -3194,12 +3236,7 @@ export class StoreDatabase {
           };
         });
         const calculation = calculateRefund(lineInputs);
-        const receiptRow = this.connection
-          .prepare(
-            'SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next FROM refunds',
-          )
-          .get() as Row;
-        const receiptNumber = Number(receiptRow.next);
+        const receiptNumber = this.nextReceiptNumber('refunds');
         this.connection
           .prepare(
             `INSERT INTO refunds (
@@ -3467,15 +3504,7 @@ export class StoreDatabase {
           externalApproved = 1;
         }
 
-        const receiptNumber = Number(
-          (
-            this.connection
-              .prepare(
-                'SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next FROM account_payments',
-              )
-              .get() as Row
-          ).next,
-        );
+        const receiptNumber = this.nextReceiptNumber('account_payments');
 
         this.connection
           .prepare(
@@ -3851,6 +3880,10 @@ export class StoreDatabase {
     if (!row) {
       return {
         storeId: null,
+        deviceId: null,
+        pullCursor: 0,
+        deviceReceiptPrefix: 1,
+        deviceReceiptPrefixClaimed: false,
         supabaseUrl: null,
         apiKeySecret: null,
         apiKeyEncrypted: false,
@@ -3862,6 +3895,13 @@ export class StoreDatabase {
     }
     return {
       storeId: row.store_id === null ? null : String(row.store_id),
+      deviceId:
+        row.device_id === null || row.device_id === undefined
+          ? null
+          : String(row.device_id),
+      pullCursor: Number(row.pull_cursor ?? 0),
+      deviceReceiptPrefix: Number(row.device_receipt_prefix ?? 1),
+      deviceReceiptPrefixClaimed: Boolean(row.device_receipt_prefix_claimed),
       supabaseUrl:
         row.supabase_url === null || row.supabase_url === undefined
           ? null
@@ -3893,6 +3933,98 @@ export class StoreDatabase {
       .prepare('UPDATE sync_settings SET store_id = ? WHERE singleton_id = 1')
       .run(id);
     return id;
+  }
+
+  ensureDeviceId(): string {
+    const existing = this.getSyncConfigRecord().deviceId;
+    if (existing) return existing;
+    const id = randomUUID();
+    this.connection
+      .prepare('UPDATE sync_settings SET device_id = ? WHERE singleton_id = 1')
+      .run(id);
+    return id;
+  }
+
+  setCloudStoreId(storeId: string): void {
+    this.connection
+      .prepare('UPDATE sync_settings SET store_id = ? WHERE singleton_id = 1')
+      .run(storeId);
+  }
+
+  setDeviceReceiptPrefix(prefix: number): void {
+    if (!Number.isInteger(prefix) || prefix < 1 || prefix > 8999)
+      throw new Error('Invalid device receipt prefix.');
+    this.connection
+      .prepare(
+        `UPDATE sync_settings
+         SET device_receipt_prefix = ?, device_receipt_prefix_claimed = 1
+         WHERE singleton_id = 1`,
+      )
+      .run(prefix);
+  }
+
+  validateReceiptPrefix(prefix: number): void {
+    if (!Number.isInteger(prefix) || prefix < 1 || prefix > 8999)
+      throw new Error('Invalid device receipt prefix.');
+    const rangeStart = prefix === 1 ? 1 : prefix * 1_000_000;
+    const rangeEnd = prefix === 1 ? 999_999 : rangeStart + 999_999;
+    for (const table of ['sales', 'refunds', 'account_payments'] as const) {
+      const row = this.connection
+        .prepare(
+          `SELECT MAX(receipt_number) AS maximum FROM ${table}
+           WHERE receipt_number BETWEEN ? AND ?`,
+        )
+        .get(rangeStart, rangeEnd) as { maximum: number | null };
+      const maximum = row.maximum === null ? null : Number(row.maximum);
+      if (maximum !== null && maximum >= rangeEnd)
+        throw new Error(
+          prefix === 1
+            ? 'This store has exhausted the original receipt-number range and cannot use cloud sync on this device.'
+            : 'This device has exhausted its receipt-number range. A new device prefix is required.',
+        );
+    }
+  }
+
+  setPullCursor(cursor: number): void {
+    if (!Number.isInteger(cursor) || cursor < 0)
+      throw new Error('Invalid cloud sync cursor.');
+    this.connection
+      .prepare(
+        'UPDATE sync_settings SET pull_cursor = ? WHERE singleton_id = 1',
+      )
+      .run(cursor);
+  }
+
+  private nextReceiptNumber(table: 'sales' | 'refunds' | 'account_payments') {
+    const prefix = this.getSyncConfigRecord().deviceReceiptPrefix;
+    if (prefix === 1) {
+      const row = this.connection
+        .prepare(
+          `SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next
+           FROM ${table} WHERE receipt_number < 1000000`,
+        )
+        .get() as { next: number };
+      const next = Number(row.next);
+      if (next > 999_999)
+        throw new Error(
+          'This store has exhausted the original receipt-number range and cannot use cloud sync on this device.',
+        );
+      return next;
+    }
+    const start = prefix * 1_000_000;
+    const end = start + 999_999;
+    const row = this.connection
+      .prepare(
+        `SELECT COALESCE(MAX(receipt_number), ?) + 1 AS next
+         FROM ${table} WHERE receipt_number >= ? AND receipt_number <= ?`,
+      )
+      .get(start, start, end) as { next: number };
+    const next = Number(row.next);
+    if (next > end)
+      throw new Error(
+        'This device has exhausted its receipt-number range. A new device prefix is required.',
+      );
+    return next;
   }
 
   /** Persist cloud credentials and the enabled flag. The key is already
@@ -3948,6 +4080,201 @@ export class StoreDatabase {
       .run();
   }
 
+  applyPulledEvents(
+    events: ValidatedRestoreEvent[],
+    cursorOverride?: number,
+  ): void {
+    const counts = (): RestoreCounts => ({
+      settings: 0,
+      categories: 0,
+      products: 0,
+      customers: 0,
+      sales: 0,
+      accountPayments: 0,
+      paymentTransactions: 0,
+      inventoryMovements: 0,
+      ledgerEntries: 0,
+      auditEvents: 0,
+      kiosks: 0,
+      refunds: 0,
+    });
+    this.connection.transaction(() => {
+      let maximumCloudId = this.getSyncConfigRecord().pullCursor;
+      for (const event of events) {
+        const cloudId = event.cloudId ?? event.sequence;
+        maximumCloudId = Math.max(maximumCloudId, cloudId);
+        const applied = this.connection
+          .prepare('SELECT 1 FROM sync_applied_events WHERE event_id = ?')
+          .get(event.eventId);
+        if (applied) continue;
+
+        const pendingOwn = this.connection
+          .prepare('SELECT 1 FROM sync_outbox WHERE event_id = ?')
+          .get(event.eventId);
+        if (pendingOwn) {
+          this.connection
+            .prepare(
+              'INSERT INTO sync_applied_events (event_id, cloud_id, applied_at) VALUES (?, ?, ?)',
+            )
+            .run(event.eventId, cloudId, now());
+          continue;
+        }
+
+        if (event.operation === 'upsert') {
+          const payload = event.payload as Record<string, unknown>;
+          const incomingUpdatedAt = String(
+            payload.updatedAt ?? payload.createdAt ?? event.createdAt,
+          );
+          const local = this.localSyncVersion(event.entityType, event.entityId);
+          const localRevoked =
+            event.entityType === 'kiosk' && local?.revokedAt !== null;
+          const incomingRevoked =
+            event.entityType === 'kiosk' &&
+            payload.revokedAt !== null &&
+            payload.revokedAt !== undefined;
+          const incomingWins =
+            incomingRevoked && !localRevoked
+              ? true
+              : localRevoked && !incomingRevoked
+                ? false
+                : !local ||
+                  incomingUpdatedAt > local.updatedAt ||
+                  (incomingUpdatedAt === local.updatedAt &&
+                    event.eventId > (local.eventId ?? ''));
+          if (!incomingWins) {
+            this.recordSyncConflict(
+              event,
+              JSON.stringify(event.payload),
+              incomingUpdatedAt,
+              local?.updatedAt ?? incomingUpdatedAt,
+              'remote',
+            );
+            this.connection
+              .prepare(
+                'INSERT INTO sync_applied_events (event_id, cloud_id, applied_at) VALUES (?, ?, ?)',
+              )
+              .run(event.eventId, cloudId, now());
+            continue;
+          }
+          if (
+            local &&
+            this.hasLocalEntityEvent(event.entityType, event.entityId)
+          ) {
+            const localPayload = this.buildPayload(
+              event.entityType,
+              event.entityId,
+            );
+            if (localPayload) {
+              this.recordSyncConflict(
+                event,
+                JSON.stringify(localPayload),
+                local.updatedAt,
+                incomingUpdatedAt,
+                'local',
+              );
+            }
+          }
+        }
+
+        applyOne(this.connection, event, counts());
+        this.connection
+          .prepare(
+            'INSERT INTO sync_applied_events (event_id, cloud_id, applied_at) VALUES (?, ?, ?)',
+          )
+          .run(event.eventId, cloudId, now());
+      }
+      this.setPullCursor(Math.max(maximumCloudId, cursorOverride ?? 0));
+    })();
+  }
+
+  private localSyncVersion(
+    entityType: SyncEntityType,
+    entityId: string,
+  ): {
+    updatedAt: string;
+    eventId: string | null;
+    revokedAt: string | null;
+  } | null {
+    const table =
+      entityType === 'settings'
+        ? 'store_settings'
+        : entityType === 'category'
+          ? 'categories'
+          : entityType === 'product'
+            ? 'products'
+            : entityType === 'customer'
+              ? 'customers'
+              : entityType === 'kiosk'
+                ? 'kiosks'
+                : null;
+    if (!table) return null;
+    const row = this.connection
+      .prepare(
+        entityType === 'settings'
+          ? 'SELECT updated_at FROM store_settings WHERE singleton_id = 1'
+          : `SELECT updated_at FROM ${table} WHERE id = ?`,
+      )
+      .get(...(entityType === 'settings' ? [] : [entityId])) as Row | undefined;
+    if (!row) return null;
+    const revokedAt =
+      entityType === 'kiosk'
+        ? (
+            this.connection
+              .prepare('SELECT revoked_at FROM kiosks WHERE id = ?')
+              .get(entityId) as Row | undefined
+          )?.revoked_at
+        : null;
+    const latest = this.connection
+      .prepare(
+        'SELECT event_id FROM sync_outbox WHERE entity_type = ? AND entity_id = ? ORDER BY sequence DESC LIMIT 1',
+      )
+      .get(entityType, entityId) as { event_id?: string } | undefined;
+    return {
+      updatedAt: String(row.updated_at),
+      eventId: latest?.event_id ? String(latest.event_id) : null,
+      revokedAt:
+        revokedAt === null || revokedAt === undefined
+          ? null
+          : String(revokedAt),
+    };
+  }
+
+  private hasLocalEntityEvent(entityType: string, entityId: string): boolean {
+    return Boolean(
+      this.connection
+        .prepare(
+          'SELECT 1 FROM sync_outbox WHERE entity_type = ? AND entity_id = ? AND pushed_at IS NULL LIMIT 1',
+        )
+        .get(entityType, entityId),
+    );
+  }
+
+  private recordSyncConflict(
+    event: ValidatedRestoreEvent,
+    losingPayloadJson: string,
+    losingUpdatedAt: string,
+    winningUpdatedAt: string,
+    source: 'local' | 'remote',
+  ): void {
+    this.connection
+      .prepare(
+        `INSERT INTO sync_conflicts
+          (id, entity_type, entity_id, losing_payload_json, losing_updated_at,
+           winning_updated_at, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        event.entityType,
+        event.entityId,
+        losingPayloadJson,
+        losingUpdatedAt,
+        winningUpdatedAt,
+        source,
+        now(),
+      );
+  }
+
   /** Sanitised status for the renderer: no secrets, just counts and hints. */
   getSyncStatus(): SyncStatus {
     const record = this.getSyncConfigRecord();
@@ -3990,6 +4317,16 @@ export class StoreDatabase {
 
   syncOutboxMaxSequence(): number {
     return maxOutboxSequence(this.connection);
+  }
+
+  hasPushedSyncEvents(): boolean {
+    return Boolean(
+      this.connection
+        .prepare(
+          'SELECT 1 FROM sync_outbox WHERE pushed_at IS NOT NULL LIMIT 1',
+        )
+        .get(),
+    );
   }
 
   /** Every outbox event in sequence order (used by tests to seed a fake cloud). */
@@ -4361,19 +4698,29 @@ export class StoreDatabase {
 
   private buildKioskPayload(id: string): KioskPayload | null {
     const row = this.connection
-      .prepare('SELECT id,name,created_at,revoked_at FROM kiosks WHERE id = ?')
+      .prepare(
+        'SELECT id,name,created_at,updated_at,revoked_at FROM kiosks WHERE id = ?',
+      )
       .get(id) as Row | undefined;
     if (!row) return null;
     return {
       id: String(row.id),
       name: String(row.name),
       createdAt: String(row.created_at),
+      updatedAt:
+        row.updated_at === null || row.updated_at === undefined
+          ? String(row.created_at)
+          : String(row.updated_at),
       revokedAt: row.revoked_at === null ? null : String(row.revoked_at),
     };
   }
 
   private buildSettingsPayload(): SettingsPayload {
-    return this.getSettings();
+    const settings = this.getSettings();
+    const row = this.connection
+      .prepare('SELECT updated_at FROM store_settings WHERE singleton_id = 1')
+      .get() as { updated_at: string };
+    return { ...settings, updatedAt: String(row.updated_at) };
   }
 
   private buildCategoryPayload(id: string): CategoryPayload {

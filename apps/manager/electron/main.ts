@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import dgram from 'node:dgram';
 import {
   copyFile,
   mkdir,
@@ -43,6 +44,9 @@ import {
   dailyReportPrintInputSchema,
   deviceSettingsSchema,
   inventoryMovementInputSchema,
+  KIOSK_DISCOVERY_PORT,
+  KIOSK_DISCOVERY_PROTOCOL_VERSION,
+  encodeKioskDiscoveryBeacon,
   isHttpsUpdateFeedUrl,
   labelPrintRequestSchema,
   labelsHtml,
@@ -70,7 +74,12 @@ import {
   staffUpdateInputSchema,
 } from '@shul-store/shared';
 import {
+  processorConnectionConfigSchema,
+  testProcessorConnection,
+} from '@shul-store/payments';
+import {
   maskApiKey,
+  AccountSupabaseTransport,
   PlaintextSyncSecretStore,
   restoreFromCloud,
   SupabaseTransport,
@@ -104,6 +113,8 @@ let engine: SyncEngine | null = null;
 let secretStore: SecretStore = new PlaintextSyncSecretStore();
 let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
+let kioskDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
+const kioskDiscoverySockets = new Set<dgram.Socket>();
 let databasePath = '';
 let session: ManagerSession;
 let idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -125,6 +136,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'updates:getState': 'public',
   'kiosk:getSettings': 'owner',
   'kiosk:pairCode': 'owner',
+  'kiosk:startDiscovery': 'owner',
+  'kiosk:stopDiscovery': 'owner',
   'kiosk:revoke': 'owner',
   'kiosk:setServer': 'owner',
   'payments:initiateCharge': 'checkout',
@@ -135,10 +148,12 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'payments:resolveNeedsAttention': 'owner',
   'categories:list': 'public',
   'categories:create': 'products.edit',
+  'categories:createInline': 'create_category',
   'categories:update': 'products.edit',
   'categories:setActive': 'products.edit',
   'products:list': 'public',
   'products:create': 'products.edit',
+  'products:createDuringSale': 'create_product_during_sale',
   'products:update': 'products.edit',
   'products:setActive': 'products.edit',
   'products:generateBarcode': 'products.edit',
@@ -148,8 +163,10 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'settings:update': 'owner',
   'settings:getDevice': 'owner',
   'settings:updateDevice': 'owner',
+  'settings:dismissExplanation': 'public',
   'settings:setProcessorConfig': 'owner',
   'settings:getProcessorConfigStatus': 'owner',
+  'settings:testProcessorConnection': 'owner',
   'settings:listPrinters': 'owner',
   'labels:render': 'products.edit',
   'labels:print': 'products.edit',
@@ -221,6 +238,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'cloudAccount:linkHint': 'public',
   'cloudAccount:checkout': 'owner',
   'cloudAccount:portal': 'owner',
+  'cloudAccount:lookupBarcodeSuggestion': 'public',
+  'cloudAccount:shareBarcodeSuggestion': 'public',
   'staff:list': 'owner',
   'staff:create': 'owner',
   'staff:update': 'owner',
@@ -447,23 +466,76 @@ function recreateSyncEngine(): void {
   engine?.stop();
   engine = null;
   const config = database.getSyncConfigRecord();
-  if (
-    !config.enabled ||
-    !config.storeId ||
-    !config.supabaseUrl ||
-    !config.apiKeySecret
-  ) {
-    return;
+  let transport: SupabaseTransport | AccountSupabaseTransport;
+  if (cloudAccount?.isAccountSyncConfigured() && config.storeId) {
+    const accountConfig = cloudAccount.getCachedSupabaseConfig();
+    if (config.enabled && accountConfig) {
+      // The account transport reads its token lazily on the first cycle.
+      // Configuration is already cached in the main process.
+      transport = new AccountSupabaseTransport({
+        supabaseUrl: accountConfig.supabaseUrl,
+        anonKey: accountConfig.supabaseAnonKey,
+        deviceId: config.deviceId ?? '',
+        getAccessToken: (force) => cloudAccount.getAccessToken(force),
+      });
+    } else {
+      return;
+    }
+  } else {
+    if (
+      !config.enabled ||
+      !config.storeId ||
+      !config.supabaseUrl ||
+      !config.apiKeySecret
+    )
+      return;
+    const apiKey = secretStore.decrypt(config.apiKeySecret);
+    transport = new SupabaseTransport({
+      supabaseUrl: config.supabaseUrl,
+      apiKey,
+    });
   }
-  const apiKey = secretStore.decrypt(config.apiKeySecret);
-  const transport = new SupabaseTransport({
-    supabaseUrl: config.supabaseUrl,
-    apiKey,
-  });
   engine = new SyncEngine(database, transport, {
     canSync: () => cloudAccount?.isSyncAllowed() ?? true,
   });
   engine.start();
+}
+
+async function configureAccountStore(storeId: string): Promise<void> {
+  const local = database.getSyncConfigRecord();
+  if (
+    local.storeId &&
+    local.storeId !== storeId &&
+    database.hasPushedSyncEvents()
+  )
+    throw new Error(
+      'This PC already contains data linked to a different cloud store.',
+    );
+  database.setCloudStoreId(storeId);
+  database.ensureDeviceId();
+  database.setSyncEnabled(true);
+  const config = await cloudAccount.getSupabaseConfig();
+  const transport = new AccountSupabaseTransport({
+    supabaseUrl: config.supabaseUrl,
+    anonKey: config.supabaseAnonKey,
+    deviceId: database.ensureDeviceId(),
+    getAccessToken: (force) => cloudAccount.getAccessToken(force),
+  });
+  const prefixAlreadyAssigned =
+    local.storeId === storeId &&
+    local.deviceReceiptPrefixClaimed &&
+    local.deviceReceiptPrefix > 0;
+  if (!prefixAlreadyAssigned) {
+    const prefix = await transport.claimDevicePrefix(
+      storeId,
+      database.ensureDeviceId(),
+    );
+    database.validateReceiptPrefix(prefix);
+    database.setDeviceReceiptPrefix(prefix);
+  }
+  if (database.isRestoreAllowed())
+    await restoreFromCloud(database, transport, storeId);
+  recreateSyncEngine();
 }
 const idSchema = z.string().uuid();
 function lanIpv4Addresses(): string[] {
@@ -475,6 +547,57 @@ function lanIpv4Addresses(): string[] {
         .map((entry) => entry.address),
     ),
   ];
+}
+
+function ipv4Broadcast(address: string, netmask: string): string {
+  const ip = address.split('.').map(Number);
+  const mask = netmask.split('.').map(Number);
+  return ip.map((part, index) => part | (~mask[index]! & 255)).join('.');
+}
+
+function stopKioskDiscovery(): void {
+  if (kioskDiscoveryTimer) clearInterval(kioskDiscoveryTimer);
+  kioskDiscoveryTimer = null;
+  for (const socket of kioskDiscoverySockets) socket.close();
+  kioskDiscoverySockets.clear();
+}
+
+function startKioskDiscovery(): void {
+  stopKioskDiscovery();
+  const interfaces = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal && entry.family === 'IPv4');
+  const sendBeacon = () => {
+    const storeName = database.getSettings().storeName;
+    const port = database.getKioskServerSettings().port;
+    for (const entry of interfaces) {
+      const socket = dgram.createSocket('udp4');
+      kioskDiscoverySockets.add(socket);
+      socket.once('error', () => {
+        socket.close();
+        kioskDiscoverySockets.delete(socket);
+      });
+      socket.bind(0, entry.address, () => {
+        socket.setBroadcast(true);
+        socket.send(
+          encodeKioskDiscoveryBeacon({
+            protocolVersion: KIOSK_DISCOVERY_PROTOCOL_VERSION,
+            storeName,
+            host: entry.address,
+            httpPort: port,
+          }),
+          KIOSK_DISCOVERY_PORT,
+          ipv4Broadcast(entry.address, entry.netmask),
+          () => {
+            socket.close();
+            kioskDiscoverySockets.delete(socket);
+          },
+        );
+      });
+    }
+  };
+  sendBeacon();
+  kioskDiscoveryTimer = setInterval(sendBeacon, 2000);
 }
 const imageTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -570,6 +693,21 @@ function registerIpc(): void {
   ipcMain.handle('cloudAccount:linkHint', () => cloudAccount.linkHint());
   ipcMain.handle('cloudAccount:checkout', () => cloudAccount.checkout());
   ipcMain.handle('cloudAccount:portal', () => cloudAccount.portal());
+  ipcMain.handle('cloudAccount:lookupBarcodeSuggestion', (_event, barcode) =>
+    cloudAccount
+      .lookupBarcodeSuggestion(z.string().trim().min(1).max(100).parse(barcode))
+      .catch(() => null),
+  );
+  ipcMain.handle(
+    'cloudAccount:shareBarcodeSuggestion',
+    (_event, barcode, name) =>
+      cloudAccount
+        .shareBarcodeSuggestion(
+          z.string().trim().min(1).max(100).parse(barcode),
+          z.string().trim().min(1).max(200).parse(name),
+        )
+        .catch(() => null),
+  );
   ipcMain.handle('staff:list', () => database.listStaffAccounts());
   ipcMain.handle('staff:create', (_event, input) =>
     database.createStaff(staffCreateInputSchema.parse(input)),
@@ -604,8 +742,12 @@ function registerIpc(): void {
   });
   ipcMain.handle('kiosk:pairCode', () => {
     if (!kioskServer) throw new Error('Enable Kiosk server first');
-    return kioskServer.newPairingCode();
+    const code = kioskServer.newPairingCode();
+    startKioskDiscovery();
+    return code;
   });
+  ipcMain.handle('kiosk:startDiscovery', () => startKioskDiscovery());
+  ipcMain.handle('kiosk:stopDiscovery', () => stopKioskDiscovery());
   ipcMain.handle('kiosk:revoke', (_e, id) =>
     database.revokeKiosk(idSchema.parse(id)),
   );
@@ -680,6 +822,9 @@ function registerIpc(): void {
   ipcMain.handle('categories:create', (_event, input) =>
     database.createCategory(categoryInputSchema.parse(input)),
   );
+  ipcMain.handle('categories:createInline', (_event, input) =>
+    database.createCategory(categoryInputSchema.parse(input)),
+  );
   ipcMain.handle('categories:update', (_event, id, input) =>
     database.updateCategory(
       idSchema.parse(id),
@@ -696,6 +841,25 @@ function registerIpc(): void {
   );
   ipcMain.handle('products:create', (_event, input) =>
     database.createProduct(productInputSchema.parse(input)),
+  );
+  ipcMain.handle(
+    'products:createDuringSale',
+    (_event, input, openingStock: unknown) => {
+      const quantity = z
+        .number()
+        .int()
+        .positive()
+        .max(1_000_000)
+        .parse(openingStock);
+      const product = database.createProduct(productInputSchema.parse(input));
+      database.addInventoryMovement({
+        productId: product.id,
+        quantityChange: quantity,
+        reason: 'stock_received',
+        notes: 'Opening stock for product added during sale',
+      });
+      return database.getProduct(product.id);
+    },
   );
   ipcMain.handle('products:update', (_event, id, input) =>
     database.updateProduct(idSchema.parse(id), productInputSchema.parse(input)),
@@ -728,6 +892,10 @@ function registerIpc(): void {
     if (app.isPackaged) configureAutoUpdater(updated);
     return updated;
   });
+  ipcMain.handle('settings:dismissExplanation', (_event, id) => {
+    const explanationId = z.string().trim().min(1).max(100).parse(id);
+    return database.dismissDeviceExplanation(explanationId);
+  });
   ipcMain.handle('settings:setProcessorConfig', (_event, input) =>
     database.setCardProcessorConfigJson(
       processorConfigInputSchema.parse(input),
@@ -736,6 +904,10 @@ function registerIpc(): void {
   ipcMain.handle('settings:getProcessorConfigStatus', () =>
     database.getCardProcessorConfigStatus(),
   );
+  ipcMain.handle('settings:testProcessorConnection', async (_event, input) => {
+    const config = processorConnectionConfigSchema.parse(input);
+    return testProcessorConnection(config);
+  });
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
 
   ipcMain.handle('labels:render', (_event, input) =>
@@ -1386,6 +1558,16 @@ app.whenReady().then(async () => {
         config.enabled && config.supabaseUrl && config.apiKeySecret,
       );
     },
+    {
+      getLocalStoreIdentity: () => {
+        const config = database.getSyncConfigRecord();
+        return {
+          storeId: config.storeId,
+          hasPushedEvents: database.hasPushedSyncEvents(),
+        };
+      },
+      onStoreIdentity: configureAccountStore,
+    },
   );
   cloudAccount.subscribe((state) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -1401,6 +1583,15 @@ app.whenReady().then(async () => {
     backupDirectory,
     imageDirectory,
   });
+  const savedStoreId = await cloudAccount.getStoreId();
+  if (savedStoreId && (await cloudAccount.getState()).signedIn) {
+    void configureAccountStore(savedStoreId).catch(() => {
+      database.recordSyncResult(
+        false,
+        'Cloud sync could not be configured on startup.',
+      );
+    });
+  }
   session = new ManagerSession(database, () => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed())

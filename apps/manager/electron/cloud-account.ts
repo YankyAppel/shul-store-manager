@@ -5,7 +5,10 @@ import type {
   CloudEntitlement,
   SecretStore,
 } from '@shul-store/shared';
-import { cloudEntitlementSchema } from '@shul-store/shared';
+import {
+  cloudEntitlementSchema,
+  type BarcodeSuggestion,
+} from '@shul-store/shared';
 
 const SITE_URL = 'https://skvershul.softhere.work';
 const GRACE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -17,6 +20,7 @@ interface Stored {
   siteUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
+  storeId: string | null;
   email: string | null;
   accessToken: string | null;
   refreshToken: string | null;
@@ -26,6 +30,14 @@ interface Stored {
   entitlementOffline: boolean;
 }
 
+export interface CloudAccountHooks {
+  getLocalStoreIdentity?: () => {
+    storeId: string | null;
+    hasPushedEvents: boolean;
+  };
+  onStoreIdentity?: (storeId: string) => Promise<void>;
+}
+
 function initial(): Stored {
   return {
     accountStarted: false,
@@ -33,6 +45,7 @@ function initial(): Stored {
     siteUrl: SITE_URL,
     supabaseUrl: '',
     supabaseAnonKey: '',
+    storeId: null,
     email: null,
     accessToken: null,
     refreshToken: null,
@@ -55,6 +68,7 @@ export class CloudAccountManager {
     private readonly fetchImpl: FetchImpl = globalThis.fetch,
     private readonly openExternal?: (url: string) => Promise<void>,
     private readonly hasLegacySync?: () => boolean,
+    private readonly hooks: CloudAccountHooks = {},
   ) {}
 
   async load(): Promise<void> {
@@ -158,7 +172,7 @@ export class CloudAccountManager {
     await this.save();
   }
 
-  private async config(): Promise<CloudAccountConfig> {
+  async getSupabaseConfig(): Promise<CloudAccountConfig> {
     await this.load();
     if (this.stored.supabaseUrl && this.stored.supabaseAnonKey)
       return this.stored;
@@ -179,12 +193,45 @@ export class CloudAccountManager {
     return this.stored;
   }
 
+  getCachedSupabaseConfig(): CloudAccountConfig | null {
+    if (!this.stored.supabaseUrl || !this.stored.supabaseAnonKey) return null;
+    return this.stored;
+  }
+
+  isAccountSyncConfigured(): boolean {
+    return Boolean(
+      this.stored.accountStarted &&
+      this.stored.accessToken &&
+      this.stored.storeId,
+    );
+  }
+
+  async getAccessToken(forceRefresh = false): Promise<string> {
+    await this.load();
+    if (!this.stored.accessToken) throw new Error('Please sign in first.');
+    if (forceRefresh || (this.stored.expiresAt ?? 0) - Date.now() < 60_000) {
+      try {
+        await this.refreshToken();
+      } catch {
+        await this.signOut();
+        throw new Error('Your session expired. Please sign in again.');
+      }
+    }
+    if (!this.stored.accessToken) throw new Error('Please sign in first.');
+    return this.stored.accessToken;
+  }
+
+  async getStoreId(): Promise<string | null> {
+    await this.load();
+    return this.stored.storeId;
+  }
+
   private async auth(
     pathname: string,
     body: Record<string, string>,
     isSignUp = false,
   ): Promise<boolean> {
-    const config = await this.config();
+    const config = await this.getSupabaseConfig();
     const response = await this.fetchImpl(
       `${config.supabaseUrl}/auth/v1/${pathname}`,
       {
@@ -249,7 +296,27 @@ export class CloudAccountManager {
     return this.publish();
   }
   private async afterSignIn(): Promise<void> {
-    await this.request('/api/store/account', 'POST', {});
+    const local = this.hooks.getLocalStoreIdentity?.();
+    const body =
+      local?.storeId && local.hasPushedEvents
+        ? { adopt_store_id: local.storeId }
+        : {};
+    const response = await this.request('/api/store/account', 'POST', body);
+    const value = (await response.json()) as {
+      account?: { store_id?: unknown };
+    };
+    const storeId =
+      typeof value.account?.store_id === 'string'
+        ? value.account.store_id
+        : null;
+    if (!storeId) throw new Error('The cloud store identity is unavailable.');
+    this.stored.storeId = storeId;
+    await this.save();
+    if (local?.storeId && local.storeId !== storeId && !local.hasPushedEvents)
+      throw new Error(
+        'This PC is linked to a different cloud store and cannot be merged.',
+      );
+    if (this.hooks.onStoreIdentity) await this.hooks.onStoreIdentity(storeId);
     await this.fetchEntitlement();
   }
   private async refreshToken(): Promise<void> {
@@ -257,7 +324,7 @@ export class CloudAccountManager {
       throw new Error('Your session expired. Please sign in again.');
     if (this.refreshPromise) return this.refreshPromise;
     this.refreshPromise = (async () => {
-      const config = await this.config();
+      const config = await this.getSupabaseConfig();
       const response = await this.fetchImpl(
         `${config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,
         {
@@ -292,15 +359,7 @@ export class CloudAccountManager {
     body?: unknown,
   ): Promise<Response> {
     await this.load();
-    if (!this.stored.accessToken) throw new Error('Please sign in first.');
-    if ((this.stored.expiresAt ?? 0) - Date.now() < 60_000) {
-      try {
-        await this.refreshToken();
-      } catch {
-        await this.signOut();
-        throw new Error('Your session expired. Please sign in again.');
-      }
-    }
+    await this.getAccessToken();
     const send = () =>
       this.fetchImpl(`${this.stored.siteUrl}${endpoint}`, {
         method,
@@ -388,5 +447,32 @@ export class CloudAccountManager {
     const body = (await value.json()) as { url?: string };
     if (body.url && this.openExternal) await this.openExternal(body.url);
     await this.refresh(true);
+  }
+
+  async lookupBarcodeSuggestion(
+    barcode: string,
+  ): Promise<BarcodeSuggestion | null> {
+    const response = await this.request(
+      `/api/store/barcode-catalog?barcode=${encodeURIComponent(barcode)}`,
+      'GET',
+    );
+    const value = (await response.json()) as {
+      suggestion?: BarcodeSuggestion | null;
+    };
+    return value.suggestion ?? null;
+  }
+
+  async shareBarcodeSuggestion(
+    barcode: string,
+    name: string,
+  ): Promise<BarcodeSuggestion | null> {
+    const response = await this.request('/api/store/barcode-catalog', 'POST', {
+      barcode,
+      name,
+    });
+    const value = (await response.json()) as {
+      suggestion?: BarcodeSuggestion | null;
+    };
+    return value.suggestion ?? null;
   }
 }

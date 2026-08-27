@@ -58,6 +58,8 @@ const api: StoreApi = {
     revoke: (id) => ipcRenderer.invoke('kiosk:revoke', id),
     setServer: (enabled, port) =>
       ipcRenderer.invoke('kiosk:setServer', enabled, port),
+    startDiscovery: () => ipcRenderer.invoke('kiosk:startDiscovery'),
+    stopDiscovery: () => ipcRenderer.invoke('kiosk:stopDiscovery'),
   },
   payments: {
     initiateCharge: (input) =>
@@ -82,6 +84,8 @@ const api: StoreApi = {
     list: (includeInactive) =>
       ipcRenderer.invoke('categories:list', includeInactive),
     create: (input) => ipcRenderer.invoke('categories:create', input),
+    createInline: (input) =>
+      ipcRenderer.invoke('categories:createInline', input),
     update: (id, input) => ipcRenderer.invoke('categories:update', id, input),
     setActive: (id, active) =>
       ipcRenderer.invoke('categories:setActive', id, active),
@@ -90,6 +94,8 @@ const api: StoreApi = {
     list: (includeInactive) =>
       ipcRenderer.invoke('products:list', includeInactive),
     create: (input) => ipcRenderer.invoke('products:create', input),
+    createDuringSale: (input, openingStock) =>
+      ipcRenderer.invoke('products:createDuringSale', input, openingStock),
     update: (id, input) => ipcRenderer.invoke('products:update', id, input),
     setActive: (id, active) =>
       ipcRenderer.invoke('products:setActive', id, active),
@@ -105,10 +111,14 @@ const api: StoreApi = {
     update: (input) => ipcRenderer.invoke('settings:update', input),
     getDevice: () => ipcRenderer.invoke('settings:getDevice'),
     updateDevice: (input) => ipcRenderer.invoke('settings:updateDevice', input),
+    dismissExplanation: (id) =>
+      ipcRenderer.invoke('settings:dismissExplanation', id),
     setProcessorConfig: (input) =>
       ipcRenderer.invoke('settings:setProcessorConfig', input),
     getProcessorConfigStatus: () =>
       ipcRenderer.invoke('settings:getProcessorConfigStatus'),
+    testProcessorConnection: (input) =>
+      ipcRenderer.invoke('settings:testProcessorConnection', input),
     listPrinters: () => ipcRenderer.invoke('settings:listPrinters'),
   },
   checkout: {
@@ -200,6 +210,10 @@ const api: StoreApi = {
     linkHint: () => ipcRenderer.invoke('cloudAccount:linkHint'),
     checkout: () => ipcRenderer.invoke('cloudAccount:checkout'),
     portal: () => ipcRenderer.invoke('cloudAccount:portal'),
+    lookupBarcodeSuggestion: (barcode) =>
+      ipcRenderer.invoke('cloudAccount:lookupBarcodeSuggestion', barcode),
+    shareBarcodeSuggestion: (barcode, name) =>
+      ipcRenderer.invoke('cloudAccount:shareBarcodeSuggestion', barcode, name),
     subscribe: (listener) => {
       const handler = (
         _event: Electron.IpcRendererEvent,

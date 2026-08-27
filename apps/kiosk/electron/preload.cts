@@ -2,12 +2,19 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   KioskApi,
   KioskCartLine,
+  KioskCloudSignInInput,
   KioskPairInput,
 } from '@shul-store/shared';
 
 const api: KioskApi = {
   getState: () => ipcRenderer.invoke('kiosk:getState'),
   pair: (input: KioskPairInput) => ipcRenderer.invoke('kiosk:pair', input),
+  cloudSignIn: (input: KioskCloudSignInInput) =>
+    ipcRenderer.invoke('kiosk:cloudSignIn', input),
+  cloudSignUp: (input: KioskCloudSignInInput) =>
+    ipcRenderer.invoke('kiosk:cloudSignUp', input),
+  startDiscovery: () => ipcRenderer.invoke('kiosk:startDiscovery'),
+  stopDiscovery: () => ipcRenderer.invoke('kiosk:stopDiscovery'),
   refreshCatalog: () => ipcRenderer.invoke('kiosk:refreshCatalog'),
   priceCart: (lines: KioskCartLine[]) =>
     ipcRenderer.invoke('kiosk:priceCart', lines),

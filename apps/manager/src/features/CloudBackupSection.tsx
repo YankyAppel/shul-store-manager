@@ -317,7 +317,10 @@ function SyncStatusDisplay({
       </div>
       {config.storeId && (
         <div>
-          <strong>Store ID:</strong> <code>{config.storeId}</code>
+          <strong>Store ID:</strong>{' '}
+          <span className="detected-value">
+            Detected: <code>{config.storeId}</code> (change)
+          </span>
         </div>
       )}
       <div>

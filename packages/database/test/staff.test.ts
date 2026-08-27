@@ -95,8 +95,26 @@ describe('staff accounts', () => {
       pin: '5678',
       permissions: ['checkout', 'refunds'],
     });
-    expect(store.staffPermissions(owner.id)).toContain('reports.close');
+    expect(store.staffPermissions(owner.id)).toEqual(
+      expect.arrayContaining([
+        'reports.close',
+        'create_product_during_sale',
+        'create_category',
+      ]),
+    );
     expect(store.staffPermissions(cashier.id)).toEqual(['checkout', 'refunds']);
+  });
+
+  it('leaves inline creation permissions off for new cashiers', () => {
+    const cashier = store.createStaff({
+      name: 'Cashier',
+      role: 'cashier',
+      pin: '5678',
+    });
+    expect(store.staffPermissions(cashier.id)).not.toContain(
+      'create_product_during_sale',
+    );
+    expect(store.staffPermissions(cashier.id)).not.toContain('create_category');
   });
 
   it('preserves staff-mode-off compatibility', () => {

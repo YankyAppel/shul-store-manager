@@ -12,14 +12,17 @@ import { CloudBackupSection } from './CloudBackupSection';
 import { CloudAccountSection } from './CloudAccountSection';
 import { LocalBackupSection } from './LocalBackupSection';
 import { StaffSection } from './StaffSection';
+import { Explain } from '../components/Explain';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
   const [deviceSettings, setDeviceSettings] = useState<DeviceSettings>();
   const [processorStatus, setProcessorStatus] =
     useState<ProcessorConfigStatus>();
-  const [processorDraft, setProcessorDraft] = useState('');
+  const [processorKey, setProcessorKey] = useState('');
+  const [processorMode, setProcessorMode] = useState<'test' | 'live'>('test');
   const [processorMessage, setProcessorMessage] = useState('');
+  const [testingProcessor, setTestingProcessor] = useState(false);
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
@@ -38,6 +41,13 @@ export function SettingsScreen() {
       setSettings(store);
       setDeviceSettings(device);
       setProcessorStatus(processor);
+      if (processor.processorId)
+        setSettings((current) =>
+          current
+            ? { ...current, cardProcessorId: processor.processorId! }
+            : current,
+        );
+      if (processor.mode) setProcessorMode(processor.mode);
     });
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
@@ -61,11 +71,16 @@ export function SettingsScreen() {
     setTimeout(() => setSaved(false), 3000);
   }
 
-  async function saveProcessorConfig(value: string | null) {
+  async function saveProcessorConfig() {
     try {
-      const status = await window.storeApi.settings.setProcessorConfig(value);
+      const next = JSON.stringify({
+        processorId: settings!.cardProcessorId,
+        apiKey: processorKey,
+        mode: processorMode,
+      });
+      const status = await window.storeApi.settings.setProcessorConfig(next);
       setProcessorStatus(status);
-      setProcessorDraft('');
+      setProcessorKey('');
       setProcessorMessage(
         status.configured
           ? 'Processor configuration replaced.'
@@ -73,6 +88,35 @@ export function SettingsScreen() {
       );
     } catch (error) {
       setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function clearProcessorConfig() {
+    try {
+      setProcessorStatus(
+        await window.storeApi.settings.setProcessorConfig(null),
+      );
+      setProcessorKey('');
+      setProcessorMessage('Processor configuration cleared.');
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function testProcessor() {
+    setTestingProcessor(true);
+    try {
+      const result = await window.storeApi.settings.testProcessorConnection({
+        processorId: (settings!.cardProcessorId || 'other') as
+          'sola' | 'cardknox' | 'usaepay' | 'other',
+        apiKey: processorKey,
+        mode: processorMode,
+      });
+      setProcessorMessage(result.message);
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    } finally {
+      setTestingProcessor(false);
     }
   }
 
@@ -126,12 +170,25 @@ export function SettingsScreen() {
         <div className="form-grid">
           <label>
             Currency
-            <select value="USD" disabled>
+            <div className="detected-value">
+              Detected: USD{' '}
+              <button type="button" onClick={() => undefined}>
+                (change)
+              </button>
+            </div>
+            <select value="USD" disabled aria-label="Currency">
               <option>USD</option>
             </select>
           </label>
           <label>
             Tax rate (%)
+            <Explain
+              id="tax"
+              sentence="This is the sales tax added to taxable products."
+            >
+              Enter the tax rate your shul must charge so receipts and totals
+              are correct.
+            </Explain>
             <input
               type="number"
               min="0"
@@ -157,8 +214,22 @@ export function SettingsScreen() {
           />{' '}
           Displayed prices include tax
         </label>
+        <Explain
+          id="prices-include-tax"
+          sentence="Turn this on when the prices you show already include tax."
+        >
+          When this is on, the shelf and checkout price already contains the
+          tax; when it is off, tax is added at checkout.
+        </Explain>
         <label>
           Receipt footer
+          <Explain
+            id="receipt-footer"
+            sentence="This is the message printed at the bottom of every receipt."
+          >
+            Add a short thank-you, return policy, phone number, or other note
+            for customers to see on their receipt.
+          </Explain>
           <textarea
             rows={3}
             value={settings.receiptFooter}
@@ -274,6 +345,17 @@ export function SettingsScreen() {
         <div className="form-grid">
           <label>
             Receipt / statement printer
+            {settings.receiptPrinterName === null &&
+              printers.find((printer) => printer.isDefault) && (
+                <div className="detected-value">
+                  Detected:{' '}
+                  {printers.find((printer) => printer.isDefault)?.displayName ||
+                    printers.find((printer) => printer.isDefault)?.name}{' '}
+                  <button type="button" onClick={() => undefined}>
+                    (change)
+                  </button>
+                </div>
+              )}
             <select
               value={settings.receiptPrinterName ?? ''}
               onChange={(e) =>
@@ -440,10 +522,16 @@ export function SettingsScreen() {
       />
       <div className="settings-form">
         <h3 style={{ margin: '0 0 4px 0' }}>Card processing</h3>
+        <Explain
+          id="processor-setup"
+          sentence="This connects the manager to the card processor you use."
+        >
+          Card processing is optional. Your processor settings stay on this
+          computer and are never shared with the cloud.
+        </Explain>
         <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
-          Enable integrated credit card processing. Real processors (Sola, First
-          Choice, Donary) will be added later; currently, the Simulated
-          processor is available for testing/training.
+          Test the connection with a small sandbox authorization. It is voided
+          immediately and is not a customer charge.
         </p>
 
         <label className="toggle">
@@ -453,9 +541,8 @@ export function SettingsScreen() {
             onChange={(e) => {
               const enabled = e.target.checked;
               const next = { ...settings, cardProcessingEnabled: enabled };
-              if (enabled && !next.cardProcessorId) {
+              if (enabled && !next.cardProcessorId)
                 next.cardProcessorId = 'simulated';
-              }
               setSettings(next);
             }}
           />
@@ -477,22 +564,35 @@ export function SettingsScreen() {
                 }}
               >
                 <option value="">None</option>
-                <option value="simulated">
-                  Simulated card processor (testing)
-                </option>
+                <option value="simulated">Simulated (training)</option>
+                <option value="sola">Sola</option>
+                <option value="cardknox">Cardknox</option>
+                <option value="usaepay">USAePay</option>
+                <option value="other">Other (request)</option>
               </select>
             </label>
-
-            {settings.cardProcessorId === 'simulated' && (
-              <label>
-                Replace processor configuration (JSON)
-                <textarea
-                  value={processorDraft}
-                  onChange={(e) => setProcessorDraft(e.target.value)}
-                  placeholder='{"apiKey":"..."}'
-                />
-              </label>
-            )}
+            <label>
+              Processor key
+              <input
+                type="password"
+                value={processorKey}
+                onChange={(e) => setProcessorKey(e.target.value)}
+                placeholder={processorStatus.keyHint || 'Enter key on this PC'}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Mode
+              <select
+                value={processorMode}
+                onChange={(e) =>
+                  setProcessorMode(e.target.value as 'test' | 'live')
+                }
+              >
+                <option value="test">Test</option>
+                <option value="live">Live</option>
+              </select>
+            </label>
             <p style={{ color: '#66766d', fontSize: '13px' }}>
               {processorStatus.configured
                 ? processorStatus.encrypted
@@ -501,24 +601,37 @@ export function SettingsScreen() {
                 : 'Not configured'}
             </p>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <button
-                type="button"
-                onClick={() => void saveProcessorConfig(processorDraft)}
-                disabled={!processorDraft.trim()}
-              >
-                Replace processor configuration
-              </button>
               {processorStatus.configured && (
                 <button
                   type="button"
                   onClick={() => {
-                    setProcessorDraft('');
-                    void saveProcessorConfig(null);
+                    setProcessorKey('');
+                    void clearProcessorConfig();
                   }}
                 >
                   Clear configuration
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => void saveProcessorConfig()}
+                disabled={
+                  !processorKey.trim() || settings.cardProcessorId === 'other'
+                }
+              >
+                Save processor key
+              </button>
+              <button
+                type="button"
+                onClick={() => void testProcessor()}
+                disabled={
+                  testingProcessor ||
+                  !processorKey.trim() ||
+                  settings.cardProcessorId === 'other'
+                }
+              >
+                {testingProcessor ? 'Testing…' : 'Test connection'}
+              </button>
               {processorMessage && <span>{processorMessage}</span>}
             </div>
           </>
@@ -544,9 +657,30 @@ export function SettingsScreen() {
         }}
       />
 
+      <Explain
+        id="cloud-sync"
+        sentence="Cloud sync keeps a backup of this store available on your other computers."
+      >
+        Cloud sync is optional. Sales and checkout continue on this computer
+        when the internet is unavailable, and changes are sent when it returns.
+      </Explain>
       <CloudAccountSection />
+      <Explain
+        id="backups"
+        sentence="Backups are extra copies of your store records in case this computer has a problem."
+      >
+        Local backups stay on this computer, while cloud sync can keep your
+        store available on another signed-in computer.
+      </Explain>
       <CloudBackupSection />
       <LocalBackupSection />
+      <Explain
+        id="staff-permissions"
+        sentence="Staff permissions choose which parts of the manager each cashier can use."
+      >
+        Owners can always do everything. Cashier permissions let you give access
+        to only the work each person needs.
+      </Explain>
       <StaffSection />
     </>
   );

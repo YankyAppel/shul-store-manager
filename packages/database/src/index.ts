@@ -58,6 +58,7 @@ export {
   hasBusinessRows,
   restoreFromEvents,
   verifyRestoreIntegrity,
+  applyOne,
   type RestoreCounts,
   type RestoreOutcome,
   type ValidatedRestoreEvent,
