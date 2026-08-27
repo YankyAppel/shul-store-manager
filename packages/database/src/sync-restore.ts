@@ -115,12 +115,17 @@ export function hasBusinessRows(connection: SqliteDatabase): boolean {
       .get() as { count: number } | undefined;
     if ((row?.count ?? 0) > 0) return true;
   }
-  const auditRow = connection
-    .prepare(
-      "SELECT COUNT(*) AS count FROM audit_events WHERE entity_type <> 'staff'",
-    )
-    .get() as { count: number } | undefined;
-  if ((auditRow?.count ?? 0) > 0) return true;
+  const auditTable = connection
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get('audit_events');
+  if (auditTable) {
+    const auditRow = connection
+      .prepare(
+        "SELECT COUNT(*) AS count FROM audit_events WHERE entity_type <> 'staff'",
+      )
+      .get() as { count: number } | undefined;
+    if ((auditRow?.count ?? 0) > 0) return true;
+  }
   return false;
 }
 
