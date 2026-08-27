@@ -71,6 +71,7 @@ import {
 } from '@shul-store/shared';
 import {
   maskApiKey,
+  AccountSupabaseTransport,
   PlaintextSyncSecretStore,
   restoreFromCloud,
   SupabaseTransport,
@@ -447,23 +448,70 @@ function recreateSyncEngine(): void {
   engine?.stop();
   engine = null;
   const config = database.getSyncConfigRecord();
-  if (
-    !config.enabled ||
-    !config.storeId ||
-    !config.supabaseUrl ||
-    !config.apiKeySecret
-  ) {
-    return;
+  let transport: SupabaseTransport | AccountSupabaseTransport;
+  if (cloudAccount?.isAccountSyncConfigured() && config.storeId) {
+    const accountConfig = cloudAccount.getCachedSupabaseConfig();
+    if (config.enabled && accountConfig) {
+      // The account transport reads its token lazily on the first cycle.
+      // Configuration is already cached in the main process.
+      transport = new AccountSupabaseTransport({
+        supabaseUrl: accountConfig.supabaseUrl,
+        anonKey: accountConfig.supabaseAnonKey,
+        deviceId: config.deviceId ?? '',
+        getAccessToken: (force) => cloudAccount.getAccessToken(force),
+      });
+    } else {
+      return;
+    }
+  } else {
+    if (
+      !config.enabled ||
+      !config.storeId ||
+      !config.supabaseUrl ||
+      !config.apiKeySecret
+    )
+      return;
+    const apiKey = secretStore.decrypt(config.apiKeySecret);
+    transport = new SupabaseTransport({
+      supabaseUrl: config.supabaseUrl,
+      apiKey,
+    });
   }
-  const apiKey = secretStore.decrypt(config.apiKeySecret);
-  const transport = new SupabaseTransport({
-    supabaseUrl: config.supabaseUrl,
-    apiKey,
-  });
   engine = new SyncEngine(database, transport, {
     canSync: () => cloudAccount?.isSyncAllowed() ?? true,
   });
   engine.start();
+}
+
+async function configureAccountStore(storeId: string): Promise<void> {
+  const local = database.getSyncConfigRecord();
+  if (
+    local.storeId &&
+    local.storeId !== storeId &&
+    database.hasPushedSyncEvents()
+  )
+    throw new Error(
+      'This PC already contains data linked to a different cloud store.',
+    );
+  database.setCloudStoreId(storeId);
+  database.ensureDeviceId();
+  database.setSyncEnabled(true);
+  const config = await cloudAccount.getSupabaseConfig();
+  const transport = new AccountSupabaseTransport({
+    supabaseUrl: config.supabaseUrl,
+    anonKey: config.supabaseAnonKey,
+    deviceId: database.ensureDeviceId(),
+    getAccessToken: (force) => cloudAccount.getAccessToken(force),
+  });
+  const prefix = await transport.claimDevicePrefix(
+    storeId,
+    database.ensureDeviceId(),
+  );
+  database.validateReceiptPrefix(prefix);
+  database.setDeviceReceiptPrefix(prefix);
+  if (database.isRestoreAllowed())
+    await restoreFromCloud(database, transport, storeId);
+  recreateSyncEngine();
 }
 const idSchema = z.string().uuid();
 function lanIpv4Addresses(): string[] {
@@ -1386,6 +1434,16 @@ app.whenReady().then(async () => {
         config.enabled && config.supabaseUrl && config.apiKeySecret,
       );
     },
+    {
+      getLocalStoreIdentity: () => {
+        const config = database.getSyncConfigRecord();
+        return {
+          storeId: config.storeId,
+          hasPushedEvents: database.hasPushedSyncEvents(),
+        };
+      },
+      onStoreIdentity: configureAccountStore,
+    },
   );
   cloudAccount.subscribe((state) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -1401,6 +1459,10 @@ app.whenReady().then(async () => {
     backupDirectory,
     imageDirectory,
   });
+  const savedStoreId = await cloudAccount.getStoreId();
+  if (savedStoreId && (await cloudAccount.getState()).signedIn) {
+    void configureAccountStore(savedStoreId).catch(() => undefined);
+  }
   session = new ManagerSession(database, () => {
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed())

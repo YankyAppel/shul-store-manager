@@ -54,6 +54,7 @@ export function enableSync(db: StoreDatabase, storeId = TEST_STORE_ID): void {
   raw
     .prepare('UPDATE sync_settings SET store_id = ? WHERE singleton_id = 1')
     .run(storeId);
+  db.ensureDeviceId();
 }
 
 /** Build a populated store with catalog, customers, sales, and a payment. */
@@ -143,6 +144,7 @@ export class FakeTransport implements SyncTransport {
   listShouldFail = false;
   pushGate: Promise<void> | null = null;
   private seeded: CloudEvent[] = [];
+  pullCallCount = 0;
 
   seed(events: CloudEvent[]): void {
     this.seeded = events;
@@ -186,5 +188,24 @@ export class FakeTransport implements SyncTransport {
         (event) => event.storeId === storeId && event.sequence > afterSequence,
       )
       .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  async listEventsSince(
+    storeId: string,
+    pullCursor: number,
+    deviceId: string,
+  ): Promise<CloudEvent[]> {
+    this.pullCallCount += 1;
+    return [...this.events.values()]
+      .filter(
+        (event) =>
+          event.storeId === storeId &&
+          Number(event.cloudId ?? event.sequence) > pullCursor &&
+          event.deviceId !== deviceId,
+      )
+      .sort(
+        (a, b) =>
+          Number(a.cloudId ?? a.sequence) - Number(b.cloudId ?? b.sequence),
+      );
   }
 }

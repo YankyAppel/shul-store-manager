@@ -1230,6 +1230,36 @@ export const migrations: Migration[] = [
       CREATE UNIQUE INDEX staff_name_idx ON staff(name);
     `,
   },
+  {
+    version: 26,
+    name: 'two_way_cloud_sync',
+    sql: `
+      ALTER TABLE sync_settings ADD COLUMN device_id TEXT;
+      ALTER TABLE sync_settings ADD COLUMN pull_cursor INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sync_settings ADD COLUMN device_receipt_prefix INTEGER NOT NULL DEFAULT 1 CHECK (device_receipt_prefix BETWEEN 1 AND 8999);
+
+      CREATE TABLE sync_applied_events (
+        event_id TEXT PRIMARY KEY,
+        cloud_id INTEGER NOT NULL,
+        applied_at TEXT NOT NULL
+      );
+
+      CREATE TABLE sync_conflicts (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        losing_payload_json TEXT NOT NULL,
+        losing_updated_at TEXT NOT NULL,
+        winning_updated_at TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (source IN ('local','remote')),
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT
+      );
+
+      ALTER TABLE kiosks ADD COLUMN updated_at TEXT;
+      UPDATE kiosks SET updated_at = created_at WHERE updated_at IS NULL;
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

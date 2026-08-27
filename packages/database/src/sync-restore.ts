@@ -54,6 +54,7 @@ export interface RestoreOutcome {
  */
 export interface ValidatedRestoreEvent {
   sequence: number;
+  cloudId?: number;
   eventId: string;
   entityType: CloudPayload['entityType'];
   entityId: string;
@@ -181,7 +182,7 @@ function applySettings(
       payload.receiptPaperWidthMm,
       payload.labelPrinterName,
       payload.defaultLabelTemplate,
-      now(),
+      payload.updatedAt ?? now(),
     );
 }
 
@@ -590,13 +591,15 @@ function applyPaymentTransaction(
 }
 
 function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
+  const updatedAt = payload.updatedAt ?? payload.createdAt;
   connection
     .prepare(
       `INSERT INTO kiosks
-        (id, name, token_hash, admin_pin_hash, created_at, revoked_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+        (id, name, token_hash, admin_pin_hash, created_at, updated_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
+         updated_at = excluded.updated_at,
          revoked_at = excluded.revoked_at`,
     )
     .run(
@@ -605,7 +608,8 @@ function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
       RESTORED_KIOSK_CREDENTIAL_SENTINEL,
       RESTORED_KIOSK_CREDENTIAL_SENTINEL,
       payload.createdAt,
-      payload.revokedAt ?? now(),
+      updatedAt,
+      payload.revokedAt,
     );
 }
 
@@ -630,7 +634,7 @@ function applyAuditEvent(
     );
 }
 
-function applyOne(
+export function applyOne(
   connection: SqliteDatabase,
   event: ValidatedRestoreEvent,
   counts: RestoreCounts,

@@ -8,6 +8,10 @@ export {
 } from './sync-engine.js';
 export { SupabaseTransport } from './supabase-transport.js';
 export {
+  AccountSupabaseTransport,
+  type AccountSupabaseTransportOptions,
+} from './account-supabase-transport.js';
+export {
   restoreFromCloud,
   parseRestoreEvent,
   parseRestoreEvents,

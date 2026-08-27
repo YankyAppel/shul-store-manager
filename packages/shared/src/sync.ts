@@ -1,6 +1,6 @@
 import { cartSnapshotSchema } from './checkout.js';
 import { z } from 'zod';
-import { storeSettingsSchema, type StoreSettings } from './checkout.js';
+import { storeSettingsSchema } from './checkout.js';
 import { ledgerEntryTypeSchema } from './customers.js';
 
 /**
@@ -54,8 +54,10 @@ const movementReasonPayloadSchema = z.enum([
   'sale',
 ]);
 
-export const settingsPayloadSchema = storeSettingsSchema;
-export type SettingsPayload = StoreSettings;
+export const settingsPayloadSchema = storeSettingsSchema.extend({
+  updatedAt: isoString.optional(),
+});
+export type SettingsPayload = z.infer<typeof settingsPayloadSchema>;
 
 export const categoryPayloadSchema = z.object({
   id: uuidString,
@@ -320,6 +322,7 @@ export const kioskPayloadSchema = z.object({
   id: uuidString,
   name: z.string().min(1).max(200),
   createdAt: isoString,
+  updatedAt: isoString.optional(),
   revokedAt: isoString.nullable(),
 });
 export type KioskPayload = z.infer<typeof kioskPayloadSchema>;
@@ -499,6 +502,8 @@ export type RestoreInput = z.infer<typeof restoreInputSchema>;
 export interface CloudEvent {
   eventId: string;
   storeId: string;
+  cloudId?: number;
+  deviceId?: string;
   sequence: number;
   entityType: SyncEntityType;
   entityId: string;

@@ -3,6 +3,7 @@ import {
   SyncEngine,
   computeBackoffDelay,
   DEFAULT_BATCH_SIZE,
+  parseRestoreEvent,
 } from '../src/index.js';
 import {
   createDb,
@@ -10,9 +11,154 @@ import {
   disposeDb,
   enableSync,
   FakeTransport,
+  TEST_STORE_ID,
 } from './helpers.js';
 
 describe('sync engine push cycle', () => {
+  it('pulls validated remote events, skips invalid rows, and advances the cursor', async () => {
+    const { db, file } = createDb();
+    const transport = new FakeTransport();
+    enableSync(db);
+    const category = {
+      eventId: '00000000-0000-0000-0000-000000000011',
+      storeId: TEST_STORE_ID,
+      deviceId: '00000000-0000-0000-0000-000000000099',
+      cloudId: 2,
+      sequence: 1,
+      entityType: 'category' as const,
+      entityId: '00000000-0000-0000-0000-000000000012',
+      operation: 'upsert' as const,
+      payload: {
+        id: '00000000-0000-0000-0000-000000000012',
+        name: 'Remote',
+        secondaryName: null,
+        imageId: null,
+        active: true,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+      createdAt: '2024-01-01T00:00:00.000Z',
+    };
+    transport.seed([
+      {
+        ...category,
+        cloudId: 1,
+        payload: { nope: true },
+        eventId: '00000000-0000-0000-0000-000000000010',
+      },
+      category,
+    ]);
+    const engine = new SyncEngine(db, transport);
+
+    const result = await engine.pullCycle();
+    expect(result.error).toBeNull();
+    expect(result.pulled).toBe(1);
+    expect(db.listCategories().map((row) => row.name)).toContain('Remote');
+    expect(db.getSyncConfigRecord().pullCursor).toBe(2);
+    expect(transport.pullCallCount).toBe(1);
+    disposeDb(db, file);
+  });
+
+  it('does not let an older remote upsert overwrite local data', async () => {
+    const { db, file } = createDb();
+    const transport = new FakeTransport();
+    enableSync(db);
+    const local = db.createCategory({ name: 'Local' });
+    const event = {
+      eventId: '00000000-0000-0000-0000-000000000021',
+      cloudId: 1,
+      storeId: TEST_STORE_ID,
+      deviceId: '00000000-0000-0000-0000-000000000099',
+      sequence: 1,
+      entityType: 'category' as const,
+      entityId: local.id,
+      operation: 'upsert' as const,
+      payload: {
+        id: local.id,
+        name: 'Old remote',
+        secondaryName: null,
+        imageId: null,
+        active: true,
+        createdAt: '2023-01-01T00:00:00.000Z',
+        updatedAt: '2023-01-01T00:00:00.000Z',
+      },
+      createdAt: '2023-01-01T00:00:00.000Z',
+    };
+    transport.seed([event]);
+    await new SyncEngine(db, transport).pullCycle();
+    expect(db.listCategories().find((row) => row.id === local.id)?.name).toBe(
+      'Local',
+    );
+    expect(
+      (
+        db.connection.prepare('SELECT source FROM sync_conflicts').get() as {
+          source: string;
+        }
+      ).source,
+    ).toBe('remote');
+    disposeDb(db, file);
+  });
+
+  it('never clears a local kiosk revocation with a newer remote copy', () => {
+    const { db, file } = createDb();
+    enableSync(db);
+    const kioskId = '00000000-0000-0000-0000-000000000031';
+    db.createKiosk(kioskId, 'Front kiosk', 'local-token', 'local-pin');
+    db.revokeKiosk(kioskId);
+    const event = parseRestoreEvent({
+      cloudId: 1,
+      eventId: '00000000-0000-0000-0000-000000000032',
+      storeId: TEST_STORE_ID,
+      deviceId: '00000000-0000-0000-0000-000000000099',
+      sequence: 1,
+      entityType: 'kiosk',
+      entityId: kioskId,
+      operation: 'upsert',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      payload: {
+        id: kioskId,
+        name: 'Renamed elsewhere',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2099-01-01T00:00:00.000Z',
+        revokedAt: null,
+      },
+    });
+
+    db.applyPulledEvents([event]);
+    expect(db.listKiosks()[0].revokedAt).not.toBeNull();
+    expect(db.listKiosks()[0].name).toBe('Front kiosk');
+    disposeDb(db, file);
+  });
+
+  it('always applies a remote kiosk revocation, even with an older timestamp', () => {
+    const { db, file } = createDb();
+    enableSync(db);
+    const kioskId = '00000000-0000-0000-0000-000000000041';
+    db.createKiosk(kioskId, 'Front kiosk', 'local-token', 'local-pin');
+    const event = parseRestoreEvent({
+      cloudId: 1,
+      eventId: '00000000-0000-0000-0000-000000000042',
+      storeId: TEST_STORE_ID,
+      deviceId: '00000000-0000-0000-0000-000000000099',
+      sequence: 1,
+      entityType: 'kiosk',
+      entityId: kioskId,
+      operation: 'upsert',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      payload: {
+        id: kioskId,
+        name: 'Front kiosk',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+        revokedAt: '2024-01-01T00:00:00.000Z',
+      },
+    });
+
+    db.applyPulledEvents([event]);
+    expect(db.listKiosks()[0].revokedAt).toBe('2024-01-01T00:00:00.000Z');
+    disposeDb(db, file);
+  });
+
   it('pushes events strictly in sequence order in bounded batches', async () => {
     const { db, file } = createDb();
     const transport = new FakeTransport();

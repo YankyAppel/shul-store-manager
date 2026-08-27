@@ -106,6 +106,7 @@ export function parseRestoreEvent(event: CloudEvent): ValidatedRestoreEvent {
   }
   return {
     sequence,
+    ...(event.cloudId === undefined ? {} : { cloudId: event.cloudId }),
     eventId: event.eventId,
     entityType: entityType.data,
     entityId: event.entityId,
@@ -198,6 +199,11 @@ export async function restoreFromCloud(
 
   try {
     const outcome = db.replayValidatedEvents(validated);
+    const maximumCloudId = validated.reduce(
+      (maximum, event) => Math.max(maximum, event.cloudId ?? 0),
+      0,
+    );
+    if (maximumCloudId > 0) db.setPullCursor(maximumCloudId);
     return {
       ok: true,
       message: 'Restore completed successfully.',
