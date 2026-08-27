@@ -71,6 +71,7 @@ body {
 }
 .staff-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   padding: 10px;
@@ -80,6 +81,31 @@ body {
 .staff-row span {
   color: #708078;
   margin-right: auto;
+}
+.staff-inline-form,
+.staff-pin-reset {
+  flex-basis: 100%;
+  display: grid;
+  gap: 8px;
+}
+.staff-inline-form label,
+.staff-pin-reset label {
+  display: grid;
+  gap: 5px;
+  color: #53675d;
+  font-size: 13px;
+  font-weight: 650;
+}
+.staff-inline-form input,
+.staff-pin-reset input {
+  padding: 8px;
+}
+.staff-inline-actions {
+  display: flex;
+  gap: 8px;
+}
+.staff-pin-reset .pin-keypad {
+  max-width: 280px;
 }
 .staff-permissions {
   flex-basis: 100%;

@@ -5,6 +5,7 @@ import {
   type GrantablePermission,
   type StaffAccount,
 } from '@shul-store/shared';
+import { Keypad } from './AuthScreens';
 
 const defaults: GrantablePermission[] = [
   'checkout',
@@ -20,6 +21,10 @@ export function StaffSection() {
   const [role, setRole] = useState<'owner' | 'cashier'>('cashier');
   const [permissions, setPermissions] =
     useState<GrantablePermission[]>(defaults);
+  const [editingNameId, setEditingNameId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const [resettingPinId, setResettingPinId] = useState<string | null>(null);
+  const [resetPinValue, setResetPinValue] = useState('');
   const [error, setError] = useState('');
   const refresh = async () => {
     const [accounts, device] = await Promise.all([
@@ -46,9 +51,19 @@ export function StaffSection() {
       );
     }
   }
-  async function editName(account: StaffAccount) {
-    const next = window.prompt('Staff name', account.name)?.trim();
-    if (!next || next === account.name) return;
+  function editName(account: StaffAccount) {
+    setEditingNameId(account.id);
+    setEditingName(account.name);
+    setResettingPinId(null);
+    setResetPinValue('');
+    setError('');
+  }
+  async function saveName(account: StaffAccount) {
+    const next = editingName.trim();
+    if (!next || next === account.name) {
+      setEditingNameId(null);
+      return;
+    }
     try {
       await window.storeApi.staff.update(account.id, {
         name: next,
@@ -56,6 +71,7 @@ export function StaffSection() {
         active: account.active,
         permissions: account.permissions,
       });
+      setEditingNameId(null);
       await refresh();
     } catch (reason) {
       setError(
@@ -63,11 +79,17 @@ export function StaffSection() {
       );
     }
   }
-  async function resetPin(account: StaffAccount) {
-    const next = window.prompt('New PIN (4-8 digits)') ?? '';
-    if (!next) return;
+  function resetPin(account: StaffAccount) {
+    setResettingPinId(account.id);
+    setResetPinValue('');
+    setEditingNameId(null);
+    setError('');
+  }
+  async function savePin(account: StaffAccount) {
     try {
-      await window.storeApi.staff.setPin(account.id, next);
+      await window.storeApi.staff.setPin(account.id, resetPinValue);
+      setResettingPinId(null);
+      setResetPinValue('');
       setError('');
     } catch (reason) {
       setError(
@@ -123,11 +145,39 @@ export function StaffSection() {
       <div className="staff-list">
         {staff.map((account) => (
           <div className="staff-row" key={account.id}>
-            <strong>{account.name}</strong>
-            <span>
-              {account.role}
-              {account.active ? '' : ' · inactive'}
-            </span>
+            {editingNameId === account.id ? (
+              <div className="staff-inline-form">
+                <label>
+                  Staff name
+                  <input
+                    autoFocus
+                    value={editingName}
+                    onChange={(event) => setEditingName(event.target.value)}
+                  />
+                </label>
+                <div className="staff-inline-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={!editingName.trim()}
+                    onClick={() => void saveName(account)}
+                  >
+                    Save name
+                  </button>
+                  <button type="button" onClick={() => setEditingNameId(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <strong>{account.name}</strong>
+                <span>
+                  {account.role}
+                  {account.active ? '' : ' · inactive'}
+                </span>
+              </>
+            )}
             <button type="button" onClick={() => void editName(account)}>
               Edit
             </button>
@@ -151,6 +201,43 @@ export function StaffSection() {
                     {permissionLabels[permission]}
                   </label>
                 ))}
+              </div>
+            )}
+            {resettingPinId === account.id && (
+              <div className="staff-pin-reset">
+                <label>
+                  New PIN (4–8 digits)
+                  <input
+                    value={resetPinValue.replace(/./g, '•')}
+                    inputMode="numeric"
+                    readOnly
+                  />
+                </label>
+                <Keypad
+                  value={resetPinValue}
+                  onChange={(value) =>
+                    setResetPinValue(value.replace(/\D/g, '').slice(0, 8))
+                  }
+                />
+                <div className="staff-inline-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={resetPinValue.length < 4}
+                    onClick={() => void savePin(account)}
+                  >
+                    Save PIN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResettingPinId(null);
+                      setResetPinValue('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
           </div>

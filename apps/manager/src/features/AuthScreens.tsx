@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { StaffPickerAccount } from '@shul-store/shared';
 
-function Keypad({
+export function Keypad({
   value,
   onChange,
 }: {
