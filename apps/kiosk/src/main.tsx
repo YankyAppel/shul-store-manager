@@ -309,9 +309,9 @@ function KioskReaderSetup({
   const [connection, setConnection] = useState<'usb' | 'ip'>('usb');
   const [comPort, setComPort] = useState('COM3');
   const [address, setAddress] = useState('');
-  const [port, setPort] = useState('8887');
+  const [port, setPort] = useState('');
   const [silentMode, setSilentMode] = useState(true);
-  const [keyedEntry, setKeyedEntry] = useState(true);
+  const [readerOnly, setReaderOnly] = useState(true);
   const [amountConfirmationPrompt, setAmountConfirmationPrompt] =
     useState(false);
   const [timeout, setTimeoutValue] = useState('120');
@@ -330,7 +330,7 @@ function KioskReaderSetup({
           ? { kind: 'usb', comPort }
           : { kind: 'ip', address, port: Number(port) },
       silentMode,
-      keyedEntry,
+      readerOnly,
       amountConfirmationPrompt,
       deviceTimeoutSeconds: Number(timeout),
       mode,
@@ -445,15 +445,19 @@ function KioskReaderSetup({
               checked={silentMode}
               onChange={(event) => setSilentMode(event.target.checked)}
             />
-            Silent reader operation
+            Hide the BBPOS form
+            <small>
+              When on, customers can use only the reader. When off, BBPOS may
+              show its own card-number form.
+            </small>
           </label>
           <label className="toggle">
             <input
               type="checkbox"
-              checked={keyedEntry}
-              onChange={(event) => setKeyedEntry(event.target.checked)}
+              checked={readerOnly}
+              onChange={(event) => setReaderOnly(event.target.checked)}
             />
-            Allow BBPOS keyed-entry fallback
+            Reader only — do not allow card-number typing
           </label>
           <label className="toggle">
             <input

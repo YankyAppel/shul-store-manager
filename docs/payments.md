@@ -126,12 +126,18 @@ support tap.
 
 The reader configuration is encrypted and stored locally on each computer. USB
 readers use their device name and COM port; an IP-connected reader uses its
-device name, IP address, and IP port. BBPOS's own keyed-entry popup may be
-enabled as a fallback; Shul Store Manager never provides a card-number form.
-Silent mode, amount confirmation, and the reader timeout are configurable.
+device name, IP address, and IP port. **Hide the BBPOS form** controls whether
+the BBPOS window appears: when it is off, the cashier can use the reader or
+BBPOS's own card-number form; when it is on, only the reader can be used.
+**Reader only** sends BBPOS's `xEnableKeyedEntry=1` setting, which prevents
+anyone from typing a card number; when it is off, that field is not sent and
+the BBPOS form can be used. Shames should leave Reader only off when a cashier
+needs the fallback form, and turn it on for a customer-facing kiosk. Silent
+mode, amount confirmation, and the reader timeout are also configurable.
 
-Sales use BBPOS's local service. Refunds and voids use the remote Cardknox
-gateway, so the reader does not need to be plugged in for those operations.
+Sales use BBPOS's local service. Refunds use the remote Cardknox gateway, so
+the reader does not need to be plugged in for refunds. Cancelling an in-progress
+reader sale uses BBPOS's local cancellation request.
 The offline `cc:encrypt` store-and-forward flow is not implemented. USAePay
 card-present hardware is also out of scope.
 

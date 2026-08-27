@@ -76,7 +76,7 @@ export interface KioskReaderConfig {
     | { kind: 'usb'; comPort: string }
     | { kind: 'ip'; address: string; port: number };
   silentMode: boolean;
-  keyedEntry: boolean;
+  readerOnly: boolean;
   amountConfirmationPrompt: boolean;
   deviceTimeoutSeconds: number;
   mode: 'test' | 'live';

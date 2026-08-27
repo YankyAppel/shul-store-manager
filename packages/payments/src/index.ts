@@ -196,8 +196,8 @@ export const cardknoxBbposConfigSchema = z.object({
       port: z.number().int().min(1).max(65535),
     }),
   ]),
-  silentMode: z.boolean().default(true),
-  keyedEntry: z.boolean().default(true),
+  silentMode: z.boolean().default(false),
+  readerOnly: z.boolean().default(false),
   amountConfirmationPrompt: z.boolean().default(false),
   deviceTimeoutSeconds: z.number().int().min(1).max(600).default(120),
   mode: z.enum(['test', 'live']).default('live'),
@@ -206,6 +206,7 @@ export type CardknoxBbposConfig = z.infer<typeof cardknoxBbposConfigSchema>;
 
 const BBPOS_ENDPOINT = 'https://localemv.com:8887';
 const CARDKNOX_GATEWAY_ENDPOINT = 'https://x1.cardknox.com/gatewayjson';
+const CARDKNOX_REPORT_ENDPOINT = 'https://x1.cardknox.com/reportjson';
 const BBPOS_INSTALL_URL = 'https://cdn.cardknox.com/dl/bbpos.exe';
 
 type FetchImplementation = typeof fetch;
@@ -216,18 +217,27 @@ function bbposFields(
   invoice?: string,
 ): Record<string, string> {
   const fields: Record<string, string> = {
-    xResponseFormat: 'JSON',
-    xKey: config.apiKey,
+    ...bbposDeviceFields(config),
     xCommand: command,
-    xDeviceName: config.deviceName,
-    xDeviceTimeOut: String(config.deviceTimeoutSeconds),
     xEnableSilentMode: config.silentMode ? '1' : '0',
-    xEnableKeyedEntry: config.keyedEntry ? '1' : '0',
     xEnableAmountConfirmationPrompt: config.amountConfirmationPrompt
       ? '1'
       : '0',
   };
+  if (config.readerOnly) fields.xEnableKeyedEntry = '1';
   if (invoice) fields.xInvoice = invoice;
+  return fields;
+}
+
+function bbposDeviceFields(
+  config: CardknoxBbposConfig,
+): Record<string, string> {
+  const fields: Record<string, string> = {
+    xResponseFormat: 'JSON',
+    xKey: config.apiKey,
+    xDeviceName: config.deviceName,
+    xDeviceTimeOut: String(config.deviceTimeoutSeconds),
+  };
   if (config.connection.kind === 'usb') {
     fields.xDeviceComPort = config.connection.comPort;
   } else {
@@ -256,7 +266,13 @@ async function bbposJson(
 }
 
 function resultCode(value: Record<string, unknown>): string {
-  for (const key of ['xResult', 'result_code', 'result', 'xStatus']) {
+  for (const key of [
+    'xResult',
+    'xResponseResult',
+    'result_code',
+    'result',
+    'xStatus',
+  ]) {
     const candidate = value[key];
     if (typeof candidate === 'string') return candidate.trim().toLowerCase();
   }
@@ -275,8 +291,14 @@ function declinedCharge(value: Record<string, unknown>): boolean {
 
 function responseText(value: Record<string, unknown>): string | undefined {
   for (const key of ['xError', 'xErrorMessage', 'xMessage', 'message']) {
-    if (typeof value[key] === 'string' && value[key].trim())
-      return value[key].trim();
+    if (typeof value[key] === 'string' && value[key].trim()) {
+      return value[key]
+        .trim()
+        .replace(
+          /(?<!\d)(?:\d[\s-]?){11,18}\d(?!\d)/g,
+          '[redacted card number]',
+        );
+    }
   }
   return undefined;
 }
@@ -332,6 +354,99 @@ async function postBbpos(
     body: formBody(fields),
   });
   return bbposJson(response);
+}
+
+type ReportLookup =
+  | { kind: 'found'; transaction: Record<string, unknown> }
+  | { kind: 'not-found' }
+  | { kind: 'ambiguous' };
+
+function reportRows(
+  body: Record<string, unknown>,
+): Record<string, unknown>[] | null {
+  const data = body.xReportData ?? body.reportData;
+  if (Array.isArray(data))
+    return data.filter(
+      (value): value is Record<string, unknown> =>
+        Boolean(value) && typeof value === 'object',
+    );
+  if (data && typeof data === 'object')
+    return [data as Record<string, unknown>];
+  if (typeof data !== 'string' || !data.trim()) return null;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (Array.isArray(parsed))
+      return parsed.filter(
+        (value): value is Record<string, unknown> =>
+          Boolean(value) && typeof value === 'object',
+      );
+    if (parsed && typeof parsed === 'object')
+      return [parsed as Record<string, unknown>];
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function reportInvoice(
+  transaction: Record<string, unknown>,
+): string | undefined {
+  for (const key of ['xInvoice', 'invoice', 'invoiceNumber']) {
+    const value = transaction[key];
+    if (typeof value === 'string' || typeof value === 'number')
+      return String(value);
+  }
+  return undefined;
+}
+
+function classifyReport(
+  body: Record<string, unknown>,
+  invoice: string,
+): ReportLookup {
+  const result = resultCode(body);
+  if (result && !['a', 'approved', 's', 'success'].includes(result))
+    return { kind: 'ambiguous' };
+  const rows = reportRows(body);
+  const recordsReturned = Number(
+    body.xRecordsReturned ?? body.recordsReturned ?? NaN,
+  );
+  if (recordsReturned === 0 || (rows && rows.length === 0))
+    return { kind: 'not-found' };
+  if (!rows) return { kind: 'ambiguous' };
+  const matching = rows.filter((row) => reportInvoice(row) === invoice);
+  const matchingTransaction = matching[0];
+  if (matching.length === 1 && matchingTransaction)
+    return { kind: 'found', transaction: matchingTransaction };
+  if (matching.length > 1) return { kind: 'ambiguous' };
+  const onlyTransaction = rows[0];
+  if (rows.length === 1 && onlyTransaction && !reportInvoice(onlyTransaction))
+    return { kind: 'found', transaction: onlyTransaction };
+  return { kind: 'ambiguous' };
+}
+
+async function lookupReport(
+  invoice: string,
+  config: CardknoxBbposConfig,
+  fetchImpl: FetchImplementation,
+): Promise<ReportLookup> {
+  try {
+    const response = await fetchImpl(CARDKNOX_REPORT_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        xKey: config.apiKey,
+        xVersion: '5.0.0',
+        xSoftwareName: 'Shul Store Manager',
+        xSoftwareVersion: '0.1.0',
+        xCommand: 'Report:Transactions',
+        xInvoice: invoice,
+      }),
+    });
+    const body = await bbposJson(response);
+    return body ? classifyReport(body, invoice) : { kind: 'ambiguous' };
+  } catch {
+    return { kind: 'ambiguous' };
+  }
 }
 
 export function createCardknoxBbposProcessor(
@@ -396,10 +511,37 @@ export function createCardknoxBbposProcessor(
       await storage.set(request.chargeReference, result);
       return result;
     },
-    async getChargeStatus(chargeReference, _config, storage) {
+    async getChargeStatus(chargeReference, rawConfig, storage) {
+      const config = cardknoxBbposConfigSchema.parse(rawConfig);
       const stored = await storage.get(chargeReference);
       if (stored?.status === 'approved' || stored?.status === 'declined')
         return stored;
+      const lookup = await lookupReport(chargeReference, config, fetchImpl);
+      if (lookup.kind === 'found') {
+        const transaction = lookup.transaction;
+        const processorTransactionId = transactionReference(transaction);
+        if (approvedCharge(transaction) && processorTransactionId) {
+          const brand = cardBrand(transaction);
+          const last4 = cardLast4(transaction);
+          const result: ChargeResult = {
+            status: 'approved',
+            processorTransactionId,
+            ...(brand !== undefined ? { cardBrand: brand } : {}),
+            ...(last4 !== undefined ? { cardLast4: last4 } : {}),
+          };
+          await storage.set(chargeReference, result);
+          return result;
+        }
+        if (declinedCharge(transaction) || !approvedCharge(transaction)) {
+          const reason = responseText(transaction);
+          const result: ChargeResult = {
+            status: 'declined',
+            ...(reason ? { declineReason: reason } : {}),
+          };
+          await storage.set(chargeReference, result);
+          return result;
+        }
+      }
       throw new Error(
         'BBPOS does not provide a safe status lookup for a lost response. This payment needs attention.',
       );
@@ -407,7 +549,7 @@ export function createCardknoxBbposProcessor(
     async cancelCharge(chargeReference, rawConfig) {
       const config = cardknoxBbposConfigSchema.parse(rawConfig);
       const body = await postBbpos(
-        { ...bbposFields(config, 'cc:sale', chargeReference), xCancel: '1' },
+        { ...bbposDeviceFields(config), xCancel: '1' },
         fetchImpl,
       );
       if (!body)
@@ -469,36 +611,32 @@ export function createCardknoxBbposProcessor(
             ? { processorRefundId: stored.processorTransactionId }
             : {}),
         };
-      try {
-        const response = await fetchImpl(CARDKNOX_GATEWAY_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            xKey: config.apiKey,
-            xCommand: 'cc:refund',
-            xRefNum: request.processorTransactionId ?? request.chargeReference,
-            xAmount: (request.amountCents / 100).toFixed(2),
-            xInvoice: request.refundReference,
-          }),
-        });
-        const body = await bbposJson(response);
-        if (body && approvedCharge(body)) {
-          const processorRefundId = transactionReference(body);
+      const lookup = await lookupReport(
+        request.refundReference,
+        config,
+        fetchImpl,
+      );
+      if (lookup.kind === 'found') {
+        const transaction = lookup.transaction;
+        if (approvedCharge(transaction)) {
+          const processorRefundId = transactionReference(transaction);
+          if (!processorRefundId)
+            return {
+              status: 'error',
+              errorMessage:
+                'The refund report was missing its transaction reference; the refund needs attention.',
+            };
           await storage.set(request.refundReference, {
             status: 'approved',
-            ...(processorRefundId
-              ? { processorTransactionId: processorRefundId }
-              : {}),
+            processorTransactionId: processorRefundId,
           });
-          return {
-            status: 'refunded',
-            ...(processorRefundId
-              ? { processorRefundId: processorRefundId }
-              : {}),
-          };
+          return { status: 'refunded', processorRefundId };
         }
-      } catch {
-        // Fall through to the operator-facing unresolved state below.
+        const reason = responseText(transaction);
+        return {
+          status: 'declined',
+          ...(reason ? { errorMessage: reason } : {}),
+        };
       }
       return {
         status: 'error',

@@ -25,11 +25,14 @@ function fakeFetch(responses: Array<Response | Error>) {
   return { calls, fetchImpl };
 }
 
-function storage(): ProcessorStorage {
+function storage(onSet?: (value: ChargeResult) => void): ProcessorStorage {
   const values = new Map<string, ChargeResult>();
   return {
     get: async (key) => values.get(key),
-    set: async (key, value) => void values.set(key, value),
+    set: async (key, value) => {
+      onSet?.(value);
+      values.set(key, value);
+    },
     delete: async (key) => void values.delete(key),
   };
 }
@@ -43,12 +46,13 @@ const config = cardknoxBbposConfigSchema.parse({
 
 describe('Cardknox BBPOS processor', () => {
   it('approves a sale and preserves sanitized card details', async () => {
+    const stored: ChargeResult[] = [];
     const fake = fakeFetch([
       response({
         xResult: 'A',
         xRefNum: 'processor-ref',
         xCardType: 'Visa',
-        xMaskedCardNumber: '************4242',
+        xCardNum: '4111111111111111',
       }),
     ]);
     const result = await createCardknoxBbposProcessor(
@@ -56,22 +60,30 @@ describe('Cardknox BBPOS processor', () => {
     ).createCharge(
       { chargeReference: 'charge-1', amountCents: 1234 },
       config,
-      storage(),
+      storage((value) => stored.push(value)),
     );
     expect(result).toEqual({
       status: 'approved',
       processorTransactionId: 'processor-ref',
       cardBrand: 'Visa',
-      cardLast4: '4242',
+      cardLast4: '1111',
     });
     expect(String(fake.calls[0]?.init?.body)).toContain('xCommand=cc%3Asale');
     expect(String(fake.calls[0]?.init?.body)).toContain('xDeviceComPort=COM4');
+    expect(String(fake.calls[0]?.init?.body)).not.toContain(
+      'xEnableKeyedEntry',
+    );
     expect(result).not.toHaveProperty('apiKey');
+    expect(result).not.toHaveProperty('xCardNum');
+    expect(stored[0]).not.toHaveProperty('xCardNum');
   });
 
   it('declines a sale with the provider reason', async () => {
     const fake = fakeFetch([
-      response({ xResult: 'D', xErrorMessage: 'Card declined' }),
+      response({
+        xResult: 'D',
+        xErrorMessage: 'Card 4111 1111 1111 1111 declined',
+      }),
     ]);
     const result = await createCardknoxBbposProcessor(
       fake.fetchImpl,
@@ -82,7 +94,7 @@ describe('Cardknox BBPOS processor', () => {
     );
     expect(result).toEqual({
       status: 'declined',
-      declineReason: 'Card declined',
+      declineReason: 'Card [redacted card number] declined',
     });
   });
 
@@ -125,7 +137,7 @@ describe('Cardknox BBPOS processor', () => {
     );
     const body = String(fake.calls[0]?.init?.body);
     expect(body).toContain('xCancel=1');
-    expect(body).toContain('xCommand=cc%3Asale');
+    expect(body).not.toContain('xCommand');
   });
 
   it('sends refunds to the remote gateway with the processor reference', async () => {
@@ -182,13 +194,144 @@ describe('Cardknox BBPOS processor', () => {
     expect(body).not.toContain('xDeviceComPort');
   });
 
-  it('does not invent a status for a lost response', async () => {
+  it('sends reader-only mode only when explicitly enabled', async () => {
+    const fake = fakeFetch([
+      response({ xResult: 'A', xRefNum: 'processor-ref' }),
+    ]);
+    await createCardknoxBbposProcessor(fake.fetchImpl).createCharge(
+      { chargeReference: 'charge-reader-only', amountCents: 1000 },
+      cardknoxBbposConfigSchema.parse({
+        ...config,
+        readerOnly: true,
+      }),
+      storage(),
+    );
+    expect(String(fake.calls[0]?.init?.body)).toContain('xEnableKeyedEntry=1');
+  });
+
+  it('resolves a lost sale from an approved report row', async () => {
+    const stored: ChargeResult[] = [];
+    const fake = fakeFetch([
+      response({
+        xResult: 'A',
+        xRecordsReturned: '1',
+        xReportData: [
+          {
+            xInvoice: 'charge-8',
+            xResponseResult: 'A',
+            xRefNum: 'reported-ref',
+            xCardType: 'MasterCard',
+            xCardNum: '5555555555555555',
+          },
+        ],
+      }),
+    ]);
+    const result = await createCardknoxBbposProcessor(
+      fake.fetchImpl,
+    ).getChargeStatus(
+      'charge-8',
+      config,
+      storage((value) => stored.push(value)),
+    );
+    expect(result).toEqual({
+      status: 'approved',
+      processorTransactionId: 'reported-ref',
+      cardBrand: 'MasterCard',
+      cardLast4: '5555',
+    });
+    expect(stored[0]).not.toHaveProperty('xCardNum');
+    expect(fake.calls[0]?.input).toBe('https://x1.cardknox.com/reportjson');
+    expect(JSON.parse(String(fake.calls[0]?.init?.body))).toMatchObject({
+      xKey: 'secret-key',
+      xVersion: '5.0.0',
+      xSoftwareName: 'Shul Store Manager',
+      xSoftwareVersion: '0.1.0',
+      xCommand: 'Report:Transactions',
+      xInvoice: 'charge-8',
+    });
+  });
+
+  it('resolves a lost sale from a declined report row', async () => {
+    const fake = fakeFetch([
+      response({
+        xResult: 'A',
+        xRecordsReturned: '1',
+        xReportData: [
+          {
+            xInvoice: 'charge-9',
+            xResponseResult: 'D',
+            xError: 'Declined by issuer',
+          },
+        ],
+      }),
+    ]);
+    const result = await createCardknoxBbposProcessor(
+      fake.fetchImpl,
+    ).getChargeStatus('charge-9', config, storage());
+    expect(result).toEqual({
+      status: 'declined',
+      declineReason: 'Declined by issuer',
+    });
+  });
+
+  it('does not invent a status when the report finds no sale', async () => {
+    const fake = fakeFetch([
+      response({ xResult: 'A', xRecordsReturned: '0', xReportData: [] }),
+    ]);
     await expect(
-      createCardknoxBbposProcessor().getChargeStatus(
+      createCardknoxBbposProcessor(fake.fetchImpl).getChargeStatus(
         'missing-charge',
         config,
         storage(),
       ),
     ).rejects.toThrow('safe status lookup');
+  });
+
+  it('keeps a lost sale unresolved when report lookup is unreachable', async () => {
+    const fake = fakeFetch([new Error('report offline')]);
+    await expect(
+      createCardknoxBbposProcessor(fake.fetchImpl).getChargeStatus(
+        'offline-charge',
+        config,
+        storage(),
+      ),
+    ).rejects.toThrow('safe status lookup');
+  });
+
+  it('looks up refund status without issuing another refund', async () => {
+    const fake = fakeFetch([
+      response({
+        xResult: 'A',
+        xRecordsReturned: '1',
+        xReportData: [
+          {
+            xInvoice: 'refund-2',
+            xResponseResult: 'A',
+            xRefNum: 'refund-reported-ref',
+          },
+        ],
+      }),
+    ]);
+    const result = await createCardknoxBbposProcessor(fake.fetchImpl)
+      .getRefundStatus!(
+      {
+        chargeReference: 'charge-10',
+        refundReference: 'refund-2',
+        amountCents: 1000,
+      },
+      config,
+      storage(),
+    );
+    expect(result).toEqual({
+      status: 'refunded',
+      processorRefundId: 'refund-reported-ref',
+    });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.input).toBe('https://x1.cardknox.com/reportjson');
+    expect(String(fake.calls[0]?.init?.body)).not.toContain('cc%3Arefund');
+    expect(JSON.parse(String(fake.calls[0]?.init?.body))).toMatchObject({
+      xCommand: 'Report:Transactions',
+      xInvoice: 'refund-2',
+    });
   });
 });

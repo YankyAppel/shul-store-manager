@@ -701,7 +701,12 @@ function scheduleChargePoll(delay = CHARGE_RETRY_MS): void {
 async function pollInFlight(): Promise<void> {
   const inFlight = state.inFlightCharge;
   if (!inFlight) return;
-  if (cloudEngine && localDatabase) {
+  const readerConfigured =
+    cloudEngine &&
+    localDatabase &&
+    localDatabase.getSettings().cardProcessorId === 'cardknox-bbpos' &&
+    localDatabase.getCardProcessorConfigStatus().configured;
+  if (readerConfigured && localDatabase) {
     try {
       const result = await localDatabase.payments.reconcile(
         inFlight.chargeReference,

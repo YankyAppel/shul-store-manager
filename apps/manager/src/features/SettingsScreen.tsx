@@ -27,9 +27,9 @@ export function SettingsScreen() {
   const [readerConnection, setReaderConnection] = useState<'usb' | 'ip'>('usb');
   const [readerComPort, setReaderComPort] = useState('COM3');
   const [readerAddress, setReaderAddress] = useState('');
-  const [readerPort, setReaderPort] = useState('8887');
-  const [readerSilentMode, setReaderSilentMode] = useState(true);
-  const [readerKeyedEntry, setReaderKeyedEntry] = useState(true);
+  const [readerPort, setReaderPort] = useState('');
+  const [readerSilentMode, setReaderSilentMode] = useState(false);
+  const [readerOnly, setReaderOnly] = useState(false);
   const [readerAmountPrompt, setReaderAmountPrompt] = useState(false);
   const [readerTimeout, setReaderTimeout] = useState('120');
   const [checkingReader, setCheckingReader] = useState(false);
@@ -58,9 +58,6 @@ export function SettingsScreen() {
             : current,
         );
       if (processor.mode) setProcessorMode(processor.mode);
-      void window.storeApi.settings
-        .getProcessorConfigStatus()
-        .then(() => undefined);
     });
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
@@ -100,7 +97,7 @@ export function SettingsScreen() {
                       port: Number(readerPort),
                     },
               silentMode: readerSilentMode,
-              keyedEntry: readerKeyedEntry,
+              readerOnly,
               amountConfirmationPrompt: readerAmountPrompt,
               deviceTimeoutSeconds: Number(readerTimeout),
               mode: processorMode,
@@ -701,17 +698,19 @@ export function SettingsScreen() {
                       setReaderSilentMode(event.target.checked)
                     }
                   />
-                  Silent reader operation
+                  Hide the BBPOS form
+                  <small>
+                    When off, the cashier can use the reader or BBPOS’s own
+                    card-number form. When on, only the reader is allowed.
+                  </small>
                 </label>
                 <label className="toggle">
                   <input
                     type="checkbox"
-                    checked={readerKeyedEntry}
-                    onChange={(event) =>
-                      setReaderKeyedEntry(event.target.checked)
-                    }
+                    checked={readerOnly}
+                    onChange={(event) => setReaderOnly(event.target.checked)}
                   />
-                  Allow BBPOS keyed-entry fallback
+                  Reader only — do not allow card-number typing
                 </label>
                 <label className="toggle">
                   <input
