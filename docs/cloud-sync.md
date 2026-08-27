@@ -1,4 +1,4 @@
-# Optional Supabase Cloud Backup & Sync
+# Optional Cloud Sync
 
 Cloud backup is an **optional** feature. The application is offline-first: the
 local SQLite database is always the single source of truth, and every existing
@@ -7,9 +7,10 @@ sync disabled, with sync enabled but the network down, and while a sync is in
 progress. No user-facing operation ever blocks on, waits for, or fails because of
 network or sync activity.
 
-This milestone covers **single-manager-device** cloud backup and restore onto a
-fresh install. It deliberately does **not** implement multi-device merge,
-conflict resolution, or kiosk pairing (those are later, separate milestones).
+Account-backed cloud sync supports two-way multi-PC merging, conflict
+resolution, receipt-prefix allocation, and kiosk pairing. Older installations
+that pasted a Supabase URL and key keep their original push-only compatibility
+path.
 
 ## How it works (architecture)
 
@@ -20,14 +21,14 @@ conflict resolution, or kiosk pairing (those are later, separate milestones).
    - status / sync now / restore                       │      └─ sync_outbox (append-only events)
    - restore (fresh install only)                      │
                                                        ├──▶ SyncEngine (background loop, single-flight)
-                                                       │      └─ push in sequence order, bounded batches,
-                                                       │         exponential backoff + jitter, marks pushed
-                                                       │         only after the server acknowledges
+                                                       │      └─ pull then push in bounded batches,
+                                                       │         validates and applies remote events,
+                                                       │         advances a cursor transactionally
                                                        │
                                                        └──▶ SupabaseTransport (HTTPS / PostgREST only)
-                                                              └─ upsert idempotent on event_id;
-                                                                 ordered read for restore
-                                                                 Cloud: sync_events (JSONB event log)
+                                                              └─ authenticated account transport;
+                                                                 idempotent event log plus pull cursor
+                                                                 Cloud: store_sync_events (JSONB)
 ```
 
 - **All network activity happens in the Electron main process.** The renderer
@@ -107,7 +108,7 @@ full backlog without losing anything.
 
 `SyncEngine` (in `@shul-store/sync`) runs entirely in the main process:
 
-- **Loop:** when enabled, attempts a push every 5 minutes and immediately after
+- **Loop:** when enabled, pulls and pushes every 5 minutes and immediately after
   app start; a manual **Sync now** action is also exposed.
 - **Ordering & batching:** reads the oldest unpushed events in strict `sequence`
   order, bounded to 200 per cycle, and pushes them in that order.
@@ -123,6 +124,9 @@ full backlog without losing anything.
   capped at the normal interval.
 - **Single-flight:** at most one cycle runs at a time; concurrent triggers skip.
 - **Never crashes, never blocks the UI** (the renderer is a separate process).
+- **Conflict handling:** mutable entities use the newest valid timestamp, while
+  immutable financial events are retained. A pending local outbox event protects
+  a local edit from a stale remote copy; kiosk revocation is always monotonic.
 
 Status is exposed over IPC: enabled/disabled, last successful sync time, pending
 event count, and a sanitized last error (no secrets).
@@ -141,8 +145,9 @@ Available **only** when the local database has no business rows. It:
 4. verifies integrity afterwards (foreign-key check, and recomputes each
    customer's ledger running balance, cross-checking it against the sale/account
    payment balance snapshots);
-5. refuses with a clear message if local business data already exists — **no
-   merging** in this milestone.
+5. refuses with a clear message if local business data already exists during
+   first-time restore. Once a device has joined the store, normal sync merges
+   its events with the other devices; it does not replace local history.
 
 On success the restored device adopts the source store id and credentials, seeds
 its local outbox with the restored events (marked already pushed), and resumes
@@ -150,13 +155,10 @@ pushing new changes from the restored sequence.
 
 ## Cloud-side schema (apply in your Supabase project)
 
-Run this in the Supabase dashboard **SQL editor**. This milestone uses an
-**events-only** log (a single append-only `sync_events` table). Trade-off: the
-cloud stores the authoritative event stream, which is simple, fully idempotent,
-and trivial to reason about, at the cost of not providing pre-normalized query
-tables. Restore reconstructs normalized state by replaying events. If you later
-need cloud-side analytics, add materialized/normalized tables populated from
-`sync_events` without changing this contract.
+Run the account-backed migrations from the Task Manager repository. They create
+`store_sync_events`, scoped to the owning POS account, and `store_devices` for
+device identity and receipt-prefix allocation. Legacy pasted-key installations
+continue to use the older `sync_events` table and push-only transport.
 
 ```sql
 create table if not exists sync_events (
@@ -210,14 +212,14 @@ sends `apikey` and `Authorization: Bearer <key>` headers.)
 
 ## Setup walkthrough
 
-1. **Create a Supabase project** at <https://supabase.com> (one project per
-   store is recommended).
-2. **Apply the DDL** above in the project's SQL editor.
-3. **Copy the project URL** (Settings → API → Project URL) and an **API key**
-   (Settings → API → `anon` or `service_role` key). Keep the key secret.
-4. In the manager app, open **Settings → Cloud backup (optional)**, paste the
-   URL and key, click **Test connection**, then **Save credentials** and enable
-   automatic backup. The first enable backfills all existing data to the cloud.
+1. Create the account-backed project and apply the Task Manager migrations,
+   including `027_store_sync.sql` and `028_store_barcode_catalog.sql`.
+2. Sign in from **Settings → Cloud account** with the POS account. The manager
+   adopts the local store identity and claims a device prefix.
+3. Enable cloud sync. Existing data is backfilled and then both pull and push
+   run automatically.
+4. For an older installation, keep using **Settings → Cloud backup (optional)**
+   with its pasted URL and key; this remains the legacy push-only path.
 
 The API key is encrypted at rest with Electron `safeStorage` when the OS
 keychain is available. If encryption is unavailable, the key is stored as

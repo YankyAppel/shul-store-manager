@@ -234,6 +234,32 @@ describe('sale completion', () => {
     });
     expect(store.getSale(sale.id).items[0]?.productName).toBe('Cookie');
   });
+
+  it('completes a sale for a newly added product after opening stock is recorded', () => {
+    const added = store.createProduct({
+      categoryId,
+      name: 'Newly scanned product',
+      secondaryName: null,
+      purchaseCostCents: 100,
+      sellingPriceCents: 250,
+      taxable: false,
+      lowStockThreshold: 0,
+      barcodes: ['NEW-ABC'],
+    });
+    store.addInventoryMovement({
+      productId: added.id,
+      quantityChange: 2,
+      reason: 'stock_received',
+      notes: 'Opening stock for product added during sale',
+    });
+    const sale = store.completeSale({
+      completionKey: key(),
+      lines: [{ productId: added.id, quantity: 2, barcodeUsed: 'NEW-ABC' }],
+      payment: { method: 'cash', cashReceivedCents: 500 },
+    });
+    expect(sale.status).toBe('completed');
+    expect(store.getProduct(added.id).stockQuantity).toBe(0);
+  });
   it('completes a sale before any cloud account is signed in', () => {
     const sale = store.completeSale(cash());
     expect(sale.status).toBe('completed');

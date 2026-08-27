@@ -1041,11 +1041,32 @@ export class StoreDatabase {
         'SELECT card_processor_config_secret, card_processor_config_encrypted FROM device_settings WHERE singleton_id = 1',
       )
       .get() as Row;
+    let processorId: string | null = null;
+    let mode: 'test' | 'live' | null = null;
+    let keyHint: string | null = null;
+    if (row.card_processor_config_secret) {
+      try {
+        const parsed = JSON.parse(
+          this.secretStore.decrypt(String(row.card_processor_config_secret)),
+        ) as { processorId?: unknown; mode?: unknown; apiKey?: unknown };
+        if (typeof parsed.processorId === 'string')
+          processorId = parsed.processorId;
+        if (parsed.mode === 'test' || parsed.mode === 'live')
+          mode = parsed.mode;
+        if (typeof parsed.apiKey === 'string' && parsed.apiKey.length > 0)
+          keyHint = `${parsed.apiKey.slice(0, 2)}••••${parsed.apiKey.slice(-2)}`;
+      } catch {
+        // A malformed legacy value remains reported as configured.
+      }
+    }
     return {
       configured:
         row.card_processor_config_secret !== null &&
         row.card_processor_config_secret !== undefined,
       encrypted: Number(row.card_processor_config_encrypted ?? 0) === 1,
+      ...(processorId ? { processorId } : {}),
+      ...(mode ? { mode } : {}),
+      ...(keyHint ? { keyHint } : {}),
     };
   }
 

@@ -5,7 +5,10 @@ import type {
   CloudEntitlement,
   SecretStore,
 } from '@shul-store/shared';
-import { cloudEntitlementSchema } from '@shul-store/shared';
+import {
+  cloudEntitlementSchema,
+  type BarcodeSuggestion,
+} from '@shul-store/shared';
 
 const SITE_URL = 'https://skvershul.softhere.work';
 const GRACE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -444,5 +447,32 @@ export class CloudAccountManager {
     const body = (await value.json()) as { url?: string };
     if (body.url && this.openExternal) await this.openExternal(body.url);
     await this.refresh(true);
+  }
+
+  async lookupBarcodeSuggestion(
+    barcode: string,
+  ): Promise<BarcodeSuggestion | null> {
+    const response = await this.request(
+      `/api/store/barcode-catalog?barcode=${encodeURIComponent(barcode)}`,
+      'GET',
+    );
+    const value = (await response.json()) as {
+      suggestion?: BarcodeSuggestion | null;
+    };
+    return value.suggestion ?? null;
+  }
+
+  async shareBarcodeSuggestion(
+    barcode: string,
+    name: string,
+  ): Promise<BarcodeSuggestion | null> {
+    const response = await this.request('/api/store/barcode-catalog', 'POST', {
+      barcode,
+      name,
+    });
+    const value = (await response.json()) as {
+      suggestion?: BarcodeSuggestion | null;
+    };
+    return value.suggestion ?? null;
   }
 }

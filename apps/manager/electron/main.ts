@@ -74,6 +74,10 @@ import {
   staffUpdateInputSchema,
 } from '@shul-store/shared';
 import {
+  processorConnectionConfigSchema,
+  testProcessorConnection,
+} from '@shul-store/payments';
+import {
   maskApiKey,
   AccountSupabaseTransport,
   PlaintextSyncSecretStore,
@@ -162,6 +166,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'settings:dismissExplanation': 'public',
   'settings:setProcessorConfig': 'owner',
   'settings:getProcessorConfigStatus': 'owner',
+  'settings:testProcessorConnection': 'owner',
   'settings:listPrinters': 'owner',
   'labels:render': 'products.edit',
   'labels:print': 'products.edit',
@@ -233,6 +238,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'cloudAccount:linkHint': 'public',
   'cloudAccount:checkout': 'owner',
   'cloudAccount:portal': 'owner',
+  'cloudAccount:lookupBarcodeSuggestion': 'public',
+  'cloudAccount:shareBarcodeSuggestion': 'public',
   'staff:list': 'owner',
   'staff:create': 'owner',
   'staff:update': 'owner',
@@ -686,6 +693,21 @@ function registerIpc(): void {
   ipcMain.handle('cloudAccount:linkHint', () => cloudAccount.linkHint());
   ipcMain.handle('cloudAccount:checkout', () => cloudAccount.checkout());
   ipcMain.handle('cloudAccount:portal', () => cloudAccount.portal());
+  ipcMain.handle('cloudAccount:lookupBarcodeSuggestion', (_event, barcode) =>
+    cloudAccount
+      .lookupBarcodeSuggestion(z.string().trim().min(1).max(100).parse(barcode))
+      .catch(() => null),
+  );
+  ipcMain.handle(
+    'cloudAccount:shareBarcodeSuggestion',
+    (_event, barcode, name) =>
+      cloudAccount
+        .shareBarcodeSuggestion(
+          z.string().trim().min(1).max(100).parse(barcode),
+          z.string().trim().min(1).max(200).parse(name),
+        )
+        .catch(() => null),
+  );
   ipcMain.handle('staff:list', () => database.listStaffAccounts());
   ipcMain.handle('staff:create', (_event, input) =>
     database.createStaff(staffCreateInputSchema.parse(input)),
@@ -820,8 +842,24 @@ function registerIpc(): void {
   ipcMain.handle('products:create', (_event, input) =>
     database.createProduct(productInputSchema.parse(input)),
   );
-  ipcMain.handle('products:createDuringSale', (_event, input) =>
-    database.createProduct(productInputSchema.parse(input)),
+  ipcMain.handle(
+    'products:createDuringSale',
+    (_event, input, openingStock: unknown) => {
+      const quantity = z
+        .number()
+        .int()
+        .positive()
+        .max(1_000_000)
+        .parse(openingStock);
+      const product = database.createProduct(productInputSchema.parse(input));
+      database.addInventoryMovement({
+        productId: product.id,
+        quantityChange: quantity,
+        reason: 'stock_received',
+        notes: 'Opening stock for product added during sale',
+      });
+      return database.getProduct(product.id);
+    },
   );
   ipcMain.handle('products:update', (_event, id, input) =>
     database.updateProduct(idSchema.parse(id), productInputSchema.parse(input)),
@@ -866,6 +904,10 @@ function registerIpc(): void {
   ipcMain.handle('settings:getProcessorConfigStatus', () =>
     database.getCardProcessorConfigStatus(),
   );
+  ipcMain.handle('settings:testProcessorConnection', async (_event, input) => {
+    const config = processorConnectionConfigSchema.parse(input);
+    return testProcessorConnection(config);
+  });
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));
 
   ipcMain.handle('labels:render', (_event, input) =>

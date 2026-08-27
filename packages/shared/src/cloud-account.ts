@@ -23,6 +23,12 @@ export interface CloudAccountConfig {
   supabaseAnonKey: string;
 }
 
+export interface BarcodeSuggestion {
+  barcode: string;
+  name: string;
+  confirmations: number;
+}
+
 export const emptyCloudAccountState = (): CloudAccountState => ({
   email: null,
   signedIn: false,

@@ -958,6 +958,7 @@ function InlineProductModal({
 }) {
   const [categoryId, setCategoryId] = useState(categories[0]?.id ?? '');
   const [name, setName] = useState('');
+  const [suggestedName, setSuggestedName] = useState(false);
   const [secondaryName, setSecondaryName] = useState('');
   const [price, setPrice] = useState('0.00');
   const [cost, setCost] = useState('0.00');
@@ -965,24 +966,55 @@ function InlineProductModal({
   const [taxable, setTaxable] = useState(false);
   const [amount, setAmount] = useState(String(quantity));
   const [saving, setSaving] = useState(false);
+  const [shareName, setShareName] = useState(false);
+  const nameRef = useRef('');
+
+  useEffect(() => {
+    if (barcode.startsWith('SSM-')) return;
+    let active = true;
+    void window.storeApi.cloudAccount
+      .lookupBarcodeSuggestion(barcode)
+      .then((suggestion) => {
+        if (active && suggestion && !nameRef.current.trim()) {
+          setName(suggestion.name);
+          setSuggestedName(true);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [barcode]);
 
   async function save() {
     if (!categoryId || !name.trim() || saving) return;
     setSaving(true);
-    const input = {
-      categoryId,
-      name,
-      secondaryName: secondaryName || null,
-      imageId: null,
-      purchaseCostCents: Math.round(Number(cost) * 100),
-      sellingPriceCents: Math.round(Number(price) * 100),
-      taxable,
-      lowStockThreshold: Number(threshold),
-      barcodes: [barcode],
-    };
     try {
-      const product = await window.storeApi.products.createDuringSale(input);
-      onSaved(product, Math.max(1, Number(amount) || quantity));
+      const purchaseCostCents = parseUsdToCents(cost);
+      const sellingPriceCents = parseUsdToCents(price);
+      const parsedAmount = Number(amount);
+      if (!Number.isInteger(parsedAmount) || parsedAmount < 1)
+        throw new Error('Enter a whole-number quantity of at least 1.');
+      const input = {
+        categoryId,
+        name,
+        secondaryName: secondaryName || null,
+        imageId: null,
+        purchaseCostCents,
+        sellingPriceCents,
+        taxable,
+        lowStockThreshold: Number(threshold),
+        barcodes: [barcode],
+      };
+      const product = await window.storeApi.products.createDuringSale(
+        input,
+        parsedAmount,
+      );
+      if (shareName && !barcode.startsWith('SSM-'))
+        void window.storeApi.cloudAccount
+          .shareBarcodeSuggestion(barcode, name.trim())
+          .catch(() => undefined);
+      onSaved(product, parsedAmount);
     } catch (reason) {
       const message =
         reason instanceof Error ? reason.message : 'Could not add product.';
@@ -1013,9 +1045,17 @@ function InlineProductModal({
             autoFocus
             required
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => {
+              nameRef.current = e.target.value;
+              setName(e.target.value);
+            }}
           />
         </label>
+        {suggestedName && (
+          <p className="muted">
+            Suggested by another shul — please check this name before saving.
+          </p>
+        )}
         <label>
           Secondary-language name <em>Optional</em>
           <input
@@ -1089,6 +1129,16 @@ function InlineProductModal({
           />{' '}
           This product is taxable
         </label>
+        {!barcode.startsWith('SSM-') && (
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={shareName}
+              onChange={(e) => setShareName(e.target.checked)}
+            />{' '}
+            Share this name with other shuls
+          </label>
+        )}
         <footer>
           <button type="button" onClick={onClose}>
             Cancel

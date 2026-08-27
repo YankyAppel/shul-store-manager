@@ -19,8 +19,10 @@ export function SettingsScreen() {
   const [deviceSettings, setDeviceSettings] = useState<DeviceSettings>();
   const [processorStatus, setProcessorStatus] =
     useState<ProcessorConfigStatus>();
-  const [processorDraft, setProcessorDraft] = useState('');
+  const [processorKey, setProcessorKey] = useState('');
+  const [processorMode, setProcessorMode] = useState<'test' | 'live'>('test');
   const [processorMessage, setProcessorMessage] = useState('');
+  const [testingProcessor, setTestingProcessor] = useState(false);
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
@@ -39,6 +41,13 @@ export function SettingsScreen() {
       setSettings(store);
       setDeviceSettings(device);
       setProcessorStatus(processor);
+      if (processor.processorId)
+        setSettings((current) =>
+          current
+            ? { ...current, cardProcessorId: processor.processorId! }
+            : current,
+        );
+      if (processor.mode) setProcessorMode(processor.mode);
     });
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
@@ -62,11 +71,16 @@ export function SettingsScreen() {
     setTimeout(() => setSaved(false), 3000);
   }
 
-  async function saveProcessorConfig(value: string | null) {
+  async function saveProcessorConfig() {
     try {
-      const status = await window.storeApi.settings.setProcessorConfig(value);
+      const next = JSON.stringify({
+        processorId: settings!.cardProcessorId,
+        apiKey: processorKey,
+        mode: processorMode,
+      });
+      const status = await window.storeApi.settings.setProcessorConfig(next);
       setProcessorStatus(status);
-      setProcessorDraft('');
+      setProcessorKey('');
       setProcessorMessage(
         status.configured
           ? 'Processor configuration replaced.'
@@ -74,6 +88,35 @@ export function SettingsScreen() {
       );
     } catch (error) {
       setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function clearProcessorConfig() {
+    try {
+      setProcessorStatus(
+        await window.storeApi.settings.setProcessorConfig(null),
+      );
+      setProcessorKey('');
+      setProcessorMessage('Processor configuration cleared.');
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function testProcessor() {
+    setTestingProcessor(true);
+    try {
+      const result = await window.storeApi.settings.testProcessorConnection({
+        processorId: (settings!.cardProcessorId || 'other') as
+          'sola' | 'cardknox' | 'usaepay' | 'other',
+        apiKey: processorKey,
+        mode: processorMode,
+      });
+      setProcessorMessage(result.message);
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    } finally {
+      setTestingProcessor(false);
     }
   }
 
@@ -487,9 +530,8 @@ export function SettingsScreen() {
           computer and are never shared with the cloud.
         </Explain>
         <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
-          Enable integrated credit card processing. Real processors (Sola, First
-          Choice, Donary) will be added later; currently, the Simulated
-          processor is available for testing/training.
+          Test the connection with a small sandbox authorization. It is voided
+          immediately and is not a customer charge.
         </p>
 
         <label className="toggle">
@@ -499,9 +541,8 @@ export function SettingsScreen() {
             onChange={(e) => {
               const enabled = e.target.checked;
               const next = { ...settings, cardProcessingEnabled: enabled };
-              if (enabled && !next.cardProcessorId) {
+              if (enabled && !next.cardProcessorId)
                 next.cardProcessorId = 'simulated';
-              }
               setSettings(next);
             }}
           />
@@ -523,22 +564,35 @@ export function SettingsScreen() {
                 }}
               >
                 <option value="">None</option>
-                <option value="simulated">
-                  Simulated card processor (testing)
-                </option>
+                <option value="simulated">Simulated (training)</option>
+                <option value="sola">Sola</option>
+                <option value="cardknox">Cardknox</option>
+                <option value="usaepay">USAePay</option>
+                <option value="other">Other (request)</option>
               </select>
             </label>
-
-            {settings.cardProcessorId === 'simulated' && (
-              <label>
-                Replace processor configuration (JSON)
-                <textarea
-                  value={processorDraft}
-                  onChange={(e) => setProcessorDraft(e.target.value)}
-                  placeholder='{"apiKey":"..."}'
-                />
-              </label>
-            )}
+            <label>
+              Processor key
+              <input
+                type="password"
+                value={processorKey}
+                onChange={(e) => setProcessorKey(e.target.value)}
+                placeholder={processorStatus.keyHint || 'Enter key on this PC'}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              Mode
+              <select
+                value={processorMode}
+                onChange={(e) =>
+                  setProcessorMode(e.target.value as 'test' | 'live')
+                }
+              >
+                <option value="test">Test</option>
+                <option value="live">Live</option>
+              </select>
+            </label>
             <p style={{ color: '#66766d', fontSize: '13px' }}>
               {processorStatus.configured
                 ? processorStatus.encrypted
@@ -547,24 +601,37 @@ export function SettingsScreen() {
                 : 'Not configured'}
             </p>
             <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-              <button
-                type="button"
-                onClick={() => void saveProcessorConfig(processorDraft)}
-                disabled={!processorDraft.trim()}
-              >
-                Replace processor configuration
-              </button>
               {processorStatus.configured && (
                 <button
                   type="button"
                   onClick={() => {
-                    setProcessorDraft('');
-                    void saveProcessorConfig(null);
+                    setProcessorKey('');
+                    void clearProcessorConfig();
                   }}
                 >
                   Clear configuration
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => void saveProcessorConfig()}
+                disabled={
+                  !processorKey.trim() || settings.cardProcessorId === 'other'
+                }
+              >
+                Save processor key
+              </button>
+              <button
+                type="button"
+                onClick={() => void testProcessor()}
+                disabled={
+                  testingProcessor ||
+                  !processorKey.trim() ||
+                  settings.cardProcessorId === 'other'
+                }
+              >
+                {testingProcessor ? 'Testing…' : 'Test connection'}
+              </button>
               {processorMessage && <span>{processorMessage}</span>}
             </div>
           </>

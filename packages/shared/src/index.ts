@@ -40,6 +40,7 @@ import type {
 export * from './barcode.js';
 export * from './backups.js';
 export * from './checkout.js';
+export type { BarcodeSuggestion } from './cloud-account.js';
 export * from './customers.js';
 export * from './html-templates.js';
 export * from './labels.js';
@@ -322,7 +323,10 @@ export interface StoreApi {
   products: {
     list(includeInactive?: boolean): Promise<Product[]>;
     create(input: ProductInput): Promise<Product>;
-    createDuringSale(input: ProductInput): Promise<Product>;
+    createDuringSale(
+      input: ProductInput,
+      openingStock: number,
+    ): Promise<Product>;
     update(id: string, input: ProductInput): Promise<Product>;
     setActive(id: string, active: boolean): Promise<void>;
     generateInternalBarcode(): Promise<string>;
@@ -366,6 +370,13 @@ export interface StoreApi {
     linkHint(): Promise<boolean>;
     checkout(): Promise<void>;
     portal(): Promise<void>;
+    lookupBarcodeSuggestion(
+      barcode: string,
+    ): Promise<import('./cloud-account.js').BarcodeSuggestion | null>;
+    shareBarcodeSuggestion(
+      barcode: string,
+      name: string,
+    ): Promise<import('./cloud-account.js').BarcodeSuggestion | null>;
     subscribe(
       listener: (state: import('./cloud-account.js').CloudAccountState) => void,
     ): () => void;
@@ -410,6 +421,11 @@ export interface StoreApi {
       input: ProcessorConfigInput,
     ): Promise<ProcessorConfigStatus>;
     getProcessorConfigStatus(): Promise<ProcessorConfigStatus>;
+    testProcessorConnection(input: {
+      processorId: 'sola' | 'cardknox' | 'usaepay' | 'other';
+      apiKey: string;
+      mode: 'test' | 'live';
+    }): Promise<{ ok: boolean; message: string }>;
     listPrinters(): Promise<PrinterInfo[]>;
   };
   checkout: {
@@ -480,6 +496,9 @@ export interface UpdateCheckResult {
 export interface ProcessorConfigStatus {
   configured: boolean;
   encrypted: boolean;
+  processorId?: string | null;
+  mode?: 'test' | 'live' | null;
+  keyHint?: string | null;
 }
 
 declare global {

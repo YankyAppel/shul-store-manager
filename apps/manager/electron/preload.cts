@@ -94,8 +94,8 @@ const api: StoreApi = {
     list: (includeInactive) =>
       ipcRenderer.invoke('products:list', includeInactive),
     create: (input) => ipcRenderer.invoke('products:create', input),
-    createDuringSale: (input) =>
-      ipcRenderer.invoke('products:createDuringSale', input),
+    createDuringSale: (input, openingStock) =>
+      ipcRenderer.invoke('products:createDuringSale', input, openingStock),
     update: (id, input) => ipcRenderer.invoke('products:update', id, input),
     setActive: (id, active) =>
       ipcRenderer.invoke('products:setActive', id, active),
@@ -117,6 +117,8 @@ const api: StoreApi = {
       ipcRenderer.invoke('settings:setProcessorConfig', input),
     getProcessorConfigStatus: () =>
       ipcRenderer.invoke('settings:getProcessorConfigStatus'),
+    testProcessorConnection: (input) =>
+      ipcRenderer.invoke('settings:testProcessorConnection', input),
     listPrinters: () => ipcRenderer.invoke('settings:listPrinters'),
   },
   checkout: {
@@ -208,6 +210,10 @@ const api: StoreApi = {
     linkHint: () => ipcRenderer.invoke('cloudAccount:linkHint'),
     checkout: () => ipcRenderer.invoke('cloudAccount:checkout'),
     portal: () => ipcRenderer.invoke('cloudAccount:portal'),
+    lookupBarcodeSuggestion: (barcode) =>
+      ipcRenderer.invoke('cloudAccount:lookupBarcodeSuggestion', barcode),
+    shareBarcodeSuggestion: (barcode, name) =>
+      ipcRenderer.invoke('cloudAccount:shareBarcodeSuggestion', barcode, name),
     subscribe: (listener) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
