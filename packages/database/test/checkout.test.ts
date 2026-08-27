@@ -234,6 +234,11 @@ describe('sale completion', () => {
     });
     expect(store.getSale(sale.id).items[0]?.productName).toBe('Cookie');
   });
+  it('completes a sale before any cloud account is signed in', () => {
+    const sale = store.completeSale(cash());
+    expect(sale.status).toBe('completed');
+    expect(sale.totalCents).toBe(733);
+  });
   it('maps sale origin metadata and defaults legacy values to manager', () => {
     const sale = store.completeSale(cash());
     expect(sale).toMatchObject({ channel: 'manager', kioskId: null });

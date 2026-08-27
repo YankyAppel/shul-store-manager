@@ -333,6 +333,29 @@ export interface StoreApi {
     restore(input: RestoreInput): Promise<RestoreResult>;
     isRestoreAvailable(): Promise<boolean>;
   };
+  cloudAccount: {
+    getState(): Promise<import('./cloud-account.js').CloudAccountState>;
+    signIn(
+      email: string,
+      password: string,
+    ): Promise<import('./cloud-account.js').CloudAccountState>;
+    signUp(
+      email: string,
+      password: string,
+    ): Promise<import('./cloud-account.js').CloudAccountState>;
+    signOut(): Promise<import('./cloud-account.js').CloudAccountState>;
+    refresh(): Promise<import('./cloud-account.js').CloudAccountState>;
+    link(
+      username: string,
+      password: string,
+    ): Promise<import('./cloud-account.js').CloudAccountState>;
+    linkHint(): Promise<boolean>;
+    checkout(): Promise<void>;
+    portal(): Promise<void>;
+    subscribe(
+      listener: (state: import('./cloud-account.js').CloudAccountState) => void,
+    ): () => void;
+  };
   backups: {
     list(): Promise<LocalBackup[]>;
     create(): Promise<LocalBackupAttempt>;
@@ -478,3 +501,10 @@ export {
   type StaffPinInput,
   type StaffUpdateInput,
 } from './staff.js';
+export {
+  cloudEntitlementSchema,
+  emptyCloudAccountState,
+  type CloudAccountConfig,
+  type CloudAccountState,
+  type CloudEntitlement,
+} from './cloud-account.js';
