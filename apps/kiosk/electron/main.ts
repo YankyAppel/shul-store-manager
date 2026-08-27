@@ -1410,7 +1410,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', (event) => {
-  if (!allowQuit && !sessionEnding) event.preventDefault();
+  if (!allowQuit && !sessionEnding) {
+    event.preventDefault();
+    return;
+  }
   if (updateInitialTimer) clearTimeout(updateInitialTimer);
   if (updateTimer) clearInterval(updateTimer);
 });
