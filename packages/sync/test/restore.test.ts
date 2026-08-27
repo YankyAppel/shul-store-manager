@@ -348,7 +348,7 @@ describe('restore round-trip', () => {
     expect(target.db.listKiosks()[0]).toMatchObject({
       id: kioskId,
       name: 'Front kiosk',
-      revokedAt: null,
+      revokedAt: expect.any(String),
       lastSeenAt: null,
     });
     expect(target.db.findKioskByTokenHash('token-hash')).toBeUndefined();

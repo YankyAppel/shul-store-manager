@@ -234,11 +234,7 @@ export class SyncEngine {
       if (validated.length > 0)
         this.db.applyPulledEvents(validated, maximumCloudId);
       else {
-        this.db.connection
-          .prepare(
-            'UPDATE sync_settings SET pull_cursor = ? WHERE singleton_id = 1',
-          )
-          .run(maximumCloudId);
+        this.db.setPullCursor(maximumCloudId);
       }
       return { pulled: validated.length, error: null };
     } catch (error) {

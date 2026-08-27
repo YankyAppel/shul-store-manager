@@ -204,6 +204,7 @@ export interface SyncConfigRecord {
   deviceId: string | null;
   pullCursor: number;
   deviceReceiptPrefix: number;
+  deviceReceiptPrefixClaimed: boolean;
   supabaseUrl: string | null;
   apiKeySecret: string | null;
   apiKeyEncrypted: boolean;
@@ -3838,6 +3839,7 @@ export class StoreDatabase {
         deviceId: null,
         pullCursor: 0,
         deviceReceiptPrefix: 1,
+        deviceReceiptPrefixClaimed: false,
         supabaseUrl: null,
         apiKeySecret: null,
         apiKeyEncrypted: false,
@@ -3855,6 +3857,7 @@ export class StoreDatabase {
           : String(row.device_id),
       pullCursor: Number(row.pull_cursor ?? 0),
       deviceReceiptPrefix: Number(row.device_receipt_prefix ?? 1),
+      deviceReceiptPrefixClaimed: Boolean(row.device_receipt_prefix_claimed),
       supabaseUrl:
         row.supabase_url === null || row.supabase_url === undefined
           ? null
@@ -3909,7 +3912,9 @@ export class StoreDatabase {
       throw new Error('Invalid device receipt prefix.');
     this.connection
       .prepare(
-        'UPDATE sync_settings SET device_receipt_prefix = ? WHERE singleton_id = 1',
+        `UPDATE sync_settings
+         SET device_receipt_prefix = ?, device_receipt_prefix_claimed = 1
+         WHERE singleton_id = 1`,
       )
       .run(prefix);
   }
@@ -3917,22 +3922,21 @@ export class StoreDatabase {
   validateReceiptPrefix(prefix: number): void {
     if (!Number.isInteger(prefix) || prefix < 1 || prefix > 8999)
       throw new Error('Invalid device receipt prefix.');
+    const rangeStart = prefix === 1 ? 1 : prefix * 1_000_000;
+    const rangeEnd = prefix === 1 ? 999_999 : rangeStart + 999_999;
     for (const table of ['sales', 'refunds', 'account_payments'] as const) {
       const row = this.connection
-        .prepare(`SELECT MAX(receipt_number) AS maximum FROM ${table}`)
-        .get() as { maximum: number | null };
+        .prepare(
+          `SELECT MAX(receipt_number) AS maximum FROM ${table}
+           WHERE receipt_number BETWEEN ? AND ?`,
+        )
+        .get(rangeStart, rangeEnd) as { maximum: number | null };
       const maximum = row.maximum === null ? null : Number(row.maximum);
-      if (prefix === 1 && maximum !== null && maximum >= 1_000_000)
+      if (maximum !== null && maximum >= rangeEnd)
         throw new Error(
-          'This store has reached the original receipt-number range and cannot join cloud sync on this device.',
-        );
-      if (
-        prefix > 1 &&
-        maximum !== null &&
-        maximum >= prefix * 1_000_000 + 999_999
-      )
-        throw new Error(
-          'This device has exhausted its receipt-number range. A new device prefix is required.',
+          prefix === 1
+            ? 'This store has exhausted the original receipt-number range and cannot use cloud sync on this device.'
+            : 'This device has exhausted its receipt-number range. A new device prefix is required.',
         );
     }
   }
@@ -3950,13 +3954,6 @@ export class StoreDatabase {
   private nextReceiptNumber(table: 'sales' | 'refunds' | 'account_payments') {
     const prefix = this.getSyncConfigRecord().deviceReceiptPrefix;
     if (prefix === 1) {
-      const overall = this.connection
-        .prepare(`SELECT MAX(receipt_number) AS maximum FROM ${table}`)
-        .get() as { maximum: number | null };
-      if (overall.maximum !== null && Number(overall.maximum) >= 1_000_000)
-        throw new Error(
-          'This store has reached the original receipt-number range and cannot join cloud sync on this device.',
-        );
       const row = this.connection
         .prepare(
           `SELECT COALESCE(MAX(receipt_number), 0) + 1 AS next
@@ -3964,6 +3961,10 @@ export class StoreDatabase {
         )
         .get() as { next: number };
       const next = Number(row.next);
+      if (next > 999_999)
+        throw new Error(
+          'This store has exhausted the original receipt-number range and cannot use cloud sync on this device.',
+        );
       return next;
     }
     const start = prefix * 1_000_000;
@@ -4138,11 +4139,7 @@ export class StoreDatabase {
           )
           .run(event.eventId, cloudId, now());
       }
-      this.connection
-        .prepare(
-          'UPDATE sync_settings SET pull_cursor = ? WHERE singleton_id = 1',
-        )
-        .run(Math.max(maximumCloudId, cursorOverride ?? 0));
+      this.setPullCursor(Math.max(maximumCloudId, cursorOverride ?? 0));
     })();
   }
 
@@ -4202,7 +4199,7 @@ export class StoreDatabase {
     return Boolean(
       this.connection
         .prepare(
-          'SELECT 1 FROM sync_outbox WHERE entity_type = ? AND entity_id = ? LIMIT 1',
+          'SELECT 1 FROM sync_outbox WHERE entity_type = ? AND entity_id = ? AND pushed_at IS NULL LIMIT 1',
         )
         .get(entityType, entityId),
     );

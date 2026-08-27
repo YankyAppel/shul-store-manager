@@ -592,6 +592,7 @@ function applyPaymentTransaction(
 
 function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
   const updatedAt = payload.updatedAt ?? payload.createdAt;
+  const revokedAt = payload.revokedAt ?? new Date().toISOString();
   connection
     .prepare(
       `INSERT INTO kiosks
@@ -609,7 +610,7 @@ function applyKiosk(connection: SqliteDatabase, payload: KioskPayload): void {
       RESTORED_KIOSK_CREDENTIAL_SENTINEL,
       payload.createdAt,
       updatedAt,
-      payload.revokedAt,
+      revokedAt,
     );
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { CloudEvent } from '@shul-store/shared';
 import {
   SyncEngine,
   computeBackoffDelay,
@@ -11,6 +12,8 @@ import {
   disposeDb,
   enableSync,
   FakeTransport,
+  populateStore,
+  SharedCloudTransport,
   TEST_STORE_ID,
 } from './helpers.js';
 
@@ -59,6 +62,150 @@ describe('sync engine push cycle', () => {
     disposeDb(db, file);
   });
 
+  it('allocates a low local receipt after pulling another device range', async () => {
+    const { db, file } = createDb();
+    const transport = new FakeTransport();
+    enableSync(db);
+    const category = db.createCategory({ name: 'Remote sale category' });
+    const product = db.createProduct({
+      categoryId: category.id,
+      name: 'Remote sale product',
+      purchaseCostCents: 100,
+      sellingPriceCents: 200,
+      taxable: false,
+      lowStockThreshold: 1,
+      barcodes: [],
+    });
+    db.addInventoryMovement({
+      productId: product.id,
+      quantityChange: 10,
+      reason: 'stock_received',
+      notes: 'Opening stock',
+    });
+    const saleId = '00000000-0000-0000-0000-000000000061';
+    transport.seed([
+      parseRestoreEvent({
+        cloudId: 1,
+        eventId: '00000000-0000-0000-0000-000000000062',
+        storeId: TEST_STORE_ID,
+        deviceId: '00000000-0000-0000-0000-000000000063',
+        sequence: 1,
+        entityType: 'sale',
+        entityId: saleId,
+        operation: 'append',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        payload: {
+          id: saleId,
+          receiptNumber: 2_000_001,
+          completionKey: '00000000-0000-0000-0000-000000000064',
+          status: 'completed',
+          subtotalCents: 200,
+          taxCents: 0,
+          totalCents: 200,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          completedAt: '2024-01-01T00:00:00.000Z',
+          customerId: null,
+          customerName: null,
+          customerAccountNumber: null,
+          customerBalanceBeforeCents: null,
+          customerBalanceAfterCents: null,
+          tenderType: 'cash',
+          items: [
+            {
+              id: '00000000-0000-0000-0000-000000000065',
+              productId: product.id,
+              productName: product.name,
+              secondaryName: null,
+              barcodeUsed: null,
+              quantity: 1,
+              unitSellingPriceCents: 200,
+              unitPurchaseCostCents: 100,
+              taxable: false,
+              taxCents: 0,
+              lineSubtotalCents: 200,
+              lineTotalCents: 200,
+            },
+          ],
+          payment: {
+            method: 'cash',
+            amountCents: 200,
+            cashReceivedCents: 200,
+            changeDueCents: 0,
+            terminalReference: null,
+            externalApproved: null,
+          },
+          inventoryMovements: [],
+          ledgerEntry: null,
+        },
+      }),
+    ]);
+
+    const pulled = await new SyncEngine(db, transport).pullCycle();
+    expect(pulled.error).toBeNull();
+    const localSale = db.completeSale({
+      completionKey: '00000000-0000-0000-0000-000000000066',
+      lines: [{ productId: product.id, quantity: 1, barcodeUsed: null }],
+      payment: { method: 'cash', cashReceivedCents: 200 },
+    });
+    expect(localSale.receiptNumber).toBe(1);
+    disposeDb(db, file);
+  });
+
+  it('round-trips sales between two stores without duplicates or ledger drift', async () => {
+    const first = createDb();
+    const second = createDb();
+    enableSync(first.db);
+    enableSync(second.db);
+    const firstDeviceId = '00000000-0000-0000-0000-000000000071';
+    const secondDeviceId = '00000000-0000-0000-0000-000000000072';
+    first.db.connection
+      .prepare('UPDATE sync_settings SET device_id = ? WHERE singleton_id = 1')
+      .run(firstDeviceId);
+    second.db.connection
+      .prepare('UPDATE sync_settings SET device_id = ? WHERE singleton_id = 1')
+      .run(secondDeviceId);
+    const populated = populateStore(first.db);
+    const cloud = { nextId: 1, events: [] as CloudEvent[] };
+    const firstEngine = new SyncEngine(
+      first.db,
+      new SharedCloudTransport(cloud, firstDeviceId),
+    );
+    const secondEngine = new SyncEngine(
+      second.db,
+      new SharedCloudTransport(cloud, secondDeviceId),
+    );
+
+    await firstEngine.pushCycle();
+    await secondEngine.pullCycle();
+    expect(second.db.listSales()).toHaveLength(2);
+    expect(second.db.getCustomerBalance(populated.customerId)).toBe(0);
+
+    second.db.completeSale({
+      completionKey: '00000000-0000-0000-0000-000000000073',
+      lines: [
+        { productId: populated.productId, quantity: 1, barcodeUsed: null },
+      ],
+      payment: {
+        method: 'account',
+        customerId: populated.customerId,
+        confirmed: true,
+      },
+    });
+    await secondEngine.pushCycle();
+    await firstEngine.pullCycle();
+    await firstEngine.pullCycle();
+    await secondEngine.pullCycle();
+
+    expect(first.db.listSales()).toHaveLength(3);
+    expect(second.db.listSales()).toHaveLength(3);
+    expect(first.db.getCustomerBalance(populated.customerId)).toBe(399);
+    expect(second.db.getCustomerBalance(populated.customerId)).toBe(399);
+    expect(new Set(first.db.listSales().map((sale) => sale.id)).size).toBe(3);
+    expect(new Set(second.db.listSales().map((sale) => sale.id)).size).toBe(3);
+    disposeDb(first.db, first.file);
+    disposeDb(second.db, second.file);
+  });
+
   it('does not let an older remote upsert overwrite local data', async () => {
     const { db, file } = createDb();
     const transport = new FakeTransport();
@@ -105,6 +252,7 @@ describe('sync engine push cycle', () => {
     const kioskId = '00000000-0000-0000-0000-000000000031';
     db.createKiosk(kioskId, 'Front kiosk', 'local-token', 'local-pin');
     db.revokeKiosk(kioskId);
+    const outboxBefore = db.pendingSyncEventCount();
     const event = parseRestoreEvent({
       cloudId: 1,
       eventId: '00000000-0000-0000-0000-000000000032',
@@ -127,6 +275,7 @@ describe('sync engine push cycle', () => {
     db.applyPulledEvents([event]);
     expect(db.listKiosks()[0].revokedAt).not.toBeNull();
     expect(db.listKiosks()[0].name).toBe('Front kiosk');
+    expect(db.pendingSyncEventCount()).toBe(outboxBefore);
     disposeDb(db, file);
   });
 

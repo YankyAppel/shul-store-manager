@@ -209,3 +209,59 @@ export class FakeTransport implements SyncTransport {
       );
   }
 }
+
+export class SharedCloudTransport implements SyncTransport {
+  readonly cloud: { nextId: number; events: CloudEvent[] };
+  readonly deviceId: string;
+
+  constructor(
+    cloud: { nextId: number; events: CloudEvent[] },
+    deviceId: string,
+  ) {
+    this.cloud = cloud;
+    this.deviceId = deviceId;
+  }
+
+  async pushEvents(events: CloudEvent[]): Promise<PushAck> {
+    for (const event of events) {
+      if (
+        this.cloud.events.some((existing) => existing.eventId === event.eventId)
+      )
+        continue;
+      this.cloud.events.push({
+        ...event,
+        cloudId: this.cloud.nextId++,
+        deviceId: this.deviceId,
+      });
+    }
+    return { acknowledgedEventIds: events.map((event) => event.eventId) };
+  }
+
+  async testConnection(): Promise<ConnectionTestResult> {
+    return { ok: true, reachable: true, message: 'Shared cloud connected' };
+  }
+
+  async listEvents(
+    storeId: string,
+    afterSequence: number,
+  ): Promise<CloudEvent[]> {
+    return this.cloud.events.filter(
+      (event) => event.storeId === storeId && event.sequence > afterSequence,
+    );
+  }
+
+  async listEventsSince(
+    storeId: string,
+    pullCursor: number,
+    deviceId: string,
+  ): Promise<CloudEvent[]> {
+    return this.cloud.events
+      .filter(
+        (event) =>
+          event.storeId === storeId &&
+          Number(event.cloudId ?? 0) > pullCursor &&
+          event.deviceId !== deviceId,
+      )
+      .sort((a, b) => Number(a.cloudId) - Number(b.cloudId));
+  }
+}

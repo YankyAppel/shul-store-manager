@@ -1260,6 +1260,13 @@ export const migrations: Migration[] = [
       UPDATE kiosks SET updated_at = created_at WHERE updated_at IS NULL;
     `,
   },
+  {
+    version: 27,
+    name: 'device_receipt_prefix_claim',
+    sql: `
+      ALTER TABLE sync_settings ADD COLUMN device_receipt_prefix_claimed INTEGER NOT NULL DEFAULT 0 CHECK (device_receipt_prefix_claimed IN (0, 1));
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

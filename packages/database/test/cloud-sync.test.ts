@@ -61,7 +61,7 @@ describe('cloud receipt allocation', () => {
     expect(second.receiptNumber).toBe(2_000_001);
   });
 
-  it('rejects joining prefix one when existing history is outside its range', () => {
+  it('ignores pulled history in another device prefix', () => {
     const store = createStore();
     store.connection
       .prepare(
@@ -77,8 +77,32 @@ describe('cloud receipt allocation', () => {
         '2024-01-01T00:00:00.000Z',
         '2024-01-01T00:00:00.000Z',
       );
-    expect(() => store.validateReceiptPrefix(1)).toThrow(
-      'cannot join cloud sync',
-    );
+    expect(() => store.validateReceiptPrefix(1)).not.toThrow();
+  });
+
+  it('rejects prefix-one allocation when its own range is exhausted', () => {
+    const store = createStore();
+    const product = addProduct(store);
+    store.connection
+      .prepare(
+        `INSERT INTO sales
+          (id, receipt_number, completion_key, status, subtotal_cents, tax_cents,
+           total_cents, created_at, completed_at)
+         VALUES (?, ?, ?, 'completed', 0, 0, 0, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        999_999,
+        randomUUID(),
+        '2024-01-01T00:00:00.000Z',
+        '2024-01-01T00:00:00.000Z',
+      );
+    expect(() =>
+      store.completeSale({
+        completionKey: randomUUID(),
+        lines: [{ productId: product.id, quantity: 1, barcodeUsed: null }],
+        payment: { method: 'cash', cashReceivedCents: 200 },
+      }),
+    ).toThrow('exhausted the original receipt-number range');
   });
 });

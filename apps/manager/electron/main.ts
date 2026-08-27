@@ -503,12 +503,18 @@ async function configureAccountStore(storeId: string): Promise<void> {
     deviceId: database.ensureDeviceId(),
     getAccessToken: (force) => cloudAccount.getAccessToken(force),
   });
-  const prefix = await transport.claimDevicePrefix(
-    storeId,
-    database.ensureDeviceId(),
-  );
-  database.validateReceiptPrefix(prefix);
-  database.setDeviceReceiptPrefix(prefix);
+  const prefixAlreadyAssigned =
+    local.storeId === storeId &&
+    local.deviceReceiptPrefixClaimed &&
+    local.deviceReceiptPrefix > 0;
+  if (!prefixAlreadyAssigned) {
+    const prefix = await transport.claimDevicePrefix(
+      storeId,
+      database.ensureDeviceId(),
+    );
+    database.validateReceiptPrefix(prefix);
+    database.setDeviceReceiptPrefix(prefix);
+  }
   if (database.isRestoreAllowed())
     await restoreFromCloud(database, transport, storeId);
   recreateSyncEngine();
@@ -1461,7 +1467,12 @@ app.whenReady().then(async () => {
   });
   const savedStoreId = await cloudAccount.getStoreId();
   if (savedStoreId && (await cloudAccount.getState()).signedIn) {
-    void configureAccountStore(savedStoreId).catch(() => undefined);
+    void configureAccountStore(savedStoreId).catch(() => {
+      database.recordSyncResult(
+        false,
+        'Cloud sync could not be configured on startup.',
+      );
+    });
   }
   session = new ManagerSession(database, () => {
     for (const window of BrowserWindow.getAllWindows()) {
