@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@shul-store/database": "0.1.0",
+    "@shul-store/payments": "1.0.0",
     "@shul-store/shared": "0.1.0",
     "@shul-store/sync": "0.1.0",
     "react": "^19.0.0",

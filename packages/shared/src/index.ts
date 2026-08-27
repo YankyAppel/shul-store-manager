@@ -426,6 +426,7 @@ export interface StoreApi {
       apiKey: string;
       mode: 'test' | 'live';
     }): Promise<{ ok: boolean; message: string }>;
+    checkReader(): Promise<{ ok: boolean; message: string }>;
     listPrinters(): Promise<PrinterInfo[]>;
   };
   checkout: {

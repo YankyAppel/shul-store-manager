@@ -119,6 +119,7 @@ const api: StoreApi = {
       ipcRenderer.invoke('settings:getProcessorConfigStatus'),
     testProcessorConnection: (input) =>
       ipcRenderer.invoke('settings:testProcessorConnection', input),
+    checkReader: () => ipcRenderer.invoke('settings:checkReader'),
     listPrinters: () => ipcRenderer.invoke('settings:listPrinters'),
   },
   checkout: {

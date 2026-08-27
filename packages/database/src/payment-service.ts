@@ -199,6 +199,7 @@ interface TransactionRow {
 
 interface RefundTransactionRow {
   processor_id: string;
+  processor_transaction_id: string | null;
   processor_config_secret: string | null;
   processor_config_hash: string | null;
 }
@@ -219,6 +220,11 @@ function parseRefundTransaction(value: unknown): RefundTransactionRow | null {
     return null;
   return {
     processor_id: row.processor_id,
+    processor_transaction_id:
+      row.processor_transaction_id === null ||
+      typeof row.processor_transaction_id === 'string'
+        ? (row.processor_transaction_id as string | null)
+        : null,
     processor_config_secret: row.processor_config_secret,
     processor_config_hash: row.processor_config_hash,
   };
@@ -1025,6 +1031,10 @@ export class PaymentService {
           {
             chargeReference: intent.chargeReference ?? context.chargeReference!,
             refundReference: value.operationId,
+            ...(tx.processor_transaction_id
+              ? { processorTransactionId: tx.processor_transaction_id }
+              : {}),
+            amountCents: intent.amountCents,
           },
           config,
           this.db.getProcessorStorage(),
@@ -1090,6 +1100,9 @@ export class PaymentService {
         chargeReference: intent.chargeReference ?? context.chargeReference!,
         refundReference: value.operationId,
         amountCents: intent.amountCents,
+        ...(tx.processor_transaction_id
+          ? { processorTransactionId: tx.processor_transaction_id }
+          : {}),
       },
       config,
       this.db.getProcessorStorage(),

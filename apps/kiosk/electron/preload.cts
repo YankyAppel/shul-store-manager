@@ -13,6 +13,14 @@ const api: KioskApi = {
     ipcRenderer.invoke('kiosk:cloudSignIn', input),
   cloudSignUp: (input: KioskCloudSignInInput) =>
     ipcRenderer.invoke('kiosk:cloudSignUp', input),
+  getReaderStatus: () => ipcRenderer.invoke('kiosk:getReaderStatus'),
+  saveReaderConfig: (input) =>
+    ipcRenderer.invoke('kiosk:saveReaderConfig', input),
+  checkReader: () => ipcRenderer.invoke('kiosk:checkReader'),
+  getExplanationDismissed: (id) =>
+    ipcRenderer.invoke('kiosk:getExplanationDismissed', id),
+  dismissExplanation: (id) =>
+    ipcRenderer.invoke('kiosk:dismissExplanation', id),
   startDiscovery: () => ipcRenderer.invoke('kiosk:startDiscovery'),
   stopDiscovery: () => ipcRenderer.invoke('kiosk:stopDiscovery'),
   refreshCatalog: () => ipcRenderer.invoke('kiosk:refreshCatalog'),

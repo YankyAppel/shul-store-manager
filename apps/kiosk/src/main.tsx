@@ -4,6 +4,7 @@ import {
   type KioskCartLine,
   type KioskPriceQuote,
   type KioskPublicState,
+  type KioskReaderConfig,
 } from '@shul-store/shared';
 import './style.css';
 
@@ -292,11 +293,272 @@ function PairingScreen({
           </p>
         </>
       )}
+      <KioskReaderSetup status={state.readerStatus} />
     </main>
   );
 }
 
-function AdminOverlay({ onClose }: { onClose: () => void }) {
+function KioskReaderSetup({
+  status,
+}: {
+  status: KioskPublicState['readerStatus'];
+}) {
+  const [open, setOpen] = useState(false);
+  const [apiKey, setApiKey] = useState('');
+  const [deviceName, setDeviceName] = useState('BBPOS');
+  const [connection, setConnection] = useState<'usb' | 'ip'>('usb');
+  const [comPort, setComPort] = useState('COM3');
+  const [address, setAddress] = useState('');
+  const [port, setPort] = useState('');
+  const [silentMode, setSilentMode] = useState(true);
+  const [readerOnly, setReaderOnly] = useState(true);
+  const [amountConfirmationPrompt, setAmountConfirmationPrompt] =
+    useState(false);
+  const [timeout, setTimeoutValue] = useState('120');
+  const [mode, setMode] = useState<'test' | 'live'>('live');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    setMessage('');
+    const config: KioskReaderConfig = {
+      apiKey,
+      deviceName,
+      connection:
+        connection === 'usb'
+          ? { kind: 'usb', comPort }
+          : { kind: 'ip', address, port: Number(port) },
+      silentMode,
+      readerOnly,
+      amountConfirmationPrompt,
+      deviceTimeoutSeconds: Number(timeout),
+      mode,
+    };
+    try {
+      await window.kioskApi.saveReaderConfig(config);
+      setApiKey('');
+      setMessage('Reader settings saved on this kiosk.');
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Reader setup failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function check() {
+    setBusy(true);
+    try {
+      setMessage((await window.kioskApi.checkReader()).message);
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Reader check failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="reader-setup">
+      <button
+        type="button"
+        className="secondary"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? 'Hide card reader setup' : 'Card reader setup'}
+      </button>
+      {open && (
+        <>
+          <KioskExplain
+            id="bbpos-reader-setup"
+            sentence="This reader lets this kiosk take card payments without a countertop terminal."
+          >
+            Install BBPOS on the Windows computer from
+            https://cdn.cardknox.com/dl/bbpos.exe. Sola must activate BBPOS and
+            key-inject the reader. PIN debit is not supported, and Augusta has
+            no tap. The reader must stay connected to this kiosk computer.
+          </KioskExplain>
+          <p>
+            {status.configured
+              ? `Configured (${status.keyHint ?? 'key saved'}).`
+              : 'Not configured.'}
+          </p>
+          <label>
+            Sola / Cardknox key
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+            />
+          </label>
+          <label>
+            Reader device name
+            <input
+              value={deviceName}
+              onChange={(event) => setDeviceName(event.target.value)}
+            />
+          </label>
+          <label>
+            Connection
+            <select
+              value={connection}
+              onChange={(event) =>
+                setConnection(event.target.value as 'usb' | 'ip')
+              }
+            >
+              <option value="usb">USB</option>
+              <option value="ip">Network reader</option>
+            </select>
+          </label>
+          {connection === 'usb' ? (
+            <label>
+              USB COM port
+              <input
+                value={comPort}
+                onChange={(event) => setComPort(event.target.value)}
+              />
+            </label>
+          ) : (
+            <>
+              <label>
+                Reader IP address
+                <input
+                  value={address}
+                  onChange={(event) => setAddress(event.target.value)}
+                />
+              </label>
+              <label>
+                Reader IP port
+                <input
+                  value={port}
+                  onChange={(event) => setPort(event.target.value)}
+                />
+              </label>
+            </>
+          )}
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={silentMode}
+              onChange={(event) => setSilentMode(event.target.checked)}
+            />
+            Hide the BBPOS form
+            <small>
+              When on, customers can use only the reader. When off, BBPOS may
+              show its own card-number form.
+            </small>
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={readerOnly}
+              onChange={(event) => setReaderOnly(event.target.checked)}
+            />
+            Reader only — do not allow card-number typing
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={amountConfirmationPrompt}
+              onChange={(event) =>
+                setAmountConfirmationPrompt(event.target.checked)
+              }
+            />
+            Ask customer to confirm amount
+          </label>
+          <label>
+            Reader timeout (seconds)
+            <input
+              inputMode="numeric"
+              value={timeout}
+              onChange={(event) => setTimeoutValue(event.target.value)}
+            />
+          </label>
+          <label>
+            Reader mode
+            <select
+              value={mode}
+              onChange={(event) =>
+                setMode(event.target.value as 'test' | 'live')
+              }
+            >
+              <option value="live">Live</option>
+              <option value="test">Test</option>
+            </select>
+          </label>
+          {message && <p className="error-message">{message}</p>}
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary"
+              disabled={busy || !apiKey.trim()}
+              onClick={() => void save()}
+            >
+              Save reader settings
+            </button>
+            <button
+              type="button"
+              disabled={busy || !status.configured}
+              onClick={() => void check()}
+            >
+              Check reader
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function KioskExplain({
+  id,
+  sentence,
+  children,
+}: {
+  id: string;
+  sentence: string;
+  children: string;
+}) {
+  const [dismissed, setDismissed] = useState(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    void window.kioskApi
+      .getExplanationDismissed(id)
+      .then(setDismissed)
+      .catch(() => undefined);
+  }, [id]);
+  if (dismissed) return null;
+  return (
+    <div className="explain">
+      <p>{sentence}</p>
+      <button type="button" onClick={() => setOpen((value) => !value)}>
+        {open ? 'Hide explanation' : 'What is this?'}
+      </button>
+      {open && <p className="explain-detail">{children}</p>}
+      <button
+        type="button"
+        className="explain-dismiss"
+        onClick={() => {
+          setDismissed(true);
+          void window.kioskApi.dismissExplanation(id);
+        }}
+      >
+        Don&apos;t show this again
+      </button>
+    </div>
+  );
+}
+
+function AdminOverlay({
+  onClose,
+  readerStatus,
+}: {
+  onClose: () => void;
+  readerStatus: KioskPublicState['readerStatus'];
+}) {
   const [pin, setPin] = useState('');
   const [message, setMessage] = useState('');
   const [unlocked, setUnlocked] = useState(false);
@@ -334,21 +596,24 @@ function AdminOverlay({ onClose }: { onClose: () => void }) {
             </button>
           </>
         ) : (
-          <div className="admin-actions">
-            <button
-              type="button"
-              className="primary"
-              onClick={() => void window.kioskApi.exitKiosk()}
-            >
-              Exit to desktop
-            </button>
-            <button
-              type="button"
-              onClick={() => void window.kioskApi.restart()}
-            >
-              Restart kiosk
-            </button>
-          </div>
+          <>
+            <KioskReaderSetup status={readerStatus} />
+            <div className="admin-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void window.kioskApi.exitKiosk()}
+              >
+                Exit to desktop
+              </button>
+              <button
+                type="button"
+                onClick={() => void window.kioskApi.restart()}
+              >
+                Restart kiosk
+              </button>
+            </div>
+          </>
         )}
         <button
           type="button"
@@ -665,7 +930,12 @@ function App() {
   if (screen === 'attract')
     return (
       <main className="attract-screen">
-        {adminOpen && <AdminOverlay onClose={() => setAdminOpen(false)} />}
+        {adminOpen && (
+          <AdminOverlay
+            readerStatus={state.readerStatus}
+            onClose={() => setAdminOpen(false)}
+          />
+        )}
         <button type="button" className="store-name" onClick={tapStoreName}>
           {state.storeName || 'Self-checkout'}
         </button>
@@ -694,7 +964,12 @@ function App() {
     );
   return (
     <main className="shopping-screen">
-      {adminOpen && <AdminOverlay onClose={() => setAdminOpen(false)} />}
+      {adminOpen && (
+        <AdminOverlay
+          readerStatus={state.readerStatus}
+          onClose={() => setAdminOpen(false)}
+        />
+      )}
       <header className="kiosk-header">
         <button type="button" className="store-name" onClick={tapStoreName}>
           {state.storeName || 'Self-checkout'}
