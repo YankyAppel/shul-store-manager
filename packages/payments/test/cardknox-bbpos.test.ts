@@ -274,6 +274,28 @@ describe('Cardknox BBPOS processor', () => {
     });
   });
 
+  it('keeps an approved report without a transaction reference unresolved', async () => {
+    const fake = fakeFetch([
+      response({
+        xResult: 'A',
+        xRecordsReturned: '1',
+        xReportData: [
+          {
+            xInvoice: 'charge-approved-without-reference',
+            xResponseResult: 'A',
+          },
+        ],
+      }),
+    ]);
+    await expect(
+      createCardknoxBbposProcessor(fake.fetchImpl).getChargeStatus(
+        'charge-approved-without-reference',
+        config,
+        storage(),
+      ),
+    ).rejects.toThrow('safe status lookup');
+  });
+
   it('does not invent a status when the report finds no sale', async () => {
     const fake = fakeFetch([
       response({ xResult: 'A', xRecordsReturned: '0', xReportData: [] }),
@@ -281,6 +303,23 @@ describe('Cardknox BBPOS processor', () => {
     await expect(
       createCardknoxBbposProcessor(fake.fetchImpl).getChargeStatus(
         'missing-charge',
+        config,
+        storage(),
+      ),
+    ).rejects.toThrow('safe status lookup');
+  });
+
+  it('keeps an unmatched report row unresolved', async () => {
+    const fake = fakeFetch([
+      response({
+        xResult: 'A',
+        xRecordsReturned: '1',
+        xReportData: [{ xInvoice: 'a-different-charge', xResponseResult: 'A' }],
+      }),
+    ]);
+    await expect(
+      createCardknoxBbposProcessor(fake.fetchImpl).getChargeStatus(
+        'charge-not-in-row',
         config,
         storage(),
       ),

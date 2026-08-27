@@ -418,9 +418,6 @@ function classifyReport(
   if (matching.length === 1 && matchingTransaction)
     return { kind: 'found', transaction: matchingTransaction };
   if (matching.length > 1) return { kind: 'ambiguous' };
-  const onlyTransaction = rows[0];
-  if (rows.length === 1 && onlyTransaction && !reportInvoice(onlyTransaction))
-    return { kind: 'found', transaction: onlyTransaction };
   return { kind: 'ambiguous' };
 }
 
@@ -532,7 +529,7 @@ export function createCardknoxBbposProcessor(
           await storage.set(chargeReference, result);
           return result;
         }
-        if (declinedCharge(transaction) || !approvedCharge(transaction)) {
+        if (declinedCharge(transaction)) {
           const reason = responseText(transaction);
           const result: ChargeResult = {
             status: 'declined',
