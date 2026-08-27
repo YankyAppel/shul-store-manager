@@ -16,6 +16,87 @@ body {
   margin: 0;
   min-width: 900px;
 }
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: #f5f7f5;
+}
+.auth-card {
+  width: min(430px, calc(100vw - 32px));
+  padding: 32px;
+  border-radius: 14px;
+  background: white;
+  box-shadow: 0 10px 40px #1735261c;
+  display: grid;
+  gap: 14px;
+}
+.auth-card h1 {
+  margin: 0;
+}
+.auth-card label,
+.staff-form label {
+  display: grid;
+  gap: 5px;
+  color: #53675d;
+  font-size: 13px;
+  font-weight: 650;
+}
+.auth-card input,
+.auth-card select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #b8c5bd;
+  border-radius: 7px;
+  background: white;
+}
+.pin-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.pin-keypad button {
+  min-height: 48px;
+  font-size: 18px;
+}
+.staff-badge {
+  color: #53675d;
+  font-size: 13px;
+  font-weight: 650;
+}
+.staff-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 20px;
+}
+.staff-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid #e0e5e2;
+  border-radius: 7px;
+}
+.staff-row span {
+  color: #708078;
+  margin-right: auto;
+}
+.staff-permissions {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: #53675d;
+  font-size: 12px;
+}
+.staff-form {
+  display: grid;
+  gap: 12px;
+}
+.staff-form input[type='text'],
+.staff-form input:not([type]) {
+  padding: 8px;
+}
 button,
 input,
 select,

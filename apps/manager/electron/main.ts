@@ -15,7 +15,7 @@ import {
   app,
   BrowserWindow,
   dialog,
-  ipcMain,
+  ipcMain as electronIpcMain,
   net,
   protocol,
   safeStorage,
@@ -31,6 +31,7 @@ import {
 } from '@shul-store/database';
 import {
   accountPaymentReceiptHtml,
+  assertExplicitIpcRequirements,
   businessDayRange,
   categoryInputSchema,
   completeSaleInputSchema,
@@ -63,6 +64,10 @@ import {
   type SecretStore,
   type UpdateCheckResult,
   type CompleteSaleInput,
+  grantablePermissionSchema,
+  staffCreateInputSchema,
+  staffPinSchema,
+  staffUpdateInputSchema,
 } from '@shul-store/shared';
 import {
   maskApiKey,
@@ -73,6 +78,7 @@ import {
   type SyncSecretStore,
 } from '@shul-store/sync';
 import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
+import { ManagerSession, type IpcRequirement } from './session.js';
 
 const require = createRequire(import.meta.url);
 const { githubUpdateRepository } = require('../update-config.cjs') as {
@@ -92,6 +98,8 @@ let secretStore: SecretStore = new PlaintextSyncSecretStore();
 let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
 let databasePath = '';
+let session: ManagerSession;
+let idleTimer: ReturnType<typeof setInterval> | null = null;
 let backupDirectory = '';
 let imageDirectory = '';
 let backupTimer: ReturnType<typeof setInterval> | null = null;
@@ -101,6 +109,123 @@ const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_INITIAL_DELAY_MS = 30 * 1000;
 const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export const channelRequirements: Record<string, IpcRequirement> = {
+  'app:getVersion': 'public',
+  'updates:check': 'public',
+  'updates:getState': 'public',
+  'kiosk:getSettings': 'owner',
+  'kiosk:pairCode': 'owner',
+  'kiosk:revoke': 'owner',
+  'kiosk:setServer': 'owner',
+  'payments:initiateCharge': 'checkout',
+  'payments:getChargeStatus': 'checkout',
+  'payments:getPendingTransactions': 'owner',
+  'payments:reconcileTransactions': 'owner',
+  'payments:listNeedsAttention': 'owner',
+  'payments:resolveNeedsAttention': 'owner',
+  'categories:list': 'public',
+  'categories:create': 'products.edit',
+  'categories:update': 'products.edit',
+  'categories:setActive': 'products.edit',
+  'products:list': 'public',
+  'products:create': 'products.edit',
+  'products:update': 'products.edit',
+  'products:setActive': 'products.edit',
+  'products:generateBarcode': 'products.edit',
+  'inventory:addMovement': 'inventory.adjust',
+  'inventory:list': 'inventory.adjust',
+  'settings:get': 'owner',
+  'settings:update': 'owner',
+  'settings:getDevice': 'owner',
+  'settings:updateDevice': 'owner',
+  'settings:setProcessorConfig': 'owner',
+  'settings:getProcessorConfigStatus': 'owner',
+  'settings:listPrinters': 'owner',
+  'labels:render': 'products.edit',
+  'labels:print': 'products.edit',
+  'checkout:lookupBarcode': 'public',
+  'checkout:complete': 'checkout',
+  'sales:list': 'sales.history',
+  'sales:get': 'sales.history',
+  'sales:receipt': 'sales.history',
+  'sales:print': 'sales.history',
+  'sales:lookupReceiptBarcode': 'public',
+  'refunds:refundable': 'refunds',
+  'refunds:record': 'refunds',
+  'refunds:list': 'refunds',
+  'refunds:print': 'refunds',
+  'refunds:listAttention': 'owner',
+  'refunds:resolveAttention': 'owner',
+  'customers:list': 'public',
+  'customers:get': 'public',
+  'customers:search': 'public',
+  'customers:create': 'customers.manage',
+  'customers:update': 'customers.manage',
+  'customers:setActive': 'customers.manage',
+  'customers:setBlocked': 'customers.manage',
+  'customers:generateAccountNumber': 'customers.manage',
+  'customers:generateBarcode': 'customers.manage',
+  'customers:lookupBarcode': 'public',
+  'customers:getLedger': 'customers.manage',
+  'customers:getStatement': 'customers.manage',
+  'customers:printStatement': 'customers.manage',
+  'accountPayments:record': 'account_payments',
+  'accountPayments:list': 'account_payments',
+  'accountPayments:get': 'account_payments',
+  'accountPayments:receipt': 'account_payments',
+  'accountPayments:print': 'account_payments',
+  'images:choose': 'products.edit',
+  'images:discard': 'products.edit',
+  'sync:getConfig': 'owner',
+  'sync:getStatus': 'owner',
+  'sync:isRestoreAvailable': 'owner',
+  'sync:saveConfig': 'owner',
+  'sync:setEnabled': 'owner',
+  'sync:testConnection': 'owner',
+  'sync:syncNow': 'owner',
+  'sync:restore': 'owner',
+  'backups:list': 'owner',
+  'backups:create': 'owner',
+  'backups:getLastRestoreResult': 'owner',
+  'backups:revealFolder': 'owner',
+  'backups:restore': 'owner',
+  'reports:daily': 'reports.view',
+  'reports:close': 'reports.close',
+  'reports:listCloses': 'reports.view',
+  'reports:print': 'reports.view',
+  'auth:getState': 'public',
+  'auth:listAccounts': 'public',
+  'auth:signIn': 'public',
+  'auth:signOut': 'public',
+  'auth:touch': 'public',
+  'auth:elevate': 'public',
+  'auth:createFirstOwner': 'public',
+  'staff:list': 'owner',
+  'staff:create': 'owner',
+  'staff:update': 'owner',
+  'staff:setPin': 'owner',
+  'staff:setIdleLock': 'owner',
+};
+
+const ipcMain = {
+  handle(
+    channel: string,
+    listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown,
+  ): void {
+    const requirement = channelRequirements[channel];
+    assertExplicitIpcRequirements([channel], channelRequirements);
+    if (!requirement) throw new Error(`Missing IPC requirement: ${channel}`);
+    electronIpcMain.handle(channel, async (event, ...args) => {
+      if (channel.startsWith('auth:')) session?.touch();
+      else {
+        session.authorize(requirement);
+        session.touch();
+      }
+      return listener(event, ...args);
+    });
+  },
+};
 
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -368,6 +493,44 @@ async function createWindow(): Promise<void> {
 import { initiateChargeInputSchema } from '@shul-store/shared';
 
 function registerIpc(): void {
+  ipcMain.handle('auth:getState', () => session.state);
+  ipcMain.handle('auth:listAccounts', () => database.listStaffPickerAccounts());
+  ipcMain.handle('auth:signIn', (_event, staffId, pin) => {
+    return session.signIn(idSchema.parse(staffId), staffPinSchema.parse(pin));
+  });
+  ipcMain.handle('auth:signOut', () => session.signOut());
+  ipcMain.handle('auth:touch', () => session.touch());
+  ipcMain.handle('auth:elevate', (_event, permission, pin) => {
+    session.elevate(
+      grantablePermissionSchema.parse(permission),
+      staffPinSchema.parse(pin),
+    );
+  });
+  ipcMain.handle('auth:createFirstOwner', (_event, name, pin) => {
+    const owner = database.createFirstOwner(
+      z.string().trim().min(1).max(200).parse(name),
+      staffPinSchema.parse(pin),
+    );
+    session.signIn(owner.id, pin);
+    return owner;
+  });
+  ipcMain.handle('staff:list', () => database.listStaffAccounts());
+  ipcMain.handle('staff:create', (_event, input) =>
+    database.createStaff(staffCreateInputSchema.parse(input)),
+  );
+  ipcMain.handle('staff:update', (_event, id, input) =>
+    database.updateStaff(
+      idSchema.parse(id),
+      staffUpdateInputSchema.parse(input),
+    ),
+  );
+  ipcMain.handle('staff:setPin', (_event, id, pin) =>
+    database.setStaffPin(idSchema.parse(id), staffPinSchema.parse(pin)),
+  );
+  ipcMain.handle('staff:setIdleLock', (_event, minutes) => {
+    const value = z.number().int().min(0).max(1440).parse(minutes);
+    return database.setIdleLockMinutes(value);
+  });
   ipcMain.handle('app:getVersion', () => app.getVersion());
   ipcMain.handle('updates:check', () => checkForUpdates(true));
   ipcMain.handle('updates:getState', () => ({
@@ -843,6 +1006,7 @@ function registerIpc(): void {
           backupDirectory,
           imageDirectory,
         });
+        session.replaceDatabase(database);
         throw error;
       }
       const imageResult = restoreImagesFromVault(
@@ -854,6 +1018,7 @@ function registerIpc(): void {
         backupDirectory,
         imageDirectory,
       });
+      session.replaceDatabase(database);
       database.recordRestoreResult({
         completedAt: new Date().toISOString(),
         filename: selected,
@@ -1155,6 +1320,19 @@ app.whenReady().then(async () => {
     backupDirectory,
     imageDirectory,
   });
+  session = new ManagerSession(database, () => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed())
+        window.webContents.send('auth:state', session.state);
+    }
+  });
+  idleTimer = setInterval(() => {
+    if (session.checkIdle()) {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send('auth:locked');
+      }
+    }
+  }, 1000);
   registerIpc();
   const newestScheduled = () =>
     database
@@ -1211,6 +1389,7 @@ app.on('window-all-closed', () => {
 });
 app.on('before-quit', () => {
   engine?.stop();
+  if (idleTimer) clearInterval(idleTimer);
   if (database) {
     try {
       const latest = database

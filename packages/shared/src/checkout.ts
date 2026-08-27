@@ -75,6 +75,8 @@ export const deviceSettingsSchema = z.object({
     .transform((value) => (value && value.length > 0 ? value : null))
     .default(null),
   automaticUpdatesEnabled: z.boolean().default(true),
+  idleLockMinutes: z.number().int().min(0).max(1440).default(5),
+  staffModeEnabled: z.boolean().default(false),
 });
 export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
 
