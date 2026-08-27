@@ -45,6 +45,14 @@ export * from './html-templates.js';
 export * from './labels.js';
 export * from './kiosk.js';
 export * from './kiosk-client.js';
+export {
+  KIOSK_DISCOVERY_PORT,
+  KIOSK_DISCOVERY_PROTOCOL_VERSION,
+  encodeKioskDiscoveryBeacon,
+  kioskDiscoveryBeaconSchema,
+  parseKioskDiscoveryBeacon,
+  type KioskDiscoveryBeacon,
+} from './kiosk-discovery.js';
 export * from './printing.js';
 export * from './receipt-barcode.js';
 export * from './reports.js';
@@ -261,6 +269,8 @@ export interface StoreApi {
     pairCode(): Promise<string>;
     revoke(id: string): Promise<void>;
     setServer(enabled: boolean, port: number): Promise<void>;
+    startDiscovery(): Promise<void>;
+    stopDiscovery(): Promise<void>;
   };
   payments: {
     initiateCharge(

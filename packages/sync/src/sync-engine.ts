@@ -140,7 +140,7 @@ export class SyncEngine {
         };
       }
       const cloudEvents = batch.map((event) =>
-        toCloudEvent(event, config.storeId!),
+        toCloudEvent(event, config.storeId!, config.deviceId),
       );
       let ack: PushAck;
       try {
@@ -274,10 +274,15 @@ export class SyncEngine {
   }
 }
 
-function toCloudEvent(event: OutboxEvent, storeId: string): CloudEvent {
+function toCloudEvent(
+  event: OutboxEvent,
+  storeId: string,
+  deviceId: string | null,
+): CloudEvent {
   return {
     eventId: event.eventId,
     storeId,
+    ...(deviceId ? { deviceId } : {}),
     sequence: event.sequence,
     entityType: event.entityType,
     entityId: event.entityId,

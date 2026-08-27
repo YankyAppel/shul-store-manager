@@ -4,6 +4,13 @@ import { kioskCatalogResponseSchema } from './kiosk.js';
 export type KioskConnection =
   'unpaired' | 'online' | 'manager-unreachable' | 'revoked';
 
+export interface KioskDiscoveredManager {
+  storeName: string;
+  host: string;
+  port: number;
+  lastSeenAt: number;
+}
+
 export const kioskCartLineSchema = z
   .object({
     productId: z.string().uuid().optional(),
@@ -53,6 +60,12 @@ export interface KioskPairInput {
   port: number;
   code: string;
   name: string;
+  adminPin: string;
+}
+
+export interface KioskCloudSignInInput {
+  email: string;
+  password: string;
   adminPin: string;
 }
 
@@ -150,6 +163,13 @@ export const kioskStateFileSchema = z.object({
   adminAttempts: z.array(z.number().int().nonnegative()),
   adminLockedUntil: z.number().nullable(),
   inFlightCharge: kioskInFlightChargeSchema.nullable(),
+  cloudEmail: z.string().nullable().optional().default(null),
+  cloudStoreId: z.string().uuid().nullable().optional().default(null),
+  cloudAccessTokenSecret: z.string().nullable().optional().default(null),
+  cloudRefreshTokenSecret: z.string().nullable().optional().default(null),
+  cloudExpiresAt: z.number().nullable().optional().default(null),
+  cloudSupabaseUrl: z.string().nullable().optional().default(null),
+  cloudSupabaseAnonKey: z.string().nullable().optional().default(null),
 });
 export type KioskStateFile = z.infer<typeof kioskStateFileSchema>;
 
@@ -168,6 +188,7 @@ export interface KioskPublicState {
   tokenPersistenceWarning: boolean;
   inFlightCharge: KioskInFlightCharge | null;
   adminLockedUntil: number | null;
+  discoveredManagers: KioskDiscoveredManager[];
 }
 
 export type KioskAdminResult = { ok: true } | { ok: false; message: string };
@@ -181,6 +202,10 @@ export interface KioskMainHandlers {
   verifyAdminPin(pin: string): Promise<KioskAdminResult>;
   exitKiosk(): Promise<void>;
   restart(): Promise<void>;
+  startDiscovery(): Promise<void>;
+  stopDiscovery(): Promise<void>;
+  cloudSignIn(input: KioskCloudSignInInput): Promise<KioskPublicState>;
+  cloudSignUp(input: KioskCloudSignInInput): Promise<KioskPublicState>;
 }
 
 export interface KioskApi extends KioskMainHandlers {

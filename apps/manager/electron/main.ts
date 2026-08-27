@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import dgram from 'node:dgram';
 import {
   copyFile,
   mkdir,
@@ -43,6 +44,9 @@ import {
   dailyReportPrintInputSchema,
   deviceSettingsSchema,
   inventoryMovementInputSchema,
+  KIOSK_DISCOVERY_PORT,
+  KIOSK_DISCOVERY_PROTOCOL_VERSION,
+  encodeKioskDiscoveryBeacon,
   isHttpsUpdateFeedUrl,
   labelPrintRequestSchema,
   labelsHtml,
@@ -105,6 +109,8 @@ let engine: SyncEngine | null = null;
 let secretStore: SecretStore = new PlaintextSyncSecretStore();
 let kioskServer: KioskServer | null = null;
 let kioskReconcileTimer: ReturnType<typeof setInterval> | null = null;
+let kioskDiscoveryTimer: ReturnType<typeof setInterval> | null = null;
+const kioskDiscoverySockets = new Set<dgram.Socket>();
 let databasePath = '';
 let session: ManagerSession;
 let idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -126,6 +132,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'updates:getState': 'public',
   'kiosk:getSettings': 'owner',
   'kiosk:pairCode': 'owner',
+  'kiosk:startDiscovery': 'owner',
+  'kiosk:stopDiscovery': 'owner',
   'kiosk:revoke': 'owner',
   'kiosk:setServer': 'owner',
   'payments:initiateCharge': 'checkout',
@@ -530,6 +538,57 @@ function lanIpv4Addresses(): string[] {
     ),
   ];
 }
+
+function ipv4Broadcast(address: string, netmask: string): string {
+  const ip = address.split('.').map(Number);
+  const mask = netmask.split('.').map(Number);
+  return ip.map((part, index) => part | (~mask[index]! & 255)).join('.');
+}
+
+function stopKioskDiscovery(): void {
+  if (kioskDiscoveryTimer) clearInterval(kioskDiscoveryTimer);
+  kioskDiscoveryTimer = null;
+  for (const socket of kioskDiscoverySockets) socket.close();
+  kioskDiscoverySockets.clear();
+}
+
+function startKioskDiscovery(): void {
+  stopKioskDiscovery();
+  const interfaces = Object.values(networkInterfaces())
+    .flatMap((entries) => entries ?? [])
+    .filter((entry) => !entry.internal && entry.family === 'IPv4');
+  const sendBeacon = () => {
+    const storeName = database.getSettings().storeName;
+    const port = database.getKioskServerSettings().port;
+    for (const entry of interfaces) {
+      const socket = dgram.createSocket('udp4');
+      kioskDiscoverySockets.add(socket);
+      socket.once('error', () => {
+        socket.close();
+        kioskDiscoverySockets.delete(socket);
+      });
+      socket.bind(0, entry.address, () => {
+        socket.setBroadcast(true);
+        socket.send(
+          encodeKioskDiscoveryBeacon({
+            protocolVersion: KIOSK_DISCOVERY_PROTOCOL_VERSION,
+            storeName,
+            host: entry.address,
+            httpPort: port,
+          }),
+          KIOSK_DISCOVERY_PORT,
+          ipv4Broadcast(entry.address, entry.netmask),
+          () => {
+            socket.close();
+            kioskDiscoverySockets.delete(socket);
+          },
+        );
+      });
+    }
+  };
+  sendBeacon();
+  kioskDiscoveryTimer = setInterval(sendBeacon, 2000);
+}
 const imageTypes: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -658,8 +717,12 @@ function registerIpc(): void {
   });
   ipcMain.handle('kiosk:pairCode', () => {
     if (!kioskServer) throw new Error('Enable Kiosk server first');
-    return kioskServer.newPairingCode();
+    const code = kioskServer.newPairingCode();
+    startKioskDiscovery();
+    return code;
   });
+  ipcMain.handle('kiosk:startDiscovery', () => startKioskDiscovery());
+  ipcMain.handle('kiosk:stopDiscovery', () => stopKioskDiscovery());
   ipcMain.handle('kiosk:revoke', (_e, id) =>
     database.revokeKiosk(idSchema.parse(id)),
   );

@@ -70,10 +70,28 @@ function PairingScreen({
   const [name, setName] = useState(state.kioskName || 'Kiosk');
   const [pin, setPin] = useState('');
   const [message, setMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  const [cloudMode, setCloudMode] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const managers = state.discoveredManagers;
+  useEffect(() => {
+    void window.kioskApi.startDiscovery().catch(() => undefined);
+    return () => {
+      void window.kioskApi.stopDiscovery();
+    };
+  }, []);
+  function selectManager(hostname: string, managerPort: number) {
+    setHost(hostname);
+    setPort(String(managerPort));
+    setAdvanced(true);
+  }
   async function pair() {
     setBusy(true);
     setMessage('');
+    setSuccessMessage('');
     try {
       const next = await window.kioskApi.pair({
         host: host.trim(),
@@ -89,49 +107,191 @@ function PairingScreen({
       setBusy(false);
     }
   }
+  async function cloudSignIn(signUp: boolean) {
+    setBusy(true);
+    setMessage('');
+    try {
+      const next = await (
+        signUp ? window.kioskApi.cloudSignUp : window.kioskApi.cloudSignIn
+      )({
+        email: email.trim(),
+        password,
+        adminPin: pin,
+      });
+      onPaired(next);
+    } catch (error) {
+      const text =
+        error instanceof Error ? error.message : 'Cloud setup failed.';
+      if (signUp && text.startsWith('Account created')) setSuccessMessage(text);
+      else setMessage(text);
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <main className="setup-screen">
       <h1>Set up this self-checkout</h1>
-      <p>Enter the address shown by the shames, then enter the pairing code.</p>
-      <label>
-        Manager host
-        <input value={host} onChange={(event) => setHost(event.target.value)} />
-      </label>
-      <label>
-        Port
-        <input
-          inputMode="numeric"
-          value={port}
-          onChange={(event) => setPort(event.target.value)}
-        />
-      </label>
-      <label>
-        Kiosk name
-        <input value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <label>
-        Six-digit pairing code
-        <output className="pin-display">
-          {code || '—'.repeat(PAIRING_CODE_LENGTH)}
-        </output>
-      </label>
-      <Keypad value={code} onChange={setCode} maxLength={PAIRING_CODE_LENGTH} />
-      <label>
-        Admin PIN for this kiosk
-        <output className="pin-display">
-          {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
-        </output>
-      </label>
-      <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
-      {message && <p className="error-message">{message}</p>}
-      <button
-        type="button"
-        className="primary wide-button"
-        disabled={busy || code.length !== 6 || pin.length < 4 || !host.trim()}
-        onClick={() => void pair()}
-      >
-        {busy ? 'Pairing…' : 'Pair this kiosk'}
-      </button>
+      <div className="mode-switch">
+        <button
+          type="button"
+          className={cloudMode ? 'primary' : 'secondary'}
+          onClick={() => setCloudMode(true)}
+        >
+          Sign in with the store's cloud account
+        </button>
+        <button
+          type="button"
+          className={!cloudMode ? 'primary' : 'secondary'}
+          onClick={() => setCloudMode(false)}
+        >
+          Pair over the local network
+        </button>
+      </div>
+      {cloudMode ? (
+        <>
+          <p>Use the same POS cloud account as the shul's manager.</p>
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          <label>
+            Admin PIN for this kiosk
+            <output className="pin-display">
+              {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
+            </output>
+          </label>
+          <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
+          {message && <p className="error-message">{message}</p>}
+          {successMessage && (
+            <p className="success-message">{successMessage}</p>
+          )}
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary wide-button"
+              disabled={busy || !email.trim() || !password || pin.length < 4}
+              onClick={() => void cloudSignIn(false)}
+            >
+              {busy ? 'Signing in…' : 'Sign in and set up kiosk'}
+            </button>
+            <button
+              type="button"
+              className="secondary wide-button"
+              disabled={busy || !email.trim() || !password || pin.length < 4}
+              onClick={() => void cloudSignIn(true)}
+            >
+              Create cloud account
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>
+            Choose your store, then enter the six-digit pairing code shown by
+            the shames.
+          </p>
+          {managers.length > 0 ? (
+            <div className="manager-list">
+              {managers.map((manager) => (
+                <button
+                  type="button"
+                  className="secondary wide-button"
+                  key={`${manager.host}:${manager.port}`}
+                  onClick={() => selectManager(manager.host, manager.port)}
+                >
+                  {manager.storeName}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">
+              No manager found yet. If this continues, open Advanced below.
+            </p>
+          )}
+          <button
+            type="button"
+            className="secondary wide-button"
+            onClick={() => setAdvanced((value) => !value)}
+          >
+            {advanced ? 'Hide Advanced' : 'Advanced'}
+          </button>
+          {advanced && (
+            <>
+              <label>
+                Manager host
+                <input
+                  value={host}
+                  onChange={(event) => setHost(event.target.value)}
+                />
+              </label>
+              <label>
+                Port
+                <input
+                  inputMode="numeric"
+                  value={port}
+                  onChange={(event) => setPort(event.target.value)}
+                />
+              </label>
+            </>
+          )}
+          <label>
+            Kiosk name
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label>
+            Six-digit pairing code
+            <output className="pin-display">
+              {code || '—'.repeat(PAIRING_CODE_LENGTH)}
+            </output>
+          </label>
+          <Keypad
+            value={code}
+            onChange={setCode}
+            maxLength={PAIRING_CODE_LENGTH}
+          />
+          <label>
+            Admin PIN for this kiosk
+            <output className="pin-display">
+              {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
+            </output>
+          </label>
+          <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
+          {message && <p className="error-message">{message}</p>}
+          <button
+            type="button"
+            className="primary wide-button"
+            disabled={
+              busy ||
+              code.length !== 6 ||
+              pin.length < 4 ||
+              !host.trim() ||
+              !Number(port)
+            }
+            onClick={() => void pair()}
+          >
+            {busy ? 'Pairing…' : 'Pair this kiosk'}
+          </button>
+          <p className="setup-exit-hint">
+            To exit kiosk mode: tap the store name 5 times or press the Shames
+            button, then enter the admin PIN.
+          </p>
+        </>
+      )}
     </main>
   );
 }
@@ -509,6 +669,13 @@ function App() {
         <button type="button" className="store-name" onClick={tapStoreName}>
           {state.storeName || 'Self-checkout'}
         </button>
+        <button
+          type="button"
+          className="shames-button"
+          onClick={() => setAdminOpen(true)}
+        >
+          Shames
+        </button>
         {state.tokenPersistenceWarning && (
           <p className="warning-message">
             This kiosk must be paired again if it restarts.
@@ -539,6 +706,13 @@ function App() {
         >
           {state.connection === 'online' ? 'Connected' : 'Manager offline'}
         </span>
+        <button
+          type="button"
+          className="shames-button"
+          onClick={() => setAdminOpen(true)}
+        >
+          Shames
+        </button>
       </header>
       <div className="shopping-layout">
         <section className="catalog-panel">

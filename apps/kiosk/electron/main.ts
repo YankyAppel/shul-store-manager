@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
+import dgram from 'node:dgram';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -9,8 +10,16 @@ import {
   safeStorage,
 } from 'electron';
 import { z } from 'zod';
+import { StoreDatabase } from '@shul-store/database';
+import {
+  AccountSupabaseTransport,
+  SyncEngine,
+  restoreFromCloud,
+} from '@shul-store/sync';
 import {
   encodeScryptPinHash,
+  KIOSK_DISCOVERY_PORT,
+  parseKioskDiscoveryBeacon,
   kioskAdminVerifyRequestSchema,
   kioskCatalogResponseSchema,
   kioskChargeOutcomeSchema,
@@ -25,8 +34,10 @@ import {
   SCRYPT_R,
   type KioskAdminResult,
   type KioskCartLine,
+  type KioskCloudSignInInput,
   type KioskChargeResult,
   type KioskConnection,
+  type KioskDiscoveredManager,
   type KioskInFlightCharge,
   type KioskMainHandlers,
   type KioskPairInput,
@@ -34,6 +45,7 @@ import {
   type KioskPublicState,
   type KioskResolvedLine,
   type KioskStateFile,
+  PlaintextSecretStore,
   isTerminalKioskChargeStatus,
   verifyScryptPinHash,
 } from '@shul-store/shared';
@@ -60,6 +72,16 @@ let chargePollTimer: ReturnType<typeof setTimeout> | null = null;
 let catalogTimer: ReturnType<typeof setInterval> | null = null;
 let writeQueue = Promise.resolve();
 let chargeRetryDelay = CHARGE_RETRY_MS;
+let localDatabase: StoreDatabase | null = null;
+let cloudTransport: AccountSupabaseTransport | null = null;
+let cloudEngine: SyncEngine | null = null;
+let cloudAccessToken: string | null = null;
+let cloudRefreshToken: string | null = null;
+const CLOUD_SITE_URL = 'https://skvershul.softhere.work';
+let discoverySocket: dgram.Socket | null = null;
+let discoveryTimer: ReturnType<typeof setInterval> | null = null;
+const discoveredManagers = new Map<string, KioskDiscoveredManager>();
+const DISCOVERY_STALE_MS = 7000;
 
 function startTimers(): void {
   catalogTimer ??= setInterval(() => void refreshCatalog(), CATALOG_REFRESH_MS);
@@ -80,7 +102,30 @@ function defaultState(): KioskStateFile {
     adminAttempts: [],
     adminLockedUntil: null,
     inFlightCharge: null,
+    cloudEmail: null,
+    cloudStoreId: null,
+    cloudAccessTokenSecret: null,
+    cloudRefreshTokenSecret: null,
+    cloudExpiresAt: null,
+    cloudSupabaseUrl: null,
+    cloudSupabaseAnonKey: null,
   };
+}
+
+function encryptCloudSecret(value: string | null): string | null {
+  return value && encryptionAvailable
+    ? safeStorage.encryptString(value).toString('base64')
+    : value;
+}
+
+function decryptCloudSecret(value: string | null): string | null {
+  if (!value) return null;
+  if (!encryptionAvailable) return value;
+  try {
+    return safeStorage.decryptString(Buffer.from(value, 'base64'));
+  } catch {
+    return null;
+  }
 }
 
 function derivePin(pin: string, salt: Uint8Array, length: number): Uint8Array {
@@ -101,7 +146,9 @@ function localPinHash(pin: string): string {
 function publicState(): KioskPublicState {
   return {
     connection:
-      token === null && connection === 'online' ? 'unpaired' : connection,
+      token === null && connection === 'online' && !cloudEngine
+        ? 'unpaired'
+        : connection,
     host: state.host,
     port: state.port,
     kioskId: state.kioskId,
@@ -111,7 +158,58 @@ function publicState(): KioskPublicState {
     tokenPersistenceWarning: token !== null && !encryptionAvailable,
     inFlightCharge: state.inFlightCharge,
     adminLockedUntil: state.adminLockedUntil,
+    discoveredManagers: [...discoveredManagers.values()].sort((a, b) =>
+      a.storeName.localeCompare(b.storeName),
+    ),
   };
+}
+
+function stopDiscovery(): void {
+  if (discoveryTimer) clearInterval(discoveryTimer);
+  discoveryTimer = null;
+  discoverySocket?.close();
+  discoverySocket = null;
+  discoveredManagers.clear();
+  publish();
+}
+
+async function startDiscovery(): Promise<void> {
+  stopDiscovery();
+  discoverySocket = dgram.createSocket('udp4');
+  discoverySocket.on('message', (message) => {
+    try {
+      const beacon = parseKioskDiscoveryBeacon(message);
+      discoveredManagers.set(`${beacon.host}:${beacon.httpPort}`, {
+        storeName: beacon.storeName,
+        host: beacon.host,
+        port: beacon.httpPort,
+        lastSeenAt: Date.now(),
+      });
+      publish();
+    } catch {
+      // Discovery is best effort; malformed LAN traffic is ignored.
+    }
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      discoverySocket!.once('error', reject);
+      discoverySocket!.bind(KIOSK_DISCOVERY_PORT, '0.0.0.0', () => {
+        discoverySocket!.off('error', reject);
+        resolve();
+      });
+    });
+  } catch {
+    discoverySocket?.close();
+    discoverySocket = null;
+    throw new Error('Manager discovery is unavailable. Use Advanced below.');
+  }
+  discoveryTimer = setInterval(() => {
+    const cutoff = Date.now() - DISCOVERY_STALE_MS;
+    for (const [key, manager] of discoveredManagers) {
+      if (manager.lastSeenAt < cutoff) discoveredManagers.delete(key);
+    }
+    publish();
+  }, 2000);
 }
 
 function publish(): void {
@@ -127,6 +225,8 @@ function persist(): Promise<void> {
           ? safeStorage.encryptString(token).toString('base64')
           : null,
       tokenEncrypted: token !== null && encryptionAvailable,
+      cloudAccessTokenSecret: encryptCloudSecret(cloudAccessToken),
+      cloudRefreshTokenSecret: encryptCloudSecret(cloudRefreshToken),
     };
     const temporaryPath = `${statePath}.tmp`;
     await writeFile(temporaryPath, JSON.stringify(persisted), 'utf8');
@@ -150,6 +250,8 @@ async function loadState(): Promise<void> {
         token = null;
       }
     }
+    cloudAccessToken = decryptCloudSecret(state.cloudAccessTokenSecret);
+    cloudRefreshToken = decryptCloudSecret(state.cloudRefreshTokenSecret);
   } catch {
     state = defaultState();
   }
@@ -160,6 +262,210 @@ async function loadState(): Promise<void> {
 
 function endpoint(pathname: string): string {
   return `http://${state.host}:${state.port}${pathname}`;
+}
+
+async function cloudConfig(): Promise<{
+  supabaseUrl: string;
+  anonKey: string;
+}> {
+  if (state.cloudSupabaseUrl && state.cloudSupabaseAnonKey)
+    return {
+      supabaseUrl: state.cloudSupabaseUrl,
+      anonKey: state.cloudSupabaseAnonKey,
+    };
+  const response = await fetch(`${CLOUD_SITE_URL}/api/store/config`);
+  if (!response.ok) throw new Error('Cloud setup is unavailable right now.');
+  const value = (await response.json()) as {
+    supabase_url?: unknown;
+    supabase_anon_key?: unknown;
+  };
+  if (
+    typeof value.supabase_url !== 'string' ||
+    typeof value.supabase_anon_key !== 'string'
+  )
+    throw new Error('Cloud setup is unavailable right now.');
+  state.cloudSupabaseUrl = value.supabase_url;
+  state.cloudSupabaseAnonKey = value.supabase_anon_key;
+  await persist();
+  return { supabaseUrl: value.supabase_url, anonKey: value.supabase_anon_key };
+}
+
+async function cloudToken(forceRefresh = false): Promise<string> {
+  if (
+    !forceRefresh &&
+    cloudAccessToken &&
+    (state.cloudExpiresAt ?? 0) - Date.now() > 60_000
+  )
+    return cloudAccessToken;
+  if (!cloudRefreshToken) throw new Error('Please sign in again.');
+  const config = await cloudConfig();
+  state.cloudSupabaseUrl = config.supabaseUrl;
+  state.cloudSupabaseAnonKey = config.anonKey;
+  const response = await fetch(
+    `${config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: config.anonKey,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ refresh_token: cloudRefreshToken }),
+    },
+  );
+  if (!response.ok) throw new Error('Your cloud session expired.');
+  const value = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (!value.access_token) throw new Error('Your cloud session expired.');
+  cloudAccessToken = value.access_token;
+  cloudRefreshToken = value.refresh_token ?? cloudRefreshToken;
+  state.cloudExpiresAt = Date.now() + (value.expires_in ?? 3600) * 1000;
+  await persist();
+  return cloudAccessToken;
+}
+
+async function cloudAccountRequest(accessToken: string): Promise<Response> {
+  return fetch(`${CLOUD_SITE_URL}/api/store/account`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  });
+}
+
+function localCatalog(): ReturnType<typeof kioskCatalogResponseSchema.parse> {
+  if (!localDatabase) throw new Error('The kiosk database is not ready.');
+  const settings = localDatabase.getSettings();
+  return {
+    storeName: settings.storeName,
+    categories: localDatabase.listCategories().map((category) => ({
+      id: category.id,
+      name: category.name,
+      secondaryName: category.secondaryName,
+    })),
+    products: localDatabase.listProducts().map((product) => ({
+      id: product.id,
+      categoryId: product.categoryId,
+      name: product.name,
+      secondaryName: product.secondaryName,
+      priceCents: product.sellingPriceCents,
+      barcodes: product.barcodes.map((barcode) => barcode.value),
+    })),
+  };
+}
+
+async function cloudSignIn(
+  input: KioskCloudSignInInput,
+): Promise<KioskPublicState> {
+  const parsed = z
+    .object({
+      email: z.string().trim().email(),
+      password: z.string().min(1),
+      adminPin: z.string().regex(/^\d{4,12}$/),
+    })
+    .parse(input);
+  const config = await cloudConfig();
+  state.cloudSupabaseUrl = config.supabaseUrl;
+  state.cloudSupabaseAnonKey = config.anonKey;
+  const response = await fetch(
+    `${config.supabaseUrl}/auth/v1/token?grant_type=password`,
+    {
+      method: 'POST',
+      headers: { apikey: config.anonKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ email: parsed.email, password: parsed.password }),
+    },
+  );
+  if (!response.ok)
+    throw new Error('Sign-in failed. Check your email and password.');
+  const value = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (!value.access_token || !value.refresh_token)
+    throw new Error('Please confirm your email, then sign in again.');
+  cloudAccessToken = value.access_token;
+  cloudRefreshToken = value.refresh_token;
+  state.cloudExpiresAt = Date.now() + (value.expires_in ?? 3600) * 1000;
+  const account = await cloudAccountRequest(cloudAccessToken);
+  if (!account.ok) throw new Error('The cloud store could not be loaded.');
+  const accountValue = (await account.json()) as {
+    account?: { store_id?: unknown };
+  };
+  if (typeof accountValue.account?.store_id !== 'string')
+    throw new Error('The cloud store identity is unavailable.');
+  const storeId = accountValue.account.store_id;
+  if (!localDatabase) throw new Error('The kiosk database is not ready.');
+  localDatabase.setCloudStoreId(storeId);
+  const deviceId = localDatabase.ensureDeviceId();
+  state.kioskId = deviceId;
+  cloudTransport = new AccountSupabaseTransport({
+    supabaseUrl: config.supabaseUrl,
+    anonKey: config.anonKey,
+    deviceId,
+    getAccessToken: cloudToken,
+  });
+  const restored = await restoreFromCloud(
+    localDatabase,
+    cloudTransport,
+    storeId,
+  );
+  if (!restored.ok && !restored.message.includes('No cloud events'))
+    throw new Error(restored.message);
+  const prefix = await cloudTransport.claimDevicePrefix(storeId, deviceId);
+  localDatabase.setDeviceReceiptPrefix(prefix);
+  localDatabase.applySyncCredentials({
+    enabled: true,
+    supabaseUrl: config.supabaseUrl,
+    apiKeySecret: config.anonKey,
+    apiKeyEncrypted: false,
+  });
+  state.cloudEmail = parsed.email;
+  state.cloudStoreId = storeId;
+  state.localAdminPinHash = localPinHash(parsed.adminPin);
+  state.storeName = localDatabase.getSettings().storeName;
+  state.catalog = localCatalog();
+  token = null;
+  connection = 'online';
+  cloudEngine?.stop();
+  cloudEngine = new SyncEngine(localDatabase, cloudTransport);
+  cloudEngine.start();
+  await persist();
+  publish();
+  return publicState();
+}
+
+async function cloudSignUp(
+  input: KioskCloudSignInInput,
+): Promise<KioskPublicState> {
+  const parsed = z
+    .object({
+      email: z.string().trim().email(),
+      password: z.string().min(6),
+      adminPin: z.string().regex(/^\d{4,12}$/),
+    })
+    .parse(input);
+  const config = await cloudConfig();
+  const response = await fetch(`${config.supabaseUrl}/auth/v1/signup`, {
+    method: 'POST',
+    headers: { apikey: config.anonKey, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: parsed.email, password: parsed.password }),
+  });
+  if (!response.ok)
+    throw new Error('Account creation failed. Please check your details.');
+  const value = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+  };
+  if (!value.access_token || !value.refresh_token)
+    throw new Error(
+      'Account created — confirm the link in your email, then sign in.',
+    );
+  return cloudSignIn(input);
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -273,6 +579,17 @@ function resolveLines(lines: KioskCartLine[]):
 }
 
 async function refreshCatalog(): Promise<KioskPublicState> {
+  if (cloudEngine && localDatabase) {
+    try {
+      state.catalog = localCatalog();
+      state.storeName = state.catalog.storeName;
+      await persist();
+      publish();
+    } catch {
+      // Keep the last known local catalog available for offline checkout.
+    }
+    return publicState();
+  }
   if (!token) return publicState();
   try {
     const response = await request('/api/catalog', { method: 'GET' });
@@ -378,6 +695,7 @@ async function pair(input: KioskPairInput): Promise<KioskPublicState> {
   state.inFlightCharge = null;
   token = body.token;
   connection = 'online';
+  stopDiscovery();
   await persist();
   await refreshCatalog();
   startTimers();
@@ -387,6 +705,49 @@ async function pair(input: KioskPairInput): Promise<KioskPublicState> {
 async function priceCart(lines: KioskCartLine[]): Promise<KioskPriceResult> {
   const resolved = resolveLines(lines);
   if (!resolved.ok) return resolved.result;
+  if (cloudEngine && localDatabase && state.catalog) {
+    const settings = localDatabase.getSettings();
+    const quoted = resolved.lines.map((line) => {
+      const product = state.catalog!.products.find(
+        (candidate) => candidate.id === line.productId,
+      )!;
+      const localProduct = localDatabase!.getProduct(line.productId);
+      const subtotalCents = product.priceCents * line.quantity;
+      const taxCents = localProduct.taxable
+        ? settings.pricesIncludeTax
+          ? Math.round(
+              (subtotalCents * settings.taxRateBps) /
+                (10000 + settings.taxRateBps),
+            )
+          : Math.round((subtotalCents * settings.taxRateBps) / 10000)
+        : 0;
+      const totalCents = settings.pricesIncludeTax
+        ? subtotalCents
+        : subtotalCents + taxCents;
+      return {
+        productId: line.productId,
+        quantity: line.quantity,
+        unitPriceCents: product.priceCents,
+        subtotalCents,
+        taxCents,
+        totalCents,
+        name: product.name,
+        secondaryName: product.secondaryName,
+      };
+    });
+    return {
+      ok: true,
+      quote: kioskPriceResponseSchema.parse({
+        lines: quoted,
+        subtotalCents: quoted.reduce(
+          (sum, line) => sum + line.subtotalCents,
+          0,
+        ),
+        taxCents: quoted.reduce((sum, line) => sum + line.taxCents, 0),
+        totalCents: quoted.reduce((sum, line) => sum + line.totalCents, 0),
+      }),
+    };
+  }
   try {
     const response = await request('/api/cart/price', {
       method: 'POST',
@@ -426,6 +787,36 @@ async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
       code: resolved.result.code,
       message: resolved.result.message,
     };
+  if (cloudEngine && localDatabase) {
+    try {
+      const sale = localDatabase.completeSale(
+        {
+          completionKey: randomUUID(),
+          lines: resolved.lines,
+          payment: {
+            method: 'external_terminal',
+            approved: true,
+            terminalReference: 'cloud-kiosk-offline',
+          },
+        },
+        undefined,
+        state.kioskId,
+      );
+      const outcome = kioskChargeOutcomeSchema.parse({
+        status: 'approved',
+        chargeReference: randomUUID(),
+        totalCents: sale.totalCents,
+        receiptNumber: sale.receiptNumber,
+      });
+      return { ok: true, outcome };
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'error',
+        message: error instanceof Error ? error.message : 'Sale failed.',
+      };
+    }
+  }
   const inFlight: KioskInFlightCharge = {
     chargeReference: randomUUID(),
     idempotencyKey: randomUUID(),
@@ -569,10 +960,20 @@ function registerIpc(): void {
       app.relaunch();
       app.exit(0);
     },
+    startDiscovery,
+    stopDiscovery: async () => stopDiscovery(),
+    cloudSignIn,
+    cloudSignUp,
   };
   ipcMain.handle('kiosk:getState', () => handlers.getState());
   ipcMain.handle('kiosk:pair', (_event, input: KioskPairInput) =>
     handlers.pair(input),
+  );
+  ipcMain.handle('kiosk:cloudSignIn', (_event, input: KioskCloudSignInInput) =>
+    handlers.cloudSignIn(input),
+  );
+  ipcMain.handle('kiosk:cloudSignUp', (_event, input: KioskCloudSignInInput) =>
+    handlers.cloudSignUp(input),
   );
   ipcMain.handle('kiosk:refreshCatalog', () => handlers.refreshCatalog());
   ipcMain.handle('kiosk:priceCart', (_event, lines: KioskCartLine[]) =>
@@ -648,10 +1049,40 @@ if (!singleInstance) {
 app.whenReady().then(async () => {
   encryptionAvailable = safeStorage.isEncryptionAvailable();
   await loadState();
+  localDatabase = new StoreDatabase(
+    path.join(app.getPath('userData'), 'kiosk.sqlite'),
+    new PlaintextSecretStore(),
+  );
+  if (
+    cloudAccessToken &&
+    state.cloudStoreId &&
+    state.cloudSupabaseUrl &&
+    state.cloudSupabaseAnonKey
+  ) {
+    const deviceId = localDatabase.ensureDeviceId();
+    state.kioskId = deviceId;
+    cloudTransport = new AccountSupabaseTransport({
+      supabaseUrl: state.cloudSupabaseUrl,
+      anonKey: state.cloudSupabaseAnonKey,
+      deviceId,
+      getAccessToken: cloudToken,
+    });
+    localDatabase.applySyncCredentials({
+      enabled: true,
+      supabaseUrl: state.cloudSupabaseUrl,
+      apiKeySecret: state.cloudSupabaseAnonKey,
+      apiKeyEncrypted: false,
+    });
+    cloudEngine = new SyncEngine(localDatabase, cloudTransport);
+    cloudEngine.start();
+    state.catalog = localCatalog();
+    state.storeName = state.catalog.storeName;
+    connection = 'online';
+  }
   registerIpc();
   await createWindow();
   window?.webContents.send('kiosk:state', publicState());
-  if (token) {
+  if (token || cloudAccessToken) {
     void refreshCatalog();
     void pollInFlight();
     startTimers();

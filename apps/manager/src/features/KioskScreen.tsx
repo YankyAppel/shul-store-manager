@@ -18,6 +18,7 @@ export function KioskScreen() {
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [discoveryActive, setDiscoveryActive] = useState(false);
 
   async function refresh() {
     const next = await window.storeApi.kiosk.getSettings();
@@ -34,6 +35,13 @@ export function KioskScreen() {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [pairingExpiresAt]);
+
+  useEffect(
+    () => () => {
+      void window.storeApi.kiosk.stopDiscovery();
+    },
+    [],
+  );
 
   async function setServer(enabled: boolean) {
     const validation = validatePort(port);
@@ -62,6 +70,8 @@ export function KioskScreen() {
     setBusy(true);
     try {
       const code = await window.storeApi.kiosk.pairCode();
+      await window.storeApi.kiosk.startDiscovery();
+      setDiscoveryActive(true);
       setPairingCode(code);
       setPairingExpiresAt(Date.now() + PAIRING_WINDOW_MS);
       setNow(Date.now());
@@ -76,6 +86,15 @@ export function KioskScreen() {
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!discoveryActive || !pairingExpiresAt) return;
+    const timer = window.setTimeout(() => {
+      void window.storeApi.kiosk.stopDiscovery();
+      setDiscoveryActive(false);
+    }, PAIRING_WINDOW_MS + 30000);
+    return () => window.clearTimeout(timer);
+  }, [discoveryActive, pairingExpiresAt]);
 
   async function revoke(id: string, name: string) {
     if (

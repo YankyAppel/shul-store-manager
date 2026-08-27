@@ -58,6 +58,8 @@ const api: StoreApi = {
     revoke: (id) => ipcRenderer.invoke('kiosk:revoke', id),
     setServer: (enabled, port) =>
       ipcRenderer.invoke('kiosk:setServer', enabled, port),
+    startDiscovery: () => ipcRenderer.invoke('kiosk:startDiscovery'),
+    stopDiscovery: () => ipcRenderer.invoke('kiosk:stopDiscovery'),
   },
   payments: {
     initiateCharge: (input) =>
