@@ -25,6 +25,16 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+      - name: Prepare manager release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          gh release view "${{ github.ref_name }}" --repo "$env:RELEASE_REPOSITORY" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "${{ github.ref_name }}" --repo "$env:RELEASE_REPOSITORY" --title "${{ github.ref_name }}" --draft
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
       - name: Package manager installer
         run: npm run package:publish -w @shul-store/manager
         env:
