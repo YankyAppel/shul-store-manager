@@ -84,6 +84,8 @@ const api: StoreApi = {
     list: (includeInactive) =>
       ipcRenderer.invoke('categories:list', includeInactive),
     create: (input) => ipcRenderer.invoke('categories:create', input),
+    createInline: (input) =>
+      ipcRenderer.invoke('categories:createInline', input),
     update: (id, input) => ipcRenderer.invoke('categories:update', id, input),
     setActive: (id, active) =>
       ipcRenderer.invoke('categories:setActive', id, active),
@@ -92,6 +94,8 @@ const api: StoreApi = {
     list: (includeInactive) =>
       ipcRenderer.invoke('products:list', includeInactive),
     create: (input) => ipcRenderer.invoke('products:create', input),
+    createDuringSale: (input) =>
+      ipcRenderer.invoke('products:createDuringSale', input),
     update: (id, input) => ipcRenderer.invoke('products:update', id, input),
     setActive: (id, active) =>
       ipcRenderer.invoke('products:setActive', id, active),
@@ -107,6 +111,8 @@ const api: StoreApi = {
     update: (input) => ipcRenderer.invoke('settings:update', input),
     getDevice: () => ipcRenderer.invoke('settings:getDevice'),
     updateDevice: (input) => ipcRenderer.invoke('settings:updateDevice', input),
+    dismissExplanation: (id) =>
+      ipcRenderer.invoke('settings:dismissExplanation', id),
     setProcessorConfig: (input) =>
       ipcRenderer.invoke('settings:setProcessorConfig', input),
     getProcessorConfigStatus: () =>

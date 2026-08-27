@@ -1267,6 +1267,13 @@ export const migrations: Migration[] = [
       ALTER TABLE sync_settings ADD COLUMN device_receipt_prefix_claimed INTEGER NOT NULL DEFAULT 0 CHECK (device_receipt_prefix_claimed IN (0, 1));
     `,
   },
+  {
+    version: 28,
+    name: 'device_explanation_dismissals',
+    sql: `
+      ALTER TABLE device_settings ADD COLUMN explain_dismissals_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

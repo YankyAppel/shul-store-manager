@@ -102,6 +102,7 @@ describe('printer settings', () => {
       automaticUpdatesEnabled: false,
       idleLockMinutes: 5,
       staffModeEnabled: false,
+      explainDismissals: [],
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');
     expect(
@@ -115,6 +116,25 @@ describe('printer settings', () => {
       update_feed_url: null,
       automatic_updates_enabled: 1,
     });
+  });
+
+  it('stores explanation dismissals locally without creating sync events', () => {
+    const before = store.connection
+      .prepare('SELECT COUNT(*) AS count FROM sync_outbox')
+      .get() as { count: number };
+    const updated = store.dismissDeviceExplanation('tax');
+    expect(updated.explainDismissals).toEqual(['tax']);
+    expect(store.getDeviceSettings().explainDismissals).toEqual(['tax']);
+    const after = store.connection
+      .prepare('SELECT COUNT(*) AS count FROM sync_outbox')
+      .get() as { count: number };
+    expect(after.count).toBe(before.count);
+    const otherDevice = new StoreDatabase(':memory:');
+    try {
+      expect(otherDevice.getDeviceSettings().explainDismissals).toEqual([]);
+    } finally {
+      otherDevice.close();
+    }
   });
 
   it('records whether the processor secret store encrypts configuration', () => {

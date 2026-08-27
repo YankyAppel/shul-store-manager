@@ -315,12 +315,14 @@ export interface StoreApi {
   categories: {
     list(includeInactive?: boolean): Promise<Category[]>;
     create(input: CategoryInput): Promise<Category>;
+    createInline(input: CategoryInput): Promise<Category>;
     update(id: string, input: CategoryInput): Promise<Category>;
     setActive(id: string, active: boolean): Promise<void>;
   };
   products: {
     list(includeInactive?: boolean): Promise<Product[]>;
     create(input: ProductInput): Promise<Product>;
+    createDuringSale(input: ProductInput): Promise<Product>;
     update(id: string, input: ProductInput): Promise<Product>;
     setActive(id: string, active: boolean): Promise<void>;
     generateInternalBarcode(): Promise<string>;
@@ -403,6 +405,7 @@ export interface StoreApi {
     update(input: StoreSettings): Promise<StoreSettings>;
     getDevice(): Promise<DeviceSettings>;
     updateDevice(input: DeviceSettings): Promise<DeviceSettings>;
+    dismissExplanation(id: string): Promise<DeviceSettings>;
     setProcessorConfig(
       input: ProcessorConfigInput,
     ): Promise<ProcessorConfigStatus>;

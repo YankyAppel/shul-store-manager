@@ -12,6 +12,7 @@ import { CloudBackupSection } from './CloudBackupSection';
 import { CloudAccountSection } from './CloudAccountSection';
 import { LocalBackupSection } from './LocalBackupSection';
 import { StaffSection } from './StaffSection';
+import { Explain } from '../components/Explain';
 
 export function SettingsScreen() {
   const [settings, setSettings] = useState<StoreSettings>();
@@ -126,12 +127,25 @@ export function SettingsScreen() {
         <div className="form-grid">
           <label>
             Currency
-            <select value="USD" disabled>
+            <div className="detected-value">
+              Detected: USD{' '}
+              <button type="button" onClick={() => undefined}>
+                (change)
+              </button>
+            </div>
+            <select value="USD" disabled aria-label="Currency">
               <option>USD</option>
             </select>
           </label>
           <label>
             Tax rate (%)
+            <Explain
+              id="tax"
+              sentence="This is the sales tax added to taxable products."
+            >
+              Enter the tax rate your shul must charge so receipts and totals
+              are correct.
+            </Explain>
             <input
               type="number"
               min="0"
@@ -157,8 +171,22 @@ export function SettingsScreen() {
           />{' '}
           Displayed prices include tax
         </label>
+        <Explain
+          id="prices-include-tax"
+          sentence="Turn this on when the prices you show already include tax."
+        >
+          When this is on, the shelf and checkout price already contains the
+          tax; when it is off, tax is added at checkout.
+        </Explain>
         <label>
           Receipt footer
+          <Explain
+            id="receipt-footer"
+            sentence="This is the message printed at the bottom of every receipt."
+          >
+            Add a short thank-you, return policy, phone number, or other note
+            for customers to see on their receipt.
+          </Explain>
           <textarea
             rows={3}
             value={settings.receiptFooter}
@@ -274,6 +302,17 @@ export function SettingsScreen() {
         <div className="form-grid">
           <label>
             Receipt / statement printer
+            {settings.receiptPrinterName === null &&
+              printers.find((printer) => printer.isDefault) && (
+                <div className="detected-value">
+                  Detected:{' '}
+                  {printers.find((printer) => printer.isDefault)?.displayName ||
+                    printers.find((printer) => printer.isDefault)?.name}{' '}
+                  <button type="button" onClick={() => undefined}>
+                    (change)
+                  </button>
+                </div>
+              )}
             <select
               value={settings.receiptPrinterName ?? ''}
               onChange={(e) =>
@@ -440,6 +479,13 @@ export function SettingsScreen() {
       />
       <div className="settings-form">
         <h3 style={{ margin: '0 0 4px 0' }}>Card processing</h3>
+        <Explain
+          id="processor-setup"
+          sentence="This connects the manager to the card processor you use."
+        >
+          Card processing is optional. Your processor settings stay on this
+          computer and are never shared with the cloud.
+        </Explain>
         <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
           Enable integrated credit card processing. Real processors (Sola, First
           Choice, Donary) will be added later; currently, the Simulated
@@ -544,9 +590,30 @@ export function SettingsScreen() {
         }}
       />
 
+      <Explain
+        id="cloud-sync"
+        sentence="Cloud sync keeps a backup of this store available on your other computers."
+      >
+        Cloud sync is optional. Sales and checkout continue on this computer
+        when the internet is unavailable, and changes are sent when it returns.
+      </Explain>
       <CloudAccountSection />
+      <Explain
+        id="backups"
+        sentence="Backups are extra copies of your store records in case this computer has a problem."
+      >
+        Local backups stay on this computer, while cloud sync can keep your
+        store available on another signed-in computer.
+      </Explain>
       <CloudBackupSection />
       <LocalBackupSection />
+      <Explain
+        id="staff-permissions"
+        sentence="Staff permissions choose which parts of the manager each cashier can use."
+      >
+        Owners can always do everything. Cashier permissions let you give access
+        to only the work each person needs.
+      </Explain>
       <StaffSection />
     </>
   );

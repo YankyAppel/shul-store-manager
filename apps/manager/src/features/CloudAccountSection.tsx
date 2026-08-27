@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import type { CloudAccountState } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
+import { Explain } from '../components/Explain';
 
 function subscriptionDescription(
   entitlement: CloudAccountState['entitlement'],
@@ -123,6 +124,13 @@ export function CloudAccountSection() {
   return (
     <section className="settings-form">
       <h3 style={{ margin: '0 0 4px 0' }}>Shul Store cloud account</h3>
+      <Explain
+        id="cloud-account"
+        sentence="Sign in here to sync this store with your other computers."
+      >
+        Cloud sync is optional and does not stop local selling. Use the same
+        Shul Store account on each computer that should share this store.
+      </Explain>
       {!state.signedIn ? (
         <form onSubmit={(event) => void submit(event)}>
           <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>

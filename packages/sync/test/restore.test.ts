@@ -98,6 +98,7 @@ describe('restore validation', () => {
       automaticUpdatesEnabled: true,
       idleLockMinutes: 5,
       staffModeEnabled: false,
+      explainDismissals: [],
     });
     expect(db.getCardProcessorConfigStatus().configured).toBe(false);
     disposeDb(db, file);

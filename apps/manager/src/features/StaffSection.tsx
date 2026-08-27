@@ -6,6 +6,7 @@ import {
   type StaffAccount,
 } from '@shul-store/shared';
 import { Keypad } from './AuthScreens';
+import { Explain } from '../components/Explain';
 
 const defaults: GrantablePermission[] = [
   'checkout',
@@ -138,6 +139,13 @@ export function StaffSection() {
   return (
     <section>
       <h2>Staff</h2>
+      <Explain
+        id="staff-permissions"
+        sentence="Staff permissions choose which parts of the manager each cashier can use."
+      >
+        Owners can always do everything. Cashier permissions let you give access
+        to only the work each person needs.
+      </Explain>
       <p>
         Choose what each cashier can do. Owners always have all permissions.
       </p>

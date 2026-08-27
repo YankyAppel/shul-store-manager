@@ -32,6 +32,7 @@ describe('device settings', () => {
       automaticUpdatesEnabled: true,
       idleLockMinutes: 5,
       staffModeEnabled: false,
+      explainDismissals: [],
     });
     expect(
       processorConfigInputSchema.safeParse('{"token":"value"}').success,

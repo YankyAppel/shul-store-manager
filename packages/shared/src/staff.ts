@@ -10,6 +10,8 @@ export const GRANTABLE_PERMISSIONS = [
   'customers.manage',
   'reports.view',
   'reports.close',
+  'create_product_during_sale',
+  'create_category',
 ] as const;
 
 export type GrantablePermission = (typeof GRANTABLE_PERMISSIONS)[number];
@@ -91,4 +93,6 @@ export const permissionLabels: Record<GrantablePermission, string> = {
   'customers.manage': 'Manage customers and account limits',
   'reports.view': 'View daily reports',
   'reports.close': 'Close the business day',
+  create_product_during_sale: 'Create a product during checkout',
+  create_category: 'Create a category from a product form',
 };

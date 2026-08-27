@@ -4,6 +4,7 @@ import {
   calculateCashChange,
   describePrintResult,
   parseUsdToCents,
+  type Category,
   type Customer,
   type Product,
   type Sale,
@@ -31,10 +32,14 @@ type CartLine = {
 
 export function CheckoutScreen({
   products,
+  categories,
   onInventoryChanged,
+  onRequestApproval,
 }: {
   products: Product[];
+  categories: Category[];
   onInventoryChanged(): Promise<void>;
+  onRequestApproval(permission: string, action: () => Promise<void>): void;
 }) {
   const [settings, setSettings] = useState<StoreSettings>();
 
@@ -73,6 +78,8 @@ export function CheckoutScreen({
   const [accountConfirmed, setAccountConfirmed] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [unknownBarcode, setUnknownBarcode] = useState<string | null>(null);
+  const [unknownQuantity, setUnknownQuantity] = useState(1);
 
   const [sale, setSale] = useState<Sale>();
   const [printError, setPrintError] = useState('');
@@ -102,14 +109,20 @@ export function CheckoutScreen({
 
     const product = await window.storeApi.checkout.lookupBarcode(clean);
     if (!product) {
-      setError(`Unknown or inactive barcode: ${clean}`);
+      setError('');
+      setUnknownBarcode(clean);
+      setUnknownQuantity(1);
       return;
     }
     add(product, clean);
     setQuery('');
   }
 
-  function add(product: Product, barcodeUsed: string | null = null) {
+  function add(
+    product: Product,
+    barcodeUsed: string | null = null,
+    amount = 1,
+  ) {
     if (!product.active) {
       setError('Inactive products cannot be sold.');
       return;
@@ -121,9 +134,11 @@ export function CheckoutScreen({
       );
       if (current)
         return lines.map((line) =>
-          line === current ? { ...line, quantity: line.quantity + 1 } : line,
+          line === current
+            ? { ...line, quantity: line.quantity + amount }
+            : line,
         );
-      return [...lines, { product, quantity: 1, barcodeUsed }];
+      return [...lines, { product, quantity: amount, barcodeUsed }];
     });
   }
 
@@ -904,6 +919,189 @@ export function CheckoutScreen({
           setError={setError}
         />
       )}
+      {unknownBarcode && (
+        <InlineProductModal
+          barcode={unknownBarcode}
+          categories={categories.filter((category) => category.active)}
+          quantity={unknownQuantity}
+          onClose={() => setUnknownBarcode(null)}
+          onRequestApproval={onRequestApproval}
+          onSaved={(product, amount) => {
+            add(product, unknownBarcode, amount);
+            setUnknownBarcode(null);
+            setQuery('');
+            void onInventoryChanged();
+          }}
+          setError={setError}
+        />
+      )}
+    </div>
+  );
+}
+
+function InlineProductModal({
+  barcode,
+  categories,
+  quantity,
+  onClose,
+  onSaved,
+  onRequestApproval,
+  setError,
+}: {
+  barcode: string;
+  categories: Category[];
+  quantity: number;
+  onClose(): void;
+  onSaved(product: Product, quantity: number): void;
+  onRequestApproval(permission: string, action: () => Promise<void>): void;
+  setError(value: string): void;
+}) {
+  const [categoryId, setCategoryId] = useState(categories[0]?.id ?? '');
+  const [name, setName] = useState('');
+  const [secondaryName, setSecondaryName] = useState('');
+  const [price, setPrice] = useState('0.00');
+  const [cost, setCost] = useState('0.00');
+  const [threshold, setThreshold] = useState('0');
+  const [taxable, setTaxable] = useState(false);
+  const [amount, setAmount] = useState(String(quantity));
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!categoryId || !name.trim() || saving) return;
+    setSaving(true);
+    const input = {
+      categoryId,
+      name,
+      secondaryName: secondaryName || null,
+      imageId: null,
+      purchaseCostCents: Math.round(Number(cost) * 100),
+      sellingPriceCents: Math.round(Number(price) * 100),
+      taxable,
+      lowStockThreshold: Number(threshold),
+      barcodes: [barcode],
+    };
+    try {
+      const product = await window.storeApi.products.createDuringSale(input);
+      onSaved(product, Math.max(1, Number(amount) || quantity));
+    } catch (reason) {
+      const message =
+        reason instanceof Error ? reason.message : 'Could not add product.';
+      if (message.includes('PERMISSION_DENIED:')) {
+        onRequestApproval('create_product_during_sale', save);
+      } else setError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <div className="modal-title">
+          <h2>Not in the system — Add product</h2>
+          <button type="button" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <p>
+          Barcode <code>{barcode}</code> was scanned. Add the product without
+          leaving checkout.
+        </p>
+        <label>
+          Product name
+          <input
+            autoFocus
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label>
+          Secondary-language name <em>Optional</em>
+          <input
+            value={secondaryName}
+            onChange={(e) => setSecondaryName(e.target.value)}
+          />
+        </label>
+        <label>
+          Category
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+          >
+            <option value="" disabled>
+              Choose…
+            </option>
+            {categories.map((category) => (
+              <option value={category.id} key={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="form-grid">
+          <label>
+            Selling price ($)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+            />
+          </label>
+          <label>
+            Purchase cost ($)
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={cost}
+              onChange={(e) => setCost(e.target.value)}
+            />
+          </label>
+          <label>
+            Quantity
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </label>
+          <label>
+            Low-stock alert
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={threshold}
+              onChange={(e) => setThreshold(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={taxable}
+            onChange={(e) => setTaxable(e.target.checked)}
+          />{' '}
+          This product is taxable
+        </label>
+        <footer>
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="primary"
+            disabled={saving || !categoryId || !name.trim()}
+            onClick={() => void save()}
+          >
+            {saving ? 'Saving…' : 'Save and add to sale'}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }

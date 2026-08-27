@@ -144,10 +144,12 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'payments:resolveNeedsAttention': 'owner',
   'categories:list': 'public',
   'categories:create': 'products.edit',
+  'categories:createInline': 'create_category',
   'categories:update': 'products.edit',
   'categories:setActive': 'products.edit',
   'products:list': 'public',
   'products:create': 'products.edit',
+  'products:createDuringSale': 'create_product_during_sale',
   'products:update': 'products.edit',
   'products:setActive': 'products.edit',
   'products:generateBarcode': 'products.edit',
@@ -157,6 +159,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'settings:update': 'owner',
   'settings:getDevice': 'owner',
   'settings:updateDevice': 'owner',
+  'settings:dismissExplanation': 'public',
   'settings:setProcessorConfig': 'owner',
   'settings:getProcessorConfigStatus': 'owner',
   'settings:listPrinters': 'owner',
@@ -797,6 +800,9 @@ function registerIpc(): void {
   ipcMain.handle('categories:create', (_event, input) =>
     database.createCategory(categoryInputSchema.parse(input)),
   );
+  ipcMain.handle('categories:createInline', (_event, input) =>
+    database.createCategory(categoryInputSchema.parse(input)),
+  );
   ipcMain.handle('categories:update', (_event, id, input) =>
     database.updateCategory(
       idSchema.parse(id),
@@ -812,6 +818,9 @@ function registerIpc(): void {
     database.listProducts(z.boolean().optional().parse(includeInactive)),
   );
   ipcMain.handle('products:create', (_event, input) =>
+    database.createProduct(productInputSchema.parse(input)),
+  );
+  ipcMain.handle('products:createDuringSale', (_event, input) =>
     database.createProduct(productInputSchema.parse(input)),
   );
   ipcMain.handle('products:update', (_event, id, input) =>
@@ -844,6 +853,10 @@ function registerIpc(): void {
     );
     if (app.isPackaged) configureAutoUpdater(updated);
     return updated;
+  });
+  ipcMain.handle('settings:dismissExplanation', (_event, id) => {
+    const explanationId = z.string().trim().min(1).max(100).parse(id);
+    return database.dismissDeviceExplanation(explanationId);
   });
   ipcMain.handle('settings:setProcessorConfig', (_event, input) =>
     database.setCardProcessorConfigJson(

@@ -6,6 +6,7 @@ import {
   validatePort,
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
+import { Explain } from '../components/Explain';
 
 const DEFAULT_PORT = '3939';
 const PAIRING_WINDOW_MS = 5 * 60 * 1000;
@@ -182,11 +183,13 @@ export function KioskScreen() {
           )}
           {settings?.enabled && settings.addresses.length > 0 && (
             <div className="kiosk-addresses">
-              <strong>Enter one of these addresses on the kiosk:</strong>
+              <strong>Detected kiosk addresses:</strong>
               <ul>
                 {settings.addresses.map((address) => (
                   <li key={address}>
-                    <code>{formatKioskAddress(address, settings.port)}</code>
+                    <code>
+                      {formatKioskAddress(address, settings.port)} (change)
+                    </code>
                   </li>
                 ))}
               </ul>
@@ -205,6 +208,13 @@ export function KioskScreen() {
       <section className="card kiosk-section">
         <div className="card-body">
           <h2>Pair a kiosk</h2>
+          <Explain
+            id="kiosk-pairing"
+            sentence="Pairing connects a self-checkout kiosk to this manager on your shul network."
+          >
+            Generate a temporary code and enter it on the kiosk. The code is
+            only used to connect that kiosk and can be revoked at any time.
+          </Explain>
           <p>
             Generate a single-use code and enter it on the kiosk within five
             minutes.

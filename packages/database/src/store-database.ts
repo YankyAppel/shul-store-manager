@@ -639,10 +639,22 @@ export class StoreDatabase {
     const row = this.connection
       .prepare(
         `SELECT update_feed_url, automatic_updates_enabled,
-          idle_lock_minutes, staff_mode_enabled
+          idle_lock_minutes, staff_mode_enabled, explain_dismissals_json
          FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
+    let explainDismissals: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(
+        String(row.explain_dismissals_json ?? '[]'),
+      );
+      if (Array.isArray(parsed))
+        explainDismissals = parsed.filter(
+          (value): value is string => typeof value === 'string',
+        );
+    } catch {
+      explainDismissals = [];
+    }
     return {
       updateFeedUrl:
         row.update_feed_url === null ||
@@ -656,6 +668,7 @@ export class StoreDatabase {
         'idleLockMinutes',
       ),
       staffModeEnabled: Number(row.staff_mode_enabled ?? 0) === 1,
+      explainDismissals,
     };
   }
 
@@ -665,15 +678,25 @@ export class StoreDatabase {
       .prepare(
         `UPDATE device_settings
          SET update_feed_url = ?, automatic_updates_enabled = ?,
-             idle_lock_minutes = ?, updated_at = ?
+             idle_lock_minutes = ?, explain_dismissals_json = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
         value.updateFeedUrl,
         value.automaticUpdatesEnabled ? 1 : 0,
         value.idleLockMinutes,
+        JSON.stringify(value.explainDismissals),
         now(),
       );
+    return this.getDeviceSettings();
+  }
+
+  dismissDeviceExplanation(id: string): DeviceSettings {
+    const settings = this.getDeviceSettings();
+    if (!settings.explainDismissals.includes(id)) {
+      settings.explainDismissals = [...settings.explainDismissals, id];
+      this.updateDeviceSettings(settings);
+    }
     return this.getDeviceSettings();
   }
 

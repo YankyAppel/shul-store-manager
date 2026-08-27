@@ -77,6 +77,10 @@ export const deviceSettingsSchema = z.object({
   automaticUpdatesEnabled: z.boolean().default(true),
   idleLockMinutes: z.number().int().min(0).max(1440).default(5),
   staffModeEnabled: z.boolean().default(false),
+  explainDismissals: z
+    .array(z.string().trim().min(1).max(100))
+    .max(1000)
+    .default([]),
 });
 export type DeviceSettings = z.infer<typeof deviceSettingsSchema>;
 

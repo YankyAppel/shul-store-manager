@@ -115,6 +115,38 @@ body {
   color: #53675d;
   font-size: 12px;
 }
+
+.explain {
+  margin: 4px 0 12px;
+  color: #52645a;
+  font-size: 13px;
+}
+
+.explain p {
+  margin: 4px 0;
+}
+
+.explain button {
+  border: 0;
+  background: transparent;
+  color: #277052;
+  padding: 2px 6px 2px 0;
+  font-size: 12px;
+}
+
+.explain-dismiss {
+  color: #66766d !important;
+}
+
+.explain-detail {
+  max-width: 720px;
+}
+
+.detected-value {
+  color: #277052;
+  font-size: 12px;
+  margin: 3px 0;
+}
 .staff-form {
   display: grid;
   gap: 12px;
