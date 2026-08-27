@@ -157,16 +157,16 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'refunds:print': 'refunds',
   'refunds:listAttention': 'owner',
   'refunds:resolveAttention': 'owner',
-  'customers:list': 'public',
-  'customers:get': 'public',
-  'customers:search': 'public',
+  'customers:list': 'checkout',
+  'customers:get': 'checkout',
+  'customers:search': 'checkout',
   'customers:create': 'customers.manage',
   'customers:update': 'customers.manage',
   'customers:setActive': 'customers.manage',
   'customers:setBlocked': 'customers.manage',
   'customers:generateAccountNumber': 'customers.manage',
   'customers:generateBarcode': 'customers.manage',
-  'customers:lookupBarcode': 'public',
+  'customers:lookupBarcode': 'checkout',
   'customers:getLedger': 'customers.manage',
   'customers:getStatement': 'customers.manage',
   'customers:printStatement': 'customers.manage',
@@ -211,11 +211,13 @@ export const channelRequirements: Record<string, IpcRequirement> = {
 const ipcMain = {
   handle(
     channel: string,
-    listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => unknown,
+    listener: (
+      event: Electron.IpcMainInvokeEvent,
+      ...args: unknown[]
+    ) => unknown,
   ): void {
-    const requirement = channelRequirements[channel];
+    const requirement = channelRequirements[channel] as IpcRequirement;
     assertExplicitIpcRequirements([channel], channelRequirements);
-    if (!requirement) throw new Error(`Missing IPC requirement: ${channel}`);
     electronIpcMain.handle(channel, async (event, ...args) => {
       if (channel.startsWith('auth:')) session?.touch();
       else {
@@ -507,11 +509,12 @@ function registerIpc(): void {
     );
   });
   ipcMain.handle('auth:createFirstOwner', (_event, name, pin) => {
+    const cleanPin = staffPinSchema.parse(pin);
     const owner = database.createFirstOwner(
       z.string().trim().min(1).max(200).parse(name),
-      staffPinSchema.parse(pin),
+      cleanPin,
     );
-    session.signIn(owner.id, pin);
+    session.signIn(owner.id, cleanPin);
     return owner;
   });
   ipcMain.handle('staff:list', () => database.listStaffAccounts());

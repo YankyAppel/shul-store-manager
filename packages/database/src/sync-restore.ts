@@ -74,7 +74,6 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
     'account_payments',
     'inventory_movements',
     'customer_ledger',
-    'audit_events',
   ];
   for (const table of tables) {
     const row = connection
@@ -82,6 +81,12 @@ export function isBusinessDataEmpty(connection: SqliteDatabase): boolean {
       .get() as { count: number } | undefined;
     if ((row?.count ?? 0) > 0) return false;
   }
+  const auditRow = connection
+    .prepare(
+      "SELECT COUNT(*) AS count FROM audit_events WHERE entity_type <> 'staff'",
+    )
+    .get() as { count: number } | undefined;
+  if ((auditRow?.count ?? 0) > 0) return false;
   return true;
 }
 
@@ -97,7 +102,6 @@ export function hasBusinessRows(connection: SqliteDatabase): boolean {
     'account_payments',
     'inventory_movements',
     'customer_ledger',
-    'audit_events',
     'payment_transactions',
     'kiosks',
   ];
@@ -111,6 +115,12 @@ export function hasBusinessRows(connection: SqliteDatabase): boolean {
       .get() as { count: number } | undefined;
     if ((row?.count ?? 0) > 0) return true;
   }
+  const auditRow = connection
+    .prepare(
+      "SELECT COUNT(*) AS count FROM audit_events WHERE entity_type <> 'staff'",
+    )
+    .get() as { count: number } | undefined;
+  if ((auditRow?.count ?? 0) > 0) return true;
   return false;
 }
 

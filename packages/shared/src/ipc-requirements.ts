@@ -1,8 +1,6 @@
-export type IpcRequirement = 'public' | 'owner' | string;
-
 export function assertExplicitIpcRequirements(
   channels: Iterable<string>,
-  requirements: Readonly<Record<string, string>>,
+  requirements: Readonly<Record<string, string | undefined>>,
 ): void {
   for (const channel of channels) {
     const requirement = requirements[channel];

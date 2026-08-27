@@ -892,6 +892,24 @@ export class StoreDatabase {
       const result = this.verifyStaffPin(String(row.id), value);
       if (result.ok) return result.account;
     }
+    for (const row of rows) {
+      if (row.locked_until && String(row.locked_until) > timestamp) continue;
+      const attempts = Number(row.failed_attempts ?? 0) + 1;
+      const lockedUntil =
+        attempts >= 5
+          ? new Date(Date.now() + 5 * 60 * 1000).toISOString()
+          : null;
+      this.connection
+        .prepare(
+          'UPDATE staff SET failed_attempts = ?, locked_until = ?, updated_at = ? WHERE id = ?',
+        )
+        .run(
+          attempts >= 5 ? 0 : attempts,
+          lockedUntil,
+          timestamp,
+          String(row.id),
+        );
+    }
     return null;
   }
 
@@ -4041,7 +4059,7 @@ export class StoreDatabase {
       );
       enqueued += this.backfillRows(
         'audit_event',
-        'SELECT id FROM audit_events ORDER BY occurred_at, rowid',
+        "SELECT id FROM audit_events WHERE entity_type <> 'staff' ORDER BY occurred_at, rowid",
       );
       this.markBackfillCompleted();
     })();
