@@ -306,6 +306,12 @@ function KioskReaderSetup({
 }) {
   const [open, setOpen] = useState(false);
   const [apiKey, setApiKey] = useState('');
+  const [processorId, setProcessorId] = useState<
+    'cardknox-bbpos' | 'usaepay-payment-engine'
+  >('cardknox-bbpos');
+  const [apiPin, setApiPin] = useState('');
+  const [deviceKey, setDeviceKey] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
   const [deviceName, setDeviceName] = useState('BBPOS');
   const [connection, setConnection] = useState<'usb' | 'ip'>('usb');
   const [comPort, setComPort] = useState('COM3');
@@ -321,10 +327,28 @@ function KioskReaderSetup({
   const [busy, setBusy] = useState(false);
 
   async function save() {
+    const timeoutSeconds = Number(timeout);
+    const minimumTimeout = processorId === 'usaepay-payment-engine' ? 30 : 1;
+    if (
+      !Number.isInteger(timeoutSeconds) ||
+      timeoutSeconds < minimumTimeout ||
+      timeoutSeconds > 600
+    ) {
+      setMessage(
+        processorId === 'usaepay-payment-engine'
+          ? 'Payment timeout must be a whole number between 30 and 600 seconds.'
+          : 'Reader timeout must be a whole number between 1 and 600 seconds.',
+      );
+      return;
+    }
     setBusy(true);
     setMessage('');
     const config: KioskReaderConfig = {
+      processorId,
       apiKey,
+      ...(processorId === 'usaepay-payment-engine'
+        ? { apiPin, deviceKey, paymentTimeoutSeconds: timeoutSeconds }
+        : {}),
       deviceName,
       connection:
         connection === 'usb'
@@ -333,8 +357,9 @@ function KioskReaderSetup({
       silentMode,
       readerOnly,
       amountConfirmationPrompt,
-      deviceTimeoutSeconds: Number(timeout),
+      deviceTimeoutSeconds: timeoutSeconds,
       mode,
+      manualKey: false,
     };
     try {
       await window.kioskApi.saveReaderConfig(config);
@@ -362,6 +387,33 @@ function KioskReaderSetup({
     }
   }
 
+  async function pair() {
+    if (!apiKey.trim() || !apiPin.trim()) {
+      setMessage('Enter the USAePay source key and API PIN first.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const result = await window.kioskApi.pairUsaepayDevice({
+        apiKey,
+        apiPin,
+        mode,
+      });
+      setDeviceKey(result.deviceKey);
+      setPairingCode(result.pairingCode);
+      setMessage(
+        `Type pairing code ${result.pairingCode} into the kiosk terminal. It expires at ${result.expiresAt}. Then save the terminal settings.`,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Terminal pairing failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="reader-setup">
       <button
@@ -375,12 +427,15 @@ function KioskReaderSetup({
         <>
           <KioskExplain
             id="bbpos-reader-setup"
-            sentence="This reader lets this kiosk take card payments without a countertop terminal."
+            sentence={
+              processorId === 'usaepay-payment-engine'
+                ? 'This connects the kiosk to a USAePay terminal through Payment Engine.'
+                : 'This reader lets this kiosk take card payments without a countertop terminal.'
+            }
           >
-            Install BBPOS on the Windows computer from
-            https://cdn.cardknox.com/dl/bbpos.exe. Sola must activate BBPOS and
-            key-inject the reader. PIN debit is not supported, and Augusta has
-            no tap. The reader must stay connected to this kiosk computer.
+            {processorId === 'usaepay-payment-engine'
+              ? 'Enter the USAePay source key, API PIN, and paired device key. The terminal handles card data; this kiosk never receives the card number.'
+              : 'Install BBPOS on the Windows computer from https://cdn.cardknox.com/dl/bbpos.exe. Sola must activate BBPOS and key-inject the reader. PIN debit is not supported, and Augusta has no tap. The reader must stay connected to this kiosk computer.'}
           </KioskExplain>
           <p>
             {status.configured
@@ -388,7 +443,9 @@ function KioskReaderSetup({
               : 'Not configured.'}
           </p>
           <label>
-            Sola / Cardknox key
+            {processorId === 'usaepay-payment-engine'
+              ? 'USAePay source key'
+              : 'Sola / Cardknox key'}
             <input
               type="password"
               value={apiKey}
@@ -396,25 +453,77 @@ function KioskReaderSetup({
             />
           </label>
           <label>
-            Reader device name
-            <input
-              value={deviceName}
-              onChange={(event) => setDeviceName(event.target.value)}
-            />
-          </label>
-          <label>
-            Connection
+            Payment processor
             <select
-              value={connection}
+              value={processorId}
               onChange={(event) =>
-                setConnection(event.target.value as 'usb' | 'ip')
+                setProcessorId(
+                  event.target.value as
+                    'cardknox-bbpos' | 'usaepay-payment-engine',
+                )
               }
             >
-              <option value="usb">USB</option>
-              <option value="ip">Network reader</option>
+              <option value="cardknox-bbpos">Sola / Cardknox BBPOS</option>
+              <option value="usaepay-payment-engine">
+                USAePay terminal (Payment Engine)
+              </option>
             </select>
           </label>
-          {connection === 'usb' ? (
+          {processorId === 'usaepay-payment-engine' && (
+            <>
+              <label>
+                USAePay API PIN
+                <input
+                  type="password"
+                  value={apiPin}
+                  onChange={(event) => setApiPin(event.target.value)}
+                />
+              </label>
+              <label>
+                USAePay device key
+                <input
+                  value={deviceKey}
+                  onChange={(event) => setDeviceKey(event.target.value)}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => void pair()}
+                disabled={busy || !apiKey.trim() || !apiPin.trim()}
+              >
+                Pair terminal
+              </button>
+              {pairingCode && (
+                <p>
+                  Pairing code: <strong>{pairingCode}</strong>
+                </p>
+              )}
+            </>
+          )}
+          {processorId === 'cardknox-bbpos' && (
+            <label>
+              Reader device name
+              <input
+                value={deviceName}
+                onChange={(event) => setDeviceName(event.target.value)}
+              />
+            </label>
+          )}
+          {processorId === 'cardknox-bbpos' && (
+            <label>
+              Connection
+              <select
+                value={connection}
+                onChange={(event) =>
+                  setConnection(event.target.value as 'usb' | 'ip')
+                }
+              >
+                <option value="usb">USB</option>
+                <option value="ip">Network reader</option>
+              </select>
+            </label>
+          )}
+          {processorId === 'cardknox-bbpos' && connection === 'usb' ? (
             <label>
               USB COM port
               <input
@@ -422,7 +531,7 @@ function KioskReaderSetup({
                 onChange={(event) => setComPort(event.target.value)}
               />
             </label>
-          ) : (
+          ) : processorId === 'cardknox-bbpos' ? (
             <>
               <label>
                 Reader IP address
@@ -439,39 +548,47 @@ function KioskReaderSetup({
                 />
               </label>
             </>
+          ) : null}
+          {processorId === 'cardknox-bbpos' && (
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={silentMode}
+                onChange={(event) => setSilentMode(event.target.checked)}
+              />
+              Hide the BBPOS form
+              <small>
+                When on, customers can use only the reader. When off, BBPOS may
+                show its own card-number form.
+              </small>
+            </label>
           )}
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={silentMode}
-              onChange={(event) => setSilentMode(event.target.checked)}
-            />
-            Hide the BBPOS form
-            <small>
-              When on, customers can use only the reader. When off, BBPOS may
-              show its own card-number form.
-            </small>
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={readerOnly}
-              onChange={(event) => setReaderOnly(event.target.checked)}
-            />
-            Reader only — do not allow card-number typing
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={amountConfirmationPrompt}
-              onChange={(event) =>
-                setAmountConfirmationPrompt(event.target.checked)
-              }
-            />
-            Ask customer to confirm amount
-          </label>
+          {processorId === 'cardknox-bbpos' && (
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={readerOnly}
+                onChange={(event) => setReaderOnly(event.target.checked)}
+              />
+              Reader only — do not allow card-number typing
+            </label>
+          )}
+          {processorId === 'cardknox-bbpos' && (
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={amountConfirmationPrompt}
+                onChange={(event) =>
+                  setAmountConfirmationPrompt(event.target.checked)
+                }
+              />
+              Ask customer to confirm amount
+            </label>
+          )}
           <label>
-            Reader timeout (seconds)
+            {processorId === 'usaepay-payment-engine'
+              ? 'Payment timeout (seconds)'
+              : 'Reader timeout (seconds)'}
             <input
               inputMode="numeric"
               value={timeout}

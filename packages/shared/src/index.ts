@@ -426,6 +426,17 @@ export interface StoreApi {
       apiKey: string;
       mode: 'test' | 'live';
     }): Promise<{ ok: boolean; message: string }>;
+    pairUsaepayDevice(input: {
+      apiKey: string;
+      apiPin: string;
+      mode: 'test' | 'live';
+      name: string;
+      endpointKey?: string;
+    }): Promise<{
+      deviceKey: string;
+      pairingCode: string;
+      expiresAt: string;
+    }>;
     checkReader(): Promise<{ ok: boolean; message: string }>;
     listPrinters(): Promise<PrinterInfo[]>;
   };

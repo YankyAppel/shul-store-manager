@@ -20,6 +20,12 @@ export function SettingsScreen() {
   const [processorStatus, setProcessorStatus] =
     useState<ProcessorConfigStatus>();
   const [processorKey, setProcessorKey] = useState('');
+  const [usaepayApiPin, setUsaepayApiPin] = useState('');
+  const [usaepayDeviceKey, setUsaepayDeviceKey] = useState('');
+  const [usaepayTimeout, setUsaepayTimeout] = useState('180');
+  const [usaepayPromptTip, setUsaepayPromptTip] = useState(false);
+  const [usaepayManualKey, setUsaepayManualKey] = useState(false);
+  const [usaepayPairingCode, setUsaepayPairingCode] = useState('');
   const [processorMode, setProcessorMode] = useState<'test' | 'live'>('test');
   const [processorMessage, setProcessorMessage] = useState('');
   const [testingProcessor, setTestingProcessor] = useState(false);
@@ -82,6 +88,22 @@ export function SettingsScreen() {
   }
 
   async function saveProcessorConfig() {
+    const isUsaepay = settings!.cardProcessorId === 'usaepay-payment-engine';
+    const timeoutText = isUsaepay ? usaepayTimeout : readerTimeout;
+    const timeoutSeconds = Number(timeoutText);
+    const minimumTimeout = isUsaepay ? 30 : 1;
+    if (
+      !Number.isInteger(timeoutSeconds) ||
+      timeoutSeconds < minimumTimeout ||
+      timeoutSeconds > 600
+    ) {
+      setProcessorMessage(
+        isUsaepay
+          ? 'Payment timeout must be a whole number between 30 and 600 seconds.'
+          : 'Reader timeout must be a whole number between 1 and 600 seconds.',
+      );
+      return;
+    }
     try {
       const next =
         settings!.cardProcessorId === 'cardknox-bbpos'
@@ -99,22 +121,53 @@ export function SettingsScreen() {
               silentMode: readerSilentMode,
               readerOnly,
               amountConfirmationPrompt: readerAmountPrompt,
-              deviceTimeoutSeconds: Number(readerTimeout),
+              deviceTimeoutSeconds: timeoutSeconds,
               mode: processorMode,
               processorId: 'cardknox-bbpos',
             })
-          : JSON.stringify({
-              processorId: settings!.cardProcessorId,
-              apiKey: processorKey,
-              mode: processorMode,
-            });
+          : settings!.cardProcessorId === 'usaepay-payment-engine'
+            ? JSON.stringify({
+                processorId: 'usaepay-payment-engine',
+                apiKey: processorKey,
+                apiPin: usaepayApiPin,
+                deviceKey: usaepayDeviceKey,
+                mode: processorMode,
+                paymentTimeoutSeconds: timeoutSeconds,
+                promptTip: usaepayPromptTip,
+                manualKey: usaepayManualKey,
+                endpointKey: 'v2',
+              })
+            : JSON.stringify({
+                processorId: settings!.cardProcessorId,
+                apiKey: processorKey,
+                mode: processorMode,
+              });
       const status = await window.storeApi.settings.setProcessorConfig(next);
       setProcessorStatus(status);
       setProcessorKey('');
+      setUsaepayApiPin('');
       setProcessorMessage(
         status.configured
           ? 'Processor configuration replaced.'
           : 'Processor configuration cleared.',
+      );
+    } catch (error) {
+      setProcessorMessage(messageFrom(error));
+    }
+  }
+
+  async function pairUsaepay() {
+    try {
+      const result = await window.storeApi.settings.pairUsaepayDevice({
+        apiKey: processorKey,
+        apiPin: usaepayApiPin,
+        mode: processorMode,
+        name: 'Shul Store Terminal',
+      });
+      setUsaepayDeviceKey(result.deviceKey);
+      setUsaepayPairingCode(result.pairingCode);
+      setProcessorMessage(
+        `Type pairing code ${result.pairingCode} into the USAePay terminal. It expires at ${result.expiresAt}. Then save the terminal settings.`,
       );
     } catch (error) {
       setProcessorMessage(messageFrom(error));
@@ -150,8 +203,11 @@ export function SettingsScreen() {
     setTestingProcessor(true);
     try {
       const result = await window.storeApi.settings.testProcessorConnection({
-        processorId: (settings!.cardProcessorId || 'other') as
-          'sola' | 'cardknox' | 'usaepay' | 'other',
+        processorId:
+          settings!.cardProcessorId === 'usaepay-payment-engine'
+            ? 'usaepay'
+            : ((settings!.cardProcessorId || 'other') as
+                'sola' | 'cardknox' | 'usaepay' | 'other'),
         apiKey: processorKey,
         mode: processorMode,
       });
@@ -613,7 +669,9 @@ export function SettingsScreen() {
                 <option value="cardknox-bbpos">
                   Sola / Cardknox BBPOS reader
                 </option>
-                <option value="usaepay">USAePay</option>
+                <option value="usaepay-payment-engine">
+                  USAePay terminal (Payment Engine)
+                </option>
                 <option value="other">Other (request)</option>
               </select>
             </label>
@@ -627,6 +685,78 @@ export function SettingsScreen() {
                 autoComplete="off"
               />
             </label>
+            {settings.cardProcessorId === 'usaepay-payment-engine' && (
+              <>
+                <Explain
+                  id="usaepay-terminal-setup"
+                  sentence="This connects the manager to a USAePay card terminal through Payment Engine."
+                >
+                  Enter the USAePay source key and API PIN from the merchant
+                  account. Pair the standalone terminal here, then type the
+                  short pairing code into the terminal. Card data stays on the
+                  terminal and is never handled by this app.
+                </Explain>
+                <label>
+                  USAePay API PIN
+                  <input
+                    type="password"
+                    value={usaepayApiPin}
+                    onChange={(event) => setUsaepayApiPin(event.target.value)}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  USAePay device key
+                  <input
+                    value={usaepayDeviceKey}
+                    onChange={(event) =>
+                      setUsaepayDeviceKey(event.target.value)
+                    }
+                    placeholder="Pair the terminal to fill this"
+                  />
+                </label>
+                <label>
+                  Payment timeout (seconds)
+                  <input
+                    inputMode="numeric"
+                    value={usaepayTimeout}
+                    onChange={(event) => setUsaepayTimeout(event.target.value)}
+                  />
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={usaepayPromptTip}
+                    onChange={(event) =>
+                      setUsaepayPromptTip(event.target.checked)
+                    }
+                  />
+                  Ask the terminal for a tip
+                </label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={usaepayManualKey}
+                    onChange={(event) =>
+                      setUsaepayManualKey(event.target.checked)
+                    }
+                  />
+                  Allow manual card entry on the terminal
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void pairUsaepay()}
+                  disabled={!processorKey.trim() || !usaepayApiPin.trim()}
+                >
+                  Pair terminal
+                </button>
+                {usaepayPairingCode && (
+                  <p>
+                    Pairing code: <strong>{usaepayPairingCode}</strong>
+                  </p>
+                )}
+              </>
+            )}
             {settings.cardProcessorId === 'cardknox-bbpos' && (
               <>
                 <Explain
@@ -767,7 +897,10 @@ export function SettingsScreen() {
                 type="button"
                 onClick={() => void saveProcessorConfig()}
                 disabled={
-                  !processorKey.trim() || settings.cardProcessorId === 'other'
+                  !processorKey.trim() ||
+                  settings.cardProcessorId === 'other' ||
+                  (settings.cardProcessorId === 'usaepay-payment-engine' &&
+                    (!usaepayApiPin.trim() || !usaepayDeviceKey.trim()))
                 }
               >
                 Save processor key
@@ -779,18 +912,24 @@ export function SettingsScreen() {
                   testingProcessor ||
                   !processorKey.trim() ||
                   settings.cardProcessorId === 'other' ||
-                  settings.cardProcessorId === 'cardknox-bbpos'
+                  settings.cardProcessorId === 'cardknox-bbpos' ||
+                  settings.cardProcessorId === 'usaepay-payment-engine'
                 }
               >
                 {testingProcessor ? 'Testing…' : 'Test connection'}
               </button>
-              {settings.cardProcessorId === 'cardknox-bbpos' && (
+              {(settings.cardProcessorId === 'cardknox-bbpos' ||
+                settings.cardProcessorId === 'usaepay-payment-engine') && (
                 <button
                   type="button"
                   onClick={() => void checkReader()}
                   disabled={checkingReader || !processorStatus.configured}
                 >
-                  {checkingReader ? 'Checking reader…' : 'Check reader'}
+                  {checkingReader
+                    ? 'Checking terminal…'
+                    : settings.cardProcessorId === 'usaepay-payment-engine'
+                      ? 'Check terminal'
+                      : 'Check reader'}
                 </button>
               )}
               {processorMessage && <span>{processorMessage}</span>}

@@ -71,7 +71,10 @@ export interface KioskCloudSignInInput {
 }
 
 export interface KioskReaderConfig {
+  processorId?: 'cardknox-bbpos' | 'usaepay-payment-engine';
   apiKey: string;
+  apiPin?: string;
+  deviceKey?: string;
   deviceName: string;
   connection:
     | { kind: 'usb'; comPort: string }
@@ -80,6 +83,9 @@ export interface KioskReaderConfig {
   readerOnly: boolean;
   amountConfirmationPrompt: boolean;
   deviceTimeoutSeconds: number;
+  paymentTimeoutSeconds?: number;
+  promptTip?: boolean;
+  manualKey?: boolean;
   mode: 'test' | 'live';
 }
 
@@ -229,6 +235,16 @@ export interface KioskMainHandlers {
   cloudSignUp(input: KioskCloudSignInInput): Promise<KioskPublicState>;
   getReaderStatus(): Promise<KioskReaderStatus>;
   saveReaderConfig(input: KioskReaderConfig): Promise<KioskReaderStatus>;
+  pairUsaepayDevice(input: {
+    apiKey: string;
+    apiPin: string;
+    mode: 'test' | 'live';
+    endpointKey?: string;
+  }): Promise<{
+    deviceKey: string;
+    pairingCode: string;
+    expiresAt: string;
+  }>;
   checkReader(): Promise<{ ok: boolean; message: string }>;
   getExplanationDismissed(id: string): Promise<boolean>;
   dismissExplanation(id: string): Promise<void>;

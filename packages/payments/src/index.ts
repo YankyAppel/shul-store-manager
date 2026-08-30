@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 export type ChargeStatus = 'approved' | 'declined' | 'error' | 'pending';
 
@@ -668,9 +668,485 @@ export async function checkCardknoxBbposReader(
   }
 }
 
+export const usaepayPaymentEngineConfigSchema = z.object({
+  apiKey: z.string().trim().min(1).max(1000),
+  apiPin: z.string().trim().min(1).max(1000),
+  deviceKey: z.string().trim().min(1).max(200),
+  mode: z.enum(['test', 'live']).default('live'),
+  paymentTimeoutSeconds: z.number().int().min(30).max(600).default(180),
+  promptTip: z.boolean().default(false),
+  manualKey: z.boolean().default(false),
+  endpointKey: z.string().trim().min(1).default('v2'),
+});
+export type UsaepayPaymentEngineConfig = z.infer<
+  typeof usaepayPaymentEngineConfigSchema
+>;
+
+type UsaepayDeviceConfig = Pick<
+  UsaepayPaymentEngineConfig,
+  'apiKey' | 'apiPin' | 'mode'
+> & { endpointKey?: string };
+export type UsaepayDeviceRegistrationConfig = UsaepayDeviceConfig;
+type UsaepayStoredResult = ChargeResult & { requestKey?: string };
+type UsaepayFetch = typeof fetch;
+
+const USAEPAY_SOFTWARE = 'Shul Store Manager';
+const USAEPAY_GRACE_SECONDS = 2;
+
+function usaepayBaseUrl(config: UsaepayDeviceConfig): string {
+  const host =
+    config.mode === 'test'
+      ? 'https://sandbox.usaepay.com'
+      : 'https://usaepay.com';
+  return `${host}/api/${config.endpointKey ?? 'v2'}`;
+}
+
+function usaepayAuthHeaders(
+  config: UsaepayDeviceConfig,
+): Record<string, string> {
+  const seed = randomBytes(16).toString('hex');
+  const digest = createHash('sha256')
+    .update(`${config.apiKey}${seed}${config.apiPin}`)
+    .digest('hex');
+  return {
+    Authorization: `Basic ${Buffer.from(
+      `${config.apiKey}:s2/${seed}/${digest}`,
+    ).toString('base64')}`,
+    'Content-Type': 'application/json',
+  };
+}
+
+function usaepayMessage(value: unknown, fallback: string): string {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  return value
+    .trim()
+    .replace(/(?<!\d)(?:\d[\s-]?){11,18}\d(?!\d)/g, '[redacted card number]');
+}
+
+function usaepayObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object'
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+async function usaepayJson(
+  response: Response,
+): Promise<Record<string, unknown> | null> {
+  if (!response.ok) return null;
+  try {
+    return usaepayObject(await response.json());
+  } catch {
+    return null;
+  }
+}
+
+function usaepayTransaction(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  return usaepayObject(body.transaction) ?? body;
+}
+
+function usaepayResultCode(value: Record<string, unknown>): string {
+  const result = value.result_code;
+  return typeof result === 'string' ? result.trim().toUpperCase() : '';
+}
+
+function usaepayReference(value: Record<string, unknown>): string | undefined {
+  const reference = value.refnum;
+  if (typeof reference === 'string' || typeof reference === 'number')
+    return String(reference);
+  return undefined;
+}
+
+function usaepayCardBrand(value: Record<string, unknown>): string | undefined {
+  const creditCard = usaepayObject(value.creditcard);
+  const brand = creditCard?.cardtype;
+  return typeof brand === 'string' && brand.trim() ? brand.trim() : undefined;
+}
+
+function usaepayCardLast4(value: Record<string, unknown>): string | undefined {
+  const creditCard = usaepayObject(value.creditcard);
+  const number = creditCard?.number;
+  if (typeof number !== 'string' && typeof number !== 'number')
+    return undefined;
+  const digits = String(number).replace(/\D/g, '');
+  return digits.length >= 4 ? digits.slice(-4) : undefined;
+}
+
+function usaepayStatus(value: Record<string, unknown>): string {
+  const status = value.status;
+  return typeof status === 'string' ? status.trim().toLowerCase() : '';
+}
+
+function usaepayPending(
+  message = 'The terminal response is unresolved. Check the terminal before trying the card again.',
+  requestKey?: string,
+): UsaepayStoredResult {
+  return {
+    status: 'pending',
+    errorMessage: message,
+    ...(requestKey ? { requestKey } : {}),
+  };
+}
+
+function publicUsaepayResult(result: UsaepayStoredResult): ChargeResult {
+  const publicResult = { ...result };
+  delete publicResult.requestKey;
+  return publicResult;
+}
+
+function usaepayConfig(rawConfig: UsaepayDeviceConfig): UsaepayDeviceConfig {
+  return {
+    ...rawConfig,
+    endpointKey: rawConfig.endpointKey ?? 'v2',
+  };
+}
+
+async function usaepayRequest(
+  fetchImpl: UsaepayFetch,
+  config: UsaepayDeviceConfig,
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  return fetchImpl(`${usaepayBaseUrl(config)}${path}`, {
+    ...init,
+    headers: {
+      ...usaepayAuthHeaders(config),
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+async function pollUsaepayRequest(
+  fetchImpl: UsaepayFetch,
+  config: UsaepayPaymentEngineConfig,
+  requestKey: string,
+  sleep: (milliseconds: number) => Promise<void>,
+  maxPolls = Number.MAX_SAFE_INTEGER,
+): Promise<ChargeResult> {
+  const deadline =
+    Date.now() + (config.paymentTimeoutSeconds + USAEPAY_GRACE_SECONDS) * 1000;
+  let polls = 0;
+  while (Date.now() <= deadline) {
+    polls += 1;
+    let body: Record<string, unknown> | null;
+    try {
+      const response = await usaepayRequest(
+        fetchImpl,
+        config,
+        `/paymentengine/payrequests/${encodeURIComponent(requestKey)}`,
+        { method: 'GET' },
+      );
+      body = await usaepayJson(response);
+    } catch {
+      return usaepayPending(undefined, requestKey);
+    }
+    if (!body) return usaepayPending(undefined, requestKey);
+
+    const status = usaepayStatus(body);
+    const transaction = usaepayTransaction(body);
+    const code = usaepayResultCode(transaction);
+    if (code === 'A') {
+      const processorTransactionId = usaepayReference(transaction);
+      if (!processorTransactionId)
+        return usaepayPending(
+          'The terminal approved a payment but returned no transaction reference. The payment needs attention.',
+          requestKey,
+        );
+      const brand = usaepayCardBrand(transaction);
+      const last4 = usaepayCardLast4(transaction);
+      return {
+        status: 'approved',
+        processorTransactionId,
+        ...(brand ? { cardBrand: brand } : {}),
+        ...(last4 ? { cardLast4: last4 } : {}),
+      };
+    }
+    if (code === 'D')
+      return {
+        status: 'declined',
+        declineReason: usaepayMessage(
+          transaction.error ?? transaction.result,
+          'The terminal declined the card.',
+        ),
+      };
+    if (status === 'canceled' || status === 'transaction canceled')
+      return {
+        status: 'declined',
+        declineReason: 'The terminal payment was canceled.',
+      };
+    if (status === 'transaction failed' || status === 'error')
+      return {
+        status: 'error',
+        errorMessage: usaepayMessage(
+          transaction.error ?? transaction.result,
+          'The terminal payment failed.',
+        ),
+      };
+    if (status === 'timeout')
+      return {
+        status: 'error',
+        errorMessage: 'The terminal payment timed out.',
+      };
+    if (body.complete === true) return usaepayPending(undefined, requestKey);
+    if (polls >= maxPolls) break;
+    if (Date.now() >= deadline) break;
+    await sleep(1500);
+  }
+  return usaepayPending(
+    'The terminal did not finish the payment in time. Check the terminal before trying the card again.',
+    requestKey,
+  );
+}
+
+export function createUsaepayPaymentEngineProcessor(
+  fetchImpl: UsaepayFetch = fetch,
+  sleep: (milliseconds: number) => Promise<void> = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
+): PaymentProcessor<UsaepayPaymentEngineConfig> {
+  return {
+    id: 'usaepay-payment-engine',
+    displayName: 'USAePay terminal (Payment Engine)',
+    configSchema: usaepayPaymentEngineConfigSchema,
+    async createCharge(request, rawConfig, storage) {
+      const config = usaepayPaymentEngineConfigSchema.parse(rawConfig);
+      const existing = (await storage.get(request.chargeReference)) as
+        UsaepayStoredResult | undefined;
+      if (existing) return publicUsaepayResult(existing);
+
+      await storage.set(
+        request.chargeReference,
+        usaepayPending('Payment request is being sent to the terminal.'),
+      );
+      let body: Record<string, unknown> | null;
+      try {
+        const response = await usaepayRequest(
+          fetchImpl,
+          config,
+          '/paymentengine/payrequests',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              devicekey: config.deviceKey,
+              command: 'sale',
+              amount: (request.amountCents / 100).toFixed(2),
+              timeout: config.paymentTimeoutSeconds,
+              invoice: request.chargeReference.slice(-11),
+              orderid: request.chargeReference,
+              software: USAEPAY_SOFTWARE,
+              ...(config.promptTip ? { prompt_tip: true } : {}),
+              ...(config.manualKey ? { manual_key: true } : {}),
+            }),
+          },
+        );
+        body = await usaepayJson(response);
+      } catch {
+        const result = usaepayPending(
+          'USAePay could not be reached. The payment needs attention; do not try the card again.',
+        );
+        await storage.set(request.chargeReference, result);
+        return publicUsaepayResult(result);
+      }
+      const requestKey = body?.key;
+      if (typeof requestKey !== 'string' || !requestKey.trim()) {
+        const result = usaepayPending(
+          'USAePay did not return a payment request key. The payment needs attention.',
+        );
+        await storage.set(request.chargeReference, result);
+        return publicUsaepayResult(result);
+      }
+      const pending = usaepayPending(undefined, requestKey);
+      await storage.set(request.chargeReference, pending);
+      const result = await pollUsaepayRequest(
+        fetchImpl,
+        config,
+        requestKey,
+        sleep,
+      );
+      const storedResult: UsaepayStoredResult = {
+        ...result,
+        requestKey,
+      };
+      await storage.set(request.chargeReference, storedResult);
+      return publicUsaepayResult(storedResult);
+    },
+    async getChargeStatus(chargeReference, rawConfig, storage) {
+      const config = usaepayPaymentEngineConfigSchema.parse(rawConfig);
+      const stored = (await storage.get(chargeReference)) as
+        UsaepayStoredResult | undefined;
+      if (stored?.status === 'approved' || stored?.status === 'declined')
+        return publicUsaepayResult(stored);
+      if (!stored?.requestKey)
+        return {
+          status: 'pending',
+          errorMessage:
+            'The payment request key was not recovered. Check the terminal and USAePay console before trying the card again.',
+        };
+      const result = await pollUsaepayRequest(
+        fetchImpl,
+        config,
+        stored.requestKey,
+        async () => undefined,
+        1,
+      );
+      const storedResult: UsaepayStoredResult = {
+        ...result,
+        requestKey: stored.requestKey,
+      };
+      await storage.set(chargeReference, storedResult);
+      return publicUsaepayResult(storedResult);
+    },
+    async cancelCharge(chargeReference, rawConfig, storage) {
+      const config = usaepayPaymentEngineConfigSchema.parse(rawConfig);
+      const stored = (await storage.get(chargeReference)) as
+        UsaepayStoredResult | undefined;
+      if (!stored?.requestKey) return;
+      const response = await usaepayRequest(
+        fetchImpl,
+        config,
+        `/paymentengine/payrequests/${encodeURIComponent(stored.requestKey)}`,
+        { method: 'DELETE' },
+      );
+      if (!response.ok && response.status !== 404)
+        throw new Error('USAePay did not confirm cancellation.');
+    },
+    async refundCharge(request, rawConfig, storage) {
+      const config = usaepayPaymentEngineConfigSchema.parse(rawConfig);
+      if (!request.processorTransactionId)
+        return {
+          status: 'error',
+          errorMessage:
+            'USAePay refunds require the original processor transaction reference.',
+        };
+      try {
+        const response = await usaepayRequest(
+          fetchImpl,
+          config,
+          '/transactions',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              command: 'refund',
+              refnum: request.processorTransactionId,
+              amount: (request.amountCents / 100).toFixed(2),
+            }),
+          },
+        );
+        const body = await usaepayJson(response);
+        const transaction = body ? usaepayTransaction(body) : null;
+        if (!transaction || usaepayResultCode(transaction) !== 'A')
+          return {
+            status: 'declined',
+            errorMessage: usaepayMessage(
+              transaction?.error ?? transaction?.result,
+              'The USAePay refund was declined.',
+            ),
+          };
+        const processorRefundId = usaepayReference(transaction);
+        await storage.set(request.refundReference, {
+          status: 'approved',
+          ...(processorRefundId
+            ? { processorTransactionId: processorRefundId }
+            : {}),
+        });
+        return {
+          status: 'refunded',
+          ...(processorRefundId ? { processorRefundId } : {}),
+        };
+      } catch {
+        return {
+          status: 'error',
+          errorMessage: 'The USAePay refund could not be sent.',
+        };
+      }
+    },
+    async getRefundStatus(request, _rawConfig, storage) {
+      const stored = await storage.get(request.refundReference);
+      if (stored?.status === 'approved')
+        return {
+          status: 'refunded',
+          ...(stored.processorTransactionId
+            ? { processorRefundId: stored.processorTransactionId }
+            : {}),
+        };
+      return {
+        status: 'error',
+        errorMessage:
+          'USAePay refund status is unavailable; the refund needs attention.',
+      };
+    },
+  };
+}
+
+export const usaepayPaymentEngineProcessor =
+  createUsaepayPaymentEngineProcessor();
+
+export async function registerUsaepayDevice(
+  rawConfig: UsaepayDeviceConfig,
+  name: string,
+  fetchImpl: UsaepayFetch = fetch,
+): Promise<{ deviceKey: string; pairingCode: string; expiresAt: string }> {
+  const config = usaepayConfig(rawConfig);
+  const response = await usaepayRequest(
+    fetchImpl,
+    config,
+    '/paymentengine/devices',
+    {
+      method: 'POST',
+      body: JSON.stringify({ name: name.trim(), terminal_type: 'standalone' }),
+    },
+  );
+  const body = await usaepayJson(response);
+  const deviceKey = body?.key;
+  const pairingCode = body?.pairing_code;
+  const expiresAt = body?.expires_at ?? body?.expiration ?? body?.expiresAt;
+  if (
+    typeof deviceKey !== 'string' ||
+    typeof pairingCode !== 'string' ||
+    (typeof expiresAt !== 'string' && typeof expiresAt !== 'number')
+  )
+    throw new Error('USAePay did not return valid terminal pairing details.');
+  return { deviceKey, pairingCode, expiresAt: String(expiresAt) };
+}
+
+export async function checkUsaepayDevice(
+  rawConfig: UsaepayPaymentEngineConfig,
+  fetchImpl: UsaepayFetch = fetch,
+): Promise<{ ok: boolean; message: string }> {
+  try {
+    const config = usaepayPaymentEngineConfigSchema.parse(rawConfig);
+    const response = await usaepayRequest(
+      fetchImpl,
+      config,
+      `/paymentengine/devices/${encodeURIComponent(config.deviceKey)}`,
+      { method: 'GET' },
+    );
+    const body = await usaepayJson(response);
+    if (!body)
+      return {
+        ok: false,
+        message: 'USAePay did not return terminal status.',
+      };
+    const status = usaepayStatus(body);
+    return {
+      ok: status === 'online',
+      message:
+        status === 'online'
+          ? 'The USAePay terminal is online.'
+          : `USAePay terminal status: ${status || 'unknown'}.`,
+    };
+  } catch {
+    return {
+      ok: false,
+      message: 'The USAePay terminal could not be reached.',
+    };
+  }
+}
+
 export const processors: PaymentProcessor<any>[] = [
   simulatedProcessor,
   cardknoxBbposProcessor,
+  usaepayPaymentEngineProcessor,
 ];
 
 export const processorConnectionConfigSchema = z.object({
