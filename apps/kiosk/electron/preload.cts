@@ -17,6 +17,8 @@ const api: KioskApi = {
   getReaderStatus: () => ipcRenderer.invoke('kiosk:getReaderStatus'),
   saveReaderConfig: (input) =>
     ipcRenderer.invoke('kiosk:saveReaderConfig', input),
+  pairUsaepayDevice: (input) =>
+    ipcRenderer.invoke('kiosk:pairUsaepayDevice', input),
   checkReader: () => ipcRenderer.invoke('kiosk:checkReader'),
   getExplanationDismissed: (id) =>
     ipcRenderer.invoke('kiosk:getExplanationDismissed', id),

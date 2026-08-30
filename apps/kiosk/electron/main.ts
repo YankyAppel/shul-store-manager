@@ -57,6 +57,7 @@ import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
   checkUsaepayDevice,
+  registerUsaepayDevice,
   usaepayPaymentEngineConfigSchema,
 } from '@shul-store/payments';
 
@@ -378,6 +379,19 @@ function saveReaderConfig(input: unknown) {
   return localDatabase.setCardProcessorConfigJson(
     JSON.stringify({ ...config, processorId }),
   );
+}
+
+async function pairUsaepayDevice(input: unknown) {
+  if (!unlocked) throw new Error('Unlock required');
+  const config = z
+    .object({
+      apiKey: z.string().trim().min(1).max(1000),
+      apiPin: z.string().trim().min(1).max(1000),
+      mode: z.enum(['test', 'live']).default('live'),
+      endpointKey: z.string().trim().min(1).default('v2'),
+    })
+    .parse(input);
+  return registerUsaepayDevice(config, 'Shul Store Kiosk');
 }
 
 async function checkReader(): Promise<{ ok: boolean; message: string }> {
@@ -1288,6 +1302,7 @@ function registerIpc(): void {
     cloudSignUp,
     getReaderStatus: async () => readerStatus(),
     saveReaderConfig: async (input) => saveReaderConfig(input),
+    pairUsaepayDevice,
     checkReader,
     getExplanationDismissed,
     dismissExplanation,
@@ -1305,6 +1320,9 @@ function registerIpc(): void {
   ipcMain.handle('kiosk:getReaderStatus', () => handlers.getReaderStatus());
   ipcMain.handle('kiosk:saveReaderConfig', (_event, input) =>
     handlers.saveReaderConfig(input),
+  );
+  ipcMain.handle('kiosk:pairUsaepayDevice', (_event, input) =>
+    handlers.pairUsaepayDevice(input),
   );
   ipcMain.handle('kiosk:checkReader', () => handlers.checkReader());
   ipcMain.handle('kiosk:getExplanationDismissed', (_event, id) =>

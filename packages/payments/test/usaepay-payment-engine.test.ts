@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   checkUsaepayDevice,
@@ -46,6 +47,11 @@ const config = usaepayPaymentEngineConfigSchema.parse({
   deviceKey: 'device-key',
   mode: 'test',
 });
+const storeVersion = (
+  JSON.parse(
+    readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+  ) as { version: string }
+).version;
 
 function transaction(resultCode = 'A') {
   return {
@@ -155,7 +161,36 @@ describe('USAePay Payment Engine processor', () => {
       timeout: 180,
       invoice: 'erence-1234',
       orderid: 'charge-reference-1234',
-      software: 'Shul Store Manager 0.1.5',
+      software: `Shul Store Manager ${storeVersion}`,
+    });
+    expect(JSON.parse(String(fake.calls[0]?.init?.body))).not.toHaveProperty(
+      'prompt_tip',
+    );
+    expect(JSON.parse(String(fake.calls[0]?.init?.body))).not.toHaveProperty(
+      'manual_key',
+    );
+  });
+
+  it('includes enabled prompt and manual-entry flags in the payrequest', async () => {
+    const fake = fakeFetch([
+      response({ key: 'pr_flags' }),
+      response({
+        complete: true,
+        status: 'transaction complete',
+        transaction: transaction(),
+      }),
+    ]);
+    await createUsaepayPaymentEngineProcessor(
+      fake.fetchImpl,
+      async () => undefined,
+    ).createCharge(
+      { chargeReference: 'charge-flags', amountCents: 100 },
+      { ...config, promptTip: true, manualKey: true },
+      storage().result,
+    );
+    expect(JSON.parse(String(fake.calls[0]?.init?.body))).toMatchObject({
+      prompt_tip: true,
+      manual_key: true,
     });
   });
 

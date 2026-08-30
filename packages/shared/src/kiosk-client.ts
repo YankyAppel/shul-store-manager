@@ -235,6 +235,16 @@ export interface KioskMainHandlers {
   cloudSignUp(input: KioskCloudSignInInput): Promise<KioskPublicState>;
   getReaderStatus(): Promise<KioskReaderStatus>;
   saveReaderConfig(input: KioskReaderConfig): Promise<KioskReaderStatus>;
+  pairUsaepayDevice(input: {
+    apiKey: string;
+    apiPin: string;
+    mode: 'test' | 'live';
+    endpointKey?: string;
+  }): Promise<{
+    deviceKey: string;
+    pairingCode: string;
+    expiresAt: string;
+  }>;
   checkReader(): Promise<{ ok: boolean; message: string }>;
   getExplanationDismissed(id: string): Promise<boolean>;
   dismissExplanation(id: string): Promise<void>;

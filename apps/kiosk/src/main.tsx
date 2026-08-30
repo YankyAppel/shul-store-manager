@@ -311,6 +311,7 @@ function KioskReaderSetup({
   >('cardknox-bbpos');
   const [apiPin, setApiPin] = useState('');
   const [deviceKey, setDeviceKey] = useState('');
+  const [pairingCode, setPairingCode] = useState('');
   const [deviceName, setDeviceName] = useState('BBPOS');
   const [connection, setConnection] = useState<'usb' | 'ip'>('usb');
   const [comPort, setComPort] = useState('COM3');
@@ -326,13 +327,27 @@ function KioskReaderSetup({
   const [busy, setBusy] = useState(false);
 
   async function save() {
+    const timeoutSeconds = Number(timeout);
+    const minimumTimeout = processorId === 'usaepay-payment-engine' ? 30 : 1;
+    if (
+      !Number.isInteger(timeoutSeconds) ||
+      timeoutSeconds < minimumTimeout ||
+      timeoutSeconds > 600
+    ) {
+      setMessage(
+        processorId === 'usaepay-payment-engine'
+          ? 'Payment timeout must be a whole number between 30 and 600 seconds.'
+          : 'Reader timeout must be a whole number between 1 and 600 seconds.',
+      );
+      return;
+    }
     setBusy(true);
     setMessage('');
     const config: KioskReaderConfig = {
       processorId,
       apiKey,
       ...(processorId === 'usaepay-payment-engine'
-        ? { apiPin, deviceKey, paymentTimeoutSeconds: Number(timeout) }
+        ? { apiPin, deviceKey, paymentTimeoutSeconds: timeoutSeconds }
         : {}),
       deviceName,
       connection:
@@ -342,7 +357,7 @@ function KioskReaderSetup({
       silentMode,
       readerOnly,
       amountConfirmationPrompt,
-      deviceTimeoutSeconds: Number(timeout),
+      deviceTimeoutSeconds: timeoutSeconds,
       mode,
       manualKey: false,
     };
@@ -366,6 +381,33 @@ function KioskReaderSetup({
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : 'Reader check failed.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pair() {
+    if (!apiKey.trim() || !apiPin.trim()) {
+      setMessage('Enter the USAePay source key and API PIN first.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const result = await window.kioskApi.pairUsaepayDevice({
+        apiKey,
+        apiPin,
+        mode,
+      });
+      setDeviceKey(result.deviceKey);
+      setPairingCode(result.pairingCode);
+      setMessage(
+        `Type pairing code ${result.pairingCode} into the kiosk terminal. It expires at ${result.expiresAt}. Then save the terminal settings.`,
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : 'Terminal pairing failed.',
       );
     } finally {
       setBusy(false);
@@ -444,6 +486,18 @@ function KioskReaderSetup({
                   onChange={(event) => setDeviceKey(event.target.value)}
                 />
               </label>
+              <button
+                type="button"
+                onClick={() => void pair()}
+                disabled={busy || !apiKey.trim() || !apiPin.trim()}
+              >
+                Pair terminal
+              </button>
+              {pairingCode && (
+                <p>
+                  Pairing code: <strong>{pairingCode}</strong>
+                </p>
+              )}
             </>
           )}
           {processorId === 'cardknox-bbpos' && (

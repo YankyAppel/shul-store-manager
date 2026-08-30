@@ -88,6 +88,22 @@ export function SettingsScreen() {
   }
 
   async function saveProcessorConfig() {
+    const isUsaepay = settings!.cardProcessorId === 'usaepay-payment-engine';
+    const timeoutText = isUsaepay ? usaepayTimeout : readerTimeout;
+    const timeoutSeconds = Number(timeoutText);
+    const minimumTimeout = isUsaepay ? 30 : 1;
+    if (
+      !Number.isInteger(timeoutSeconds) ||
+      timeoutSeconds < minimumTimeout ||
+      timeoutSeconds > 600
+    ) {
+      setProcessorMessage(
+        isUsaepay
+          ? 'Payment timeout must be a whole number between 30 and 600 seconds.'
+          : 'Reader timeout must be a whole number between 1 and 600 seconds.',
+      );
+      return;
+    }
     try {
       const next =
         settings!.cardProcessorId === 'cardknox-bbpos'
@@ -105,7 +121,7 @@ export function SettingsScreen() {
               silentMode: readerSilentMode,
               readerOnly,
               amountConfirmationPrompt: readerAmountPrompt,
-              deviceTimeoutSeconds: Number(readerTimeout),
+              deviceTimeoutSeconds: timeoutSeconds,
               mode: processorMode,
               processorId: 'cardknox-bbpos',
             })
@@ -116,7 +132,7 @@ export function SettingsScreen() {
                 apiPin: usaepayApiPin,
                 deviceKey: usaepayDeviceKey,
                 mode: processorMode,
-                paymentTimeoutSeconds: Number(usaepayTimeout),
+                paymentTimeoutSeconds: timeoutSeconds,
                 promptTip: usaepayPromptTip,
                 manualKey: usaepayManualKey,
                 endpointKey: 'v2',
@@ -129,6 +145,7 @@ export function SettingsScreen() {
       const status = await window.storeApi.settings.setProcessorConfig(next);
       setProcessorStatus(status);
       setProcessorKey('');
+      setUsaepayApiPin('');
       setProcessorMessage(
         status.configured
           ? 'Processor configuration replaced.'
