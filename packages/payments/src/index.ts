@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 
 export type ChargeStatus = 'approved' | 'declined' | 'error' | 'pending';
 
@@ -691,11 +690,7 @@ export type UsaepayDeviceRegistrationConfig = UsaepayDeviceConfig;
 type UsaepayStoredResult = ChargeResult & { requestKey?: string };
 type UsaepayFetch = typeof fetch;
 
-const require = createRequire(import.meta.url);
-const { version: storeVersion } = require('../../../package.json') as {
-  version: string;
-};
-const USAEPAY_SOFTWARE = `Shul Store Manager ${storeVersion}`;
+const USAEPAY_SOFTWARE = 'Shul Store Manager';
 const USAEPAY_GRACE_SECONDS = 2;
 
 function usaepayBaseUrl(config: UsaepayDeviceConfig): string {
