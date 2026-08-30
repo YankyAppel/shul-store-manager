@@ -56,6 +56,8 @@ import {
 import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
+  checkUsaepayDevice,
+  usaepayPaymentEngineConfigSchema,
 } from '@shul-store/payments';
 
 const { autoUpdater } = electronUpdater;
@@ -359,9 +361,22 @@ function readerStatus() {
 
 function saveReaderConfig(input: unknown) {
   if (!localDatabase) throw new Error('The kiosk database is not ready.');
-  const config = cardknoxBbposConfigSchema.parse(input);
+  const processorId =
+    input &&
+    typeof input === 'object' &&
+    'processorId' in input &&
+    input.processorId === 'usaepay-payment-engine'
+      ? 'usaepay-payment-engine'
+      : 'cardknox-bbpos';
+  const config =
+    processorId === 'usaepay-payment-engine'
+      ? usaepayPaymentEngineConfigSchema.parse({
+          ...(input as Record<string, unknown>),
+          manualKey: false,
+        })
+      : cardknoxBbposConfigSchema.parse(input);
   return localDatabase.setCardProcessorConfigJson(
-    JSON.stringify({ ...config, processorId: 'cardknox-bbpos' }),
+    JSON.stringify({ ...config, processorId }),
   );
 }
 
@@ -369,14 +384,19 @@ async function checkReader(): Promise<{ ok: boolean; message: string }> {
   if (!localDatabase)
     return { ok: false, message: 'The kiosk database is not ready.' };
   const raw = localDatabase.getCardProcessorConfigJson();
-  if (!raw)
-    return { ok: false, message: 'Save the BBPOS reader settings first.' };
+  if (!raw) return { ok: false, message: 'Save the terminal settings first.' };
   try {
-    return checkCardknoxBbposReader(
-      cardknoxBbposConfigSchema.parse(JSON.parse(raw)),
-    );
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'processorId' in parsed &&
+      parsed.processorId === 'usaepay-payment-engine'
+    )
+      return checkUsaepayDevice(usaepayPaymentEngineConfigSchema.parse(parsed));
+    return checkCardknoxBbposReader(cardknoxBbposConfigSchema.parse(parsed));
   } catch {
-    return { ok: false, message: 'Save valid BBPOS reader settings first.' };
+    return { ok: false, message: 'Save valid terminal settings first.' };
   }
 }
 
@@ -861,7 +881,9 @@ async function pollInFlight(): Promise<void> {
   const readerConfigured =
     cloudEngine &&
     localDatabase &&
-    localDatabase.getSettings().cardProcessorId === 'cardknox-bbpos' &&
+    ['cardknox-bbpos', 'usaepay-payment-engine'].includes(
+      localDatabase.getSettings().cardProcessorId ?? '',
+    ) &&
     localDatabase.getCardProcessorConfigStatus().configured;
   if (readerConfigured && localDatabase) {
     try {
@@ -1052,7 +1074,9 @@ async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
       const settings = localDatabase.getSettings();
       if (
         settings.cardProcessingEnabled &&
-        settings.cardProcessorId === 'cardknox-bbpos'
+        ['cardknox-bbpos', 'usaepay-payment-engine'].includes(
+          settings.cardProcessorId ?? '',
+        )
       ) {
         const inFlight: KioskInFlightCharge = {
           chargeReference: randomUUID(),

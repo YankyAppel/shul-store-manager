@@ -139,7 +139,26 @@ Sales use BBPOS's local service. Refunds use the remote Cardknox gateway, so
 the reader does not need to be plugged in for refunds. Cancelling an in-progress
 reader sale uses BBPOS's local cancellation request.
 The offline `cc:encrypt` store-and-forward flow is not implemented. USAePay
-card-present hardware is also out of scope.
+Payment Engine terminals are described below.
+
+## USAePay Payment Engine terminals
+
+Stores with a First Choice / USAePay merchant account can use the
+**USAePay terminal (Payment Engine)** processor with a supported standalone
+terminal such as a Castles MP200/MP200L, Castles Vega3000, or Ingenico device.
+In Manager Settings, enter the USAePay source key and API PIN, pair the
+terminal, and type the short pairing code into the terminal. The terminal
+device key is stored in the encrypted, device-local processor configuration.
+The kiosk can use the paired device key but must not enable manual card entry.
+
+Live requests use `usaepay.com`; test requests use `sandbox.usaepay.com`.
+Payment Engine sends the sale to the terminal and polls the request until it
+finishes. If the terminal or network gives an ambiguous response, the payment
+stays unresolved and goes to needs attention. Never retry a card just because
+the POS stopped receiving a response: Payment Engine can finish a posted
+request without further POS input, and reposting it can create a duplicate
+charge. Refunds are sent to USAePay's gateway using the original processor
+transaction reference; they are never sent to the terminal.
 
 If BBPOS cannot be reached, times out, exits, returns malformed data, or gives
 an otherwise ambiguous answer, the payment is left unresolved and sent to

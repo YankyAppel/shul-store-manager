@@ -76,8 +76,11 @@ import {
 import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
+  checkUsaepayDevice,
   processorConnectionConfigSchema,
+  registerUsaepayDevice,
   testProcessorConnection,
+  usaepayPaymentEngineConfigSchema,
 } from '@shul-store/payments';
 import {
   maskApiKey,
@@ -169,6 +172,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'settings:setProcessorConfig': 'owner',
   'settings:getProcessorConfigStatus': 'owner',
   'settings:testProcessorConnection': 'owner',
+  'settings:pairUsaepayDevice': 'owner',
   'settings:checkReader': 'owner',
   'settings:listPrinters': 'owner',
   'labels:render': 'products.edit',
@@ -911,15 +915,36 @@ function registerIpc(): void {
     const config = processorConnectionConfigSchema.parse(input);
     return testProcessorConnection(config);
   });
+  ipcMain.handle('settings:pairUsaepayDevice', async (_event, input) => {
+    const config = z
+      .object({
+        apiKey: z.string().trim().min(1).max(1000),
+        apiPin: z.string().trim().min(1).max(1000),
+        mode: z.enum(['test', 'live']).default('live'),
+        name: z.string().trim().min(1).max(200),
+        endpointKey: z.string().trim().min(1).default('v2'),
+      })
+      .parse(input);
+    return registerUsaepayDevice(config, config.name);
+  });
   ipcMain.handle('settings:checkReader', async () => {
     const raw = database.getCardProcessorConfigJson();
     if (!raw)
-      return { ok: false, message: 'Save the BBPOS reader settings first.' };
+      return { ok: false, message: 'Save the terminal settings first.' };
     try {
       const parsed = JSON.parse(raw) as unknown;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        'processorId' in parsed &&
+        parsed.processorId === 'usaepay-payment-engine'
+      )
+        return checkUsaepayDevice(
+          usaepayPaymentEngineConfigSchema.parse(parsed),
+        );
       return checkCardknoxBbposReader(cardknoxBbposConfigSchema.parse(parsed));
     } catch {
-      return { ok: false, message: 'Save valid BBPOS reader settings first.' };
+      return { ok: false, message: 'Save valid terminal settings first.' };
     }
   });
   ipcMain.handle('settings:listPrinters', (event) => listPrinters(event));

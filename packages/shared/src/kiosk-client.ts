@@ -71,7 +71,10 @@ export interface KioskCloudSignInInput {
 }
 
 export interface KioskReaderConfig {
+  processorId?: 'cardknox-bbpos' | 'usaepay-payment-engine';
   apiKey: string;
+  apiPin?: string;
+  deviceKey?: string;
   deviceName: string;
   connection:
     | { kind: 'usb'; comPort: string }
@@ -80,6 +83,9 @@ export interface KioskReaderConfig {
   readerOnly: boolean;
   amountConfirmationPrompt: boolean;
   deviceTimeoutSeconds: number;
+  paymentTimeoutSeconds?: number;
+  promptTip?: boolean;
+  manualKey?: boolean;
   mode: 'test' | 'live';
 }
 
