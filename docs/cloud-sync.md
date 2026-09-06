@@ -155,7 +155,8 @@ pushing new changes from the restored sequence.
 
 ## Cloud-side schema (apply in your Supabase project)
 
-Run the account-backed migrations from the Task Manager repository. They create
+Apply `supabase/schema.sql` from the `suma-site` repository to the SUMA Supabase
+project. It creates
 `store_sync_events`, scoped to the owning POS account, and `store_devices` for
 device identity and receipt-prefix allocation. Legacy pasted-key installations
 continue to use the older `sync_events` table and push-only transport.
@@ -212,8 +213,8 @@ sends `apikey` and `Authorization: Bearer <key>` headers.)
 
 ## Setup walkthrough
 
-1. Create the account-backed project and apply the Task Manager migrations,
-   including `027_store_sync.sql` and `028_store_barcode_catalog.sql`.
+1. Create the SUMA Supabase project and apply `supabase/schema.sql` from
+   `suma-site`; deploy the site's Pages Functions with the Supabase env vars.
 2. Sign in from **Settings → Cloud account** with the POS account. The manager
    adopts the local store identity and claims a device prefix.
 3. Enable cloud sync. Existing data is backfilled and then both pull and push

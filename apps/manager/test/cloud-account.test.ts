@@ -126,7 +126,7 @@ describe('CloudAccountManager', () => {
     };
     const manager = new CloudAccountManager(file, secretStore, fetchImpl);
 
-    await expect(manager.linkHint()).rejects.toThrow(
+    await expect(manager.checkout()).rejects.toThrow(
       'Your session expired. Please sign in again.',
     );
     await expect(manager.getState()).resolves.toMatchObject({
@@ -139,9 +139,9 @@ describe('CloudAccountManager', () => {
   it('keeps the cached entitlement when the server response is invalid', async () => {
     const file = accountFile();
     const entitlement = {
-      tier: 'linked',
+      tier: 'standalone',
       active: true,
-      price: 5,
+      price: 10,
       status: 'active',
       current_period_end: null,
     };
@@ -166,7 +166,7 @@ describe('CloudAccountManager', () => {
     );
 
     await expect(manager.refresh(true)).resolves.toMatchObject({
-      entitlement: { tier: 'linked', active: true },
+      entitlement: { tier: 'standalone', active: true },
     });
     const persisted = JSON.parse(await readFile(file, 'utf8')) as {
       entitlement: unknown;
@@ -211,9 +211,9 @@ describe('CloudAccountManager', () => {
   it('uses cached entitlement only during the 14-day offline grace window', async () => {
     const file = accountFile();
     const entitlement = {
-      tier: 'linked',
+      tier: 'standalone',
       active: true,
-      price: 5,
+      price: 10,
       status: 'active',
       current_period_end: null,
     };
@@ -239,10 +239,10 @@ describe('CloudAccountManager', () => {
     await expect(manager.getState()).resolves.toMatchObject({
       email: 'owner@example.com',
       signedIn: true,
-      entitlement: { tier: 'linked', active: true },
+      entitlement: { tier: 'standalone', active: true },
     });
     await expect(manager.refresh()).resolves.toMatchObject({
-      entitlement: { tier: 'linked', active: true },
+      entitlement: { tier: 'standalone', active: true },
     });
     expect(manager.isSyncAllowed()).toBe(true);
 
@@ -265,7 +265,7 @@ describe('CloudAccountManager', () => {
       throw new Error('offline');
     });
     await expect(expired.getState()).resolves.toMatchObject({
-      entitlement: { tier: 'linked', active: false },
+      entitlement: { tier: 'standalone', active: false },
     });
     expect(expired.isSyncAllowed()).toBe(false);
   });

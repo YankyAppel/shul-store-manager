@@ -241,8 +241,6 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'cloudAccount:signUp': 'public',
   'cloudAccount:signOut': 'public',
   'cloudAccount:refresh': 'public',
-  'cloudAccount:link': 'public',
-  'cloudAccount:linkHint': 'public',
   'cloudAccount:checkout': 'owner',
   'cloudAccount:portal': 'owner',
   'cloudAccount:lookupBarcodeSuggestion': 'public',
@@ -691,13 +689,6 @@ function registerIpc(): void {
   );
   ipcMain.handle('cloudAccount:signOut', () => cloudAccount.signOut());
   ipcMain.handle('cloudAccount:refresh', () => cloudAccount.refresh());
-  ipcMain.handle('cloudAccount:link', (_event, username, password) =>
-    cloudAccount.link(
-      z.string().trim().min(1).max(320).parse(username),
-      z.string().min(1).max(500).parse(password),
-    ),
-  );
-  ipcMain.handle('cloudAccount:linkHint', () => cloudAccount.linkHint());
   ipcMain.handle('cloudAccount:checkout', () => cloudAccount.checkout());
   ipcMain.handle('cloudAccount:portal', () => cloudAccount.portal());
   ipcMain.handle('cloudAccount:lookupBarcodeSuggestion', (_event, barcode) =>

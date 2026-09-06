@@ -1,6 +1,6 @@
 module.exports = {
   githubUpdateRepository: {
     owner: 'YankyAppel',
-    repo: 'shul-store-manager-releases',
+    repo: 'SUMA-store-POS-releases',
   },
 };

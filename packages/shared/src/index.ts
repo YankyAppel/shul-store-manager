@@ -363,11 +363,6 @@ export interface StoreApi {
     ): Promise<import('./cloud-account.js').CloudAccountState>;
     signOut(): Promise<import('./cloud-account.js').CloudAccountState>;
     refresh(): Promise<import('./cloud-account.js').CloudAccountState>;
-    link(
-      username: string,
-      password: string,
-    ): Promise<import('./cloud-account.js').CloudAccountState>;
-    linkHint(): Promise<boolean>;
     checkout(): Promise<void>;
     portal(): Promise<void>;
     lookupBarcodeSuggestion(

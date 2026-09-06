@@ -6,25 +6,13 @@ import { Explain } from '../components/Explain';
 function subscriptionDescription(
   entitlement: CloudAccountState['entitlement'],
 ): string {
-  if (!entitlement)
-    return 'No cloud subscription — $10/month, or $5 if you already use Shul Task Manager';
-  const price =
-    entitlement.price === null
-      ? entitlement.tier === 'linked'
-        ? '$5/month'
-        : '$10/month'
-      : `$${entitlement.price}/month`;
-  const description =
-    entitlement.tier === 'linked'
-      ? `Linked to ${entitlement.linked_shul_name ?? 'Shul Task Manager'}`
-      : price;
-  const pricedDescription =
-    entitlement.tier === 'linked' ? `${description} — ${price}` : description;
+  if (!entitlement) return 'No cloud subscription — $10/month per store';
+  const price = `$${entitlement.price ?? 10}/month`;
   const cacheNote =
     entitlement.active && entitlement.cached_until
       ? ` (cached until ${new Date(entitlement.cached_until).toLocaleDateString()})`
       : '';
-  return `${pricedDescription}, ${entitlement.active ? 'active' : 'inactive'}${cacheNote}`;
+  return `${price}, ${entitlement.active ? 'active' : 'inactive'}${cacheNote}`;
 }
 
 export function CloudAccountSection() {
@@ -34,23 +22,12 @@ export function CloudAccountSection() {
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [linkOffered, setLinkOffered] = useState(false);
-  const [linkUsername, setLinkUsername] = useState('');
-  const [linkPassword, setLinkPassword] = useState('');
 
   useEffect(() => {
     let mounted = true;
     const unsubscribe = window.storeApi.cloudAccount.subscribe(setState);
-    void window.storeApi.cloudAccount.getState().then(async (next) => {
-      if (!mounted) return;
-      setState(next);
-      if (next.signedIn) {
-        try {
-          setLinkOffered(await window.storeApi.cloudAccount.linkHint());
-        } catch {
-          setLinkOffered(false);
-        }
-      }
+    void window.storeApi.cloudAccount.getState().then((next) => {
+      if (mounted) setState(next);
     });
     return () => {
       mounted = false;
@@ -71,36 +48,20 @@ export function CloudAccountSection() {
           : await window.storeApi.cloudAccount.signUp(email, password);
       setState(next);
       setPassword('');
-      setLinkOffered(
-        next.signedIn ? await window.storeApi.cloudAccount.linkHint() : false,
-      );
+      if (mode === 'signUp' && next.signedIn && !next.entitlement?.active) {
+        await window.storeApi.cloudAccount.checkout();
+        setMessage(
+          'Account created — finish your subscription in the browser.',
+        );
+        return;
+      }
       setMessage(
         mode === 'signUp' && !next.signedIn
-          ? 'Account created — confirm the link in your email, then sign in.'
+          ? 'Account created — confirm the link in your email, then sign in to start your subscription.'
           : mode === 'signUp'
             ? 'Account created.'
             : 'Signed in.',
       );
-    } catch (error) {
-      setMessage(messageFrom(error));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function linkAccount(event: FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setMessage('');
-    try {
-      const next = await window.storeApi.cloudAccount.link(
-        linkUsername,
-        linkPassword,
-      );
-      setState(next);
-      setLinkPassword('');
-      setLinkOffered(false);
-      setMessage('Your Shul Task Manager subscription is linked.');
     } catch (error) {
       setMessage(messageFrom(error));
     } finally {
@@ -123,19 +84,20 @@ export function CloudAccountSection() {
 
   return (
     <section className="settings-form">
-      <h3 style={{ margin: '0 0 4px 0' }}>Shul Store cloud account</h3>
+      <h3 style={{ margin: '0 0 4px 0' }}>Suma Store cloud account</h3>
       <Explain
         id="cloud-account"
         sentence="Sign in here to sync this store with your other computers."
       >
         Cloud sync is optional and does not stop local selling. Use the same
-        Shul Store account on each computer that should share this store.
+        Suma Store account on each computer that should share this store.
       </Explain>
       {!state.signedIn ? (
         <form onSubmit={(event) => void submit(event)}>
           <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
-            Sign in or create a separate Shul Store account. Local checkout
-            continues to work offline and does not require a subscription.
+            Sign in or create a Suma Store account. Creating an account starts
+            the $10/month cloud subscription; local checkout continues to work
+            offline and does not require one.
           </p>
           <div className="form-grid">
             <label>
@@ -201,36 +163,6 @@ export function CloudAccountSection() {
               Sign out
             </button>
           </div>
-          {linkOffered && state.entitlement?.tier !== 'linked' && (
-            <form onSubmit={(event) => void linkAccount(event)}>
-              <p style={{ color: '#66766d', fontSize: '13px' }}>
-                Already use Shul Task Manager? Link it for the lower store
-                add-on price.
-              </p>
-              <div className="form-grid">
-                <label>
-                  Shul Task Manager username
-                  <input
-                    value={linkUsername}
-                    onChange={(event) => setLinkUsername(event.target.value)}
-                    required
-                  />
-                </label>
-                <label>
-                  Shul Task Manager password
-                  <input
-                    type="password"
-                    value={linkPassword}
-                    onChange={(event) => setLinkPassword(event.target.value)}
-                    required
-                  />
-                </label>
-              </div>
-              <button className="primary" disabled={busy}>
-                {busy ? 'Linking…' : 'Link subscription'}
-              </button>
-            </form>
-          )}
         </>
       )}
       {message && <p>{message}</p>}
