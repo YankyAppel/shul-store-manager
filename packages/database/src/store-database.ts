@@ -83,6 +83,10 @@ import {
   type ProductVendorLinkInput,
   type Vendor,
   type VendorInput,
+  type PurchaseOrder,
+  type PurchaseOrderInput,
+  type PurchaseOrderSentVia,
+  type ReceivePurchaseOrderInput,
 } from '@shul-store/shared';
 import { migrations, runMigrations } from './migrations.js';
 import { validateRefundRequest } from './refunds.js';
@@ -114,6 +118,7 @@ import {
 } from './sync-restore.js';
 import { dailyReport as buildDailyReport } from './reports.js';
 import { VendorStore } from './vendors.js';
+import { PurchaseOrderStore } from './purchase-orders.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
@@ -227,6 +232,7 @@ export interface StoreDatabaseOptions {
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
   private vendorStore: VendorStore | null = null;
+  private purchaseOrderStore: PurchaseOrderStore | null = null;
   private paymentService: PaymentService | null = null;
   private readonly secretStore: SecretStore;
   private readonly backupDirectory: string | null;
@@ -1391,6 +1397,87 @@ export class StoreDatabase {
     return this.getProduct(productId);
   }
 
+  get purchaseOrders(): PurchaseOrderStore {
+    this.purchaseOrderStore ??= new PurchaseOrderStore(
+      this.connection,
+      this.secretStore,
+    );
+    return this.purchaseOrderStore;
+  }
+
+  createPurchaseOrder(input: PurchaseOrderInput): PurchaseOrder {
+    try {
+      return this.connection.transaction(() => {
+        const order = this.purchaseOrders.create(input);
+        this.addAudit('purchase_order.created', 'purchase_order', order.id, {
+          number: order.number,
+          vendorId: order.vendorId,
+          lineCount: order.lineCount,
+        });
+        return order;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  markPurchaseOrderSent(id: string, via: PurchaseOrderSentVia): PurchaseOrder {
+    try {
+      return this.connection.transaction(() => {
+        const order = this.purchaseOrders.markSent(id, via);
+        this.addAudit('purchase_order.sent', 'purchase_order', order.id, {
+          number: order.number,
+          via,
+        });
+        return order;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  cancelPurchaseOrder(id: string): PurchaseOrder {
+    try {
+      return this.connection.transaction(() => {
+        const order = this.purchaseOrders.cancel(id);
+        this.addAudit('purchase_order.cancelled', 'purchase_order', order.id, {
+          number: order.number,
+        });
+        return order;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  /** Receive a shipment: posts `stock_received` movements (synced) per line. */
+  receivePurchaseOrder(
+    id: string,
+    input: ReceivePurchaseOrderInput,
+    deviceId: string | null = null,
+  ): PurchaseOrder {
+    try {
+      return this.connection.transaction(() => {
+        const order = this.purchaseOrders.receive(id, input, (line) => {
+          this.insertInventoryMovement({
+            productId: line.productId,
+            quantityChange: line.quantity,
+            reason: 'stock_received',
+            notes: line.notes,
+            deviceId,
+          });
+        });
+        this.addAudit('purchase_order.received', 'purchase_order', order.id, {
+          number: order.number,
+          status: order.status,
+        });
+        return order;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
   generateInternalBarcode(): string {
     return `SSM-${Date.now().toString(36).toUpperCase()}-${randomUUID().replaceAll('-', '').slice(0, 10).toUpperCase()}`;
   }
@@ -1398,43 +1485,50 @@ export class StoreDatabase {
   // --- INVENTORY ---
 
   addInventoryMovement(input: InventoryMovementInput): InventoryMovement {
+    try {
+      return this.connection.transaction(() =>
+        this.insertInventoryMovement(input),
+      )();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  /** Movement insert without its own transaction, for callers already inside one. */
+  private insertInventoryMovement(
+    input: InventoryMovementInput,
+  ): InventoryMovement {
     const value = inventoryMovementInputSchema.parse(input);
     const id = randomUUID();
     const operationId = value.operationId ?? randomUUID();
     const timestamp = now();
-    try {
-      this.connection.transaction(() => {
-        const product = this.connection
-          .prepare('SELECT id FROM products WHERE id = ?')
-          .get(value.productId);
-        if (!product) throw new Error('Product not found');
-        this.connection
-          .prepare(
-            `INSERT INTO inventory_movements
+    const product = this.connection
+      .prepare('SELECT id FROM products WHERE id = ?')
+      .get(value.productId);
+    if (!product) throw new Error('Product not found');
+    this.connection
+      .prepare(
+        `INSERT INTO inventory_movements
             (id, operation_id, product_id, quantity_change, reason, occurred_at, device_id, related_sale_id, notes, sequence)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements))`,
-          )
-          .run(
-            id,
-            operationId,
-            value.productId,
-            value.quantityChange,
-            value.reason,
-            timestamp,
-            value.deviceId ?? null,
-            value.relatedSaleId ?? null,
-            value.notes,
-          );
-        this.enqueueEntity('inventory_movement', id);
-        this.addAudit('inventory.movement_added', 'product', value.productId, {
-          movementId: id,
-          quantityChange: value.quantityChange,
-          reason: value.reason,
-        });
-      })();
-    } catch (error) {
-      throw friendlyDatabaseError(error);
-    }
+      )
+      .run(
+        id,
+        operationId,
+        value.productId,
+        value.quantityChange,
+        value.reason,
+        timestamp,
+        value.deviceId ?? null,
+        value.relatedSaleId ?? null,
+        value.notes,
+      );
+    this.enqueueEntity('inventory_movement', id);
+    this.addAudit('inventory.movement_added', 'product', value.productId, {
+      movementId: id,
+      quantityChange: value.quantityChange,
+      reason: value.reason,
+    });
     return this.getMovement(id);
   }
 

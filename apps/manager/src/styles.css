@@ -1320,3 +1320,74 @@ code {
   color: #738079;
   margin: 0 0 8px;
 }
+
+/* Purchase orders */
+.modal-wide {
+  width: min(860px, 96vw);
+}
+.modal-body {
+  padding: 22px;
+  display: grid;
+  gap: 14px;
+}
+.modal-body .form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.modal-body .alert {
+  margin: 0;
+}
+.modal-actions {
+  border-top: 1px solid #e5e9e6;
+  margin: 8px -22px -22px;
+  padding: 17px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  background: #fafbfa;
+}
+.email-preview-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #42544a;
+  margin-bottom: 8px;
+}
+.po-status {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  background: #e8ede9;
+  color: #42544a;
+}
+.po-status-sent {
+  background: #e3ecff;
+  color: #244b9a;
+}
+.po-status-partially_received {
+  background: #fff3d6;
+  color: #7a5200;
+}
+.po-status-received {
+  background: #dcf3e4;
+  color: #1f6b3d;
+}
+.po-status-cancelled {
+  text-decoration: line-through;
+}
+.po-detail-row td {
+  background: #fafbfa;
+}
+.po-detail {
+  width: auto;
+  min-width: 60%;
+}
+.po-detail td {
+  padding: 4px 12px;
+  border: 0;
+}

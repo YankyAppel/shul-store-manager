@@ -376,7 +376,8 @@ export class VendorStore {
   /**
    * Bring the suggestion rows in line with current stock levels:
    *  - products at/below their threshold with a preferred vendor get an open
-   *    row unless one is already open, dismissed or ordered;
+   *    row unless one is already open, dismissed or ordered (or the product
+   *    is on a purchase order that has not been fully received yet);
    *  - products back above their threshold lose their open/dismissed row.
    * Ordered rows are left alone until the purchase order is received.
    */
@@ -388,7 +389,9 @@ export class VendorStore {
                 COALESCE((SELECT SUM(m.quantity_change) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS stock,
                 p.low_stock_threshold AS threshold,
                 (SELECT r.status FROM reorder_list r WHERE r.product_id = p.id AND r.status IN ('open','dismissed') LIMIT 1) AS suggestion_status,
-                EXISTS (SELECT 1 FROM reorder_list r WHERE r.product_id = p.id AND r.status = 'ordered') AS ordered
+                (EXISTS (SELECT 1 FROM reorder_list r WHERE r.product_id = p.id AND r.status = 'ordered')
+                 OR EXISTS (SELECT 1 FROM purchase_order_lines l JOIN purchase_orders o ON o.id = l.purchase_order_id
+                            WHERE l.product_id = p.id AND o.status IN ('draft', 'sent', 'partially_received'))) AS ordered
          FROM products p
          JOIN product_vendors pv ON pv.product_id = p.id AND pv.preferred = 1
          WHERE p.active = 1 AND p.low_stock_threshold > 0`,

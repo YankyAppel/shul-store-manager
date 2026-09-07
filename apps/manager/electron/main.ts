@@ -46,6 +46,14 @@ import {
   inventoryMovementInputSchema,
   buyingListLineUpdateSchema,
   productVendorLinksSchema,
+  emailConfigSchema,
+  purchaseOrderEmailHtml,
+  purchaseOrderEmailText,
+  purchaseOrderInputSchema,
+  purchaseOrderPortalUrl,
+  purchaseOrderSentViaSchema,
+  receivePurchaseOrderInputSchema,
+  type PurchaseOrder,
   vendorInputSchema,
   KIOSK_DISCOVERY_PORT,
   KIOSK_DISCOVERY_PROTOCOL_VERSION,
@@ -97,6 +105,7 @@ import {
 import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
 import { ManagerSession, type IpcRequirement } from './session.js';
 import { CloudAccountManager } from './cloud-account.js';
+import { MailWorker, testConfig as testEmailConfig } from './mail.js';
 
 /**
  * electron-updater is CommonJS, so its bindings are only reachable through the
@@ -132,6 +141,7 @@ let backupTimer: ReturnType<typeof setInterval> | null = null;
 let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 let cloudAccount: CloudAccountManager;
+let mailWorker: MailWorker | null = null;
 let cloudWasSyncAllowed = false;
 const SCHEDULED_BACKUP_MAX_AGE_MS = 20 * 60 * 60 * 1000;
 const SCHEDULED_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -178,6 +188,18 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'vendors:buyingList': 'inventory.adjust',
   'vendors:updateLine': 'inventory.adjust',
   'vendors:addLine': 'inventory.adjust',
+  'purchaseOrders:list': 'inventory.adjust',
+  'purchaseOrders:get': 'inventory.adjust',
+  'purchaseOrders:create': 'inventory.adjust',
+  'purchaseOrders:preview': 'inventory.adjust',
+  'purchaseOrders:send': 'inventory.adjust',
+  'purchaseOrders:receive': 'inventory.adjust',
+  'purchaseOrders:cancel': 'inventory.adjust',
+  'purchaseOrders:retryEmail': 'inventory.adjust',
+  'email:status': 'owner',
+  'email:save': 'owner',
+  'email:clear': 'owner',
+  'email:test': 'owner',
   'settings:get': 'owner',
   'settings:update': 'owner',
   'settings:getDevice': 'owner',
@@ -988,6 +1010,134 @@ function registerIpc(): void {
     ),
   );
 
+  // Purchase orders
+  const composePurchaseOrderEmail = (order: PurchaseOrder) => {
+    const settings = database.getSettings();
+    const contact = settings.contactLines;
+    const storeEmail = contact.find((line) => line.includes('@')) ?? null;
+    const storePhone =
+      contact.find(
+        (line) => /\d{3}.*\d{4}/.test(line) && !line.includes('@'),
+      ) ?? null;
+    const data = {
+      storeName: settings.storeName,
+      storeEmail:
+        database.purchaseOrders.getEmailConfig()?.fromAddress ?? storeEmail,
+      storePhone,
+      number: order.number,
+      vendorName: order.vendorName,
+      message: order.message,
+      lines: order.lines,
+      portalUrl: cloudAccount.isAccountSyncConfigured()
+        ? purchaseOrderPortalUrl(order)
+        : null,
+    };
+    return {
+      html: purchaseOrderEmailHtml(data),
+      text: purchaseOrderEmailText(data),
+      to: order.vendorEmail,
+    };
+  };
+  ipcMain.handle('purchaseOrders:list', (_event, vendorId) =>
+    database.purchaseOrders.list(
+      idSchema.nullable().optional().parse(vendorId) ?? undefined,
+    ),
+  );
+  ipcMain.handle('purchaseOrders:get', (_event, id) =>
+    database.purchaseOrders.get(idSchema.parse(id)),
+  );
+  ipcMain.handle('purchaseOrders:create', (_event, input) =>
+    database.createPurchaseOrder(purchaseOrderInputSchema.parse(input)),
+  );
+  ipcMain.handle('purchaseOrders:preview', (_event, id) =>
+    composePurchaseOrderEmail(database.purchaseOrders.get(idSchema.parse(id))),
+  );
+  ipcMain.handle('purchaseOrders:send', async (_event, id, via) => {
+    const orderId = idSchema.parse(id);
+    const channel = purchaseOrderSentViaSchema.parse(via);
+    const draft = database.purchaseOrders.get(orderId);
+    if (channel === 'email') {
+      if (!draft.vendorEmail)
+        throw new Error('This vendor has no email address.');
+      if (!database.purchaseOrders.getEmailConfig())
+        throw new Error(
+          'No email account configured. Add one under Settings → Email.',
+        );
+    }
+    const order = database.markPurchaseOrderSent(orderId, channel);
+    if (channel === 'email' && order.vendorEmail) {
+      const email = composePurchaseOrderEmail(order);
+      database.purchaseOrders.enqueueEmail({
+        purchaseOrderId: order.id,
+        to: order.vendorEmail,
+        subject: order.subject,
+        textBody: email.text,
+        htmlBody: email.html,
+      });
+      void mailWorker?.kick();
+    } else if (cloudAccount.isAccountSyncConfigured()) {
+      cloudAccount
+        .publishPurchaseOrder(order)
+        .then(() => database.purchaseOrders.markPublished(order.id))
+        .catch(() => undefined);
+    }
+    return database.purchaseOrders.get(orderId);
+  });
+  ipcMain.handle('purchaseOrders:receive', (_event, id, input) =>
+    database.receivePurchaseOrder(
+      idSchema.parse(id),
+      receivePurchaseOrderInputSchema.parse(input),
+      database.getSyncConfigRecord().deviceId,
+    ),
+  );
+  ipcMain.handle('purchaseOrders:cancel', (_event, id) =>
+    database.cancelPurchaseOrder(idSchema.parse(id)),
+  );
+  ipcMain.handle('purchaseOrders:retryEmail', async (_event, id) => {
+    const orderId = idSchema.parse(id);
+    const email = database.purchaseOrders.latestEmailForOrder(orderId);
+    if (!email) throw new Error('No email was queued for this order.');
+    if (email.status === 'failed')
+      database.purchaseOrders.requeueEmail(email.id);
+    await mailWorker?.kick();
+    const summary = database.purchaseOrders
+      .list()
+      .find((candidate) => candidate.id === orderId);
+    if (!summary) throw new Error('Purchase order not found');
+    return summary;
+  });
+
+  // Seller email account (SMTP)
+  ipcMain.handle('email:status', () =>
+    database.purchaseOrders.getEmailConfigStatus(),
+  );
+  ipcMain.handle('email:save', (_event, input) => {
+    const config = emailConfigSchema.parse(input);
+    // An empty password means "keep the saved one" so the form can be edited
+    // without re-entering the secret.
+    const existing = database.purchaseOrders.getEmailConfig();
+    const status = database.purchaseOrders.setEmailConfig(
+      config.password === '' && existing
+        ? { ...config, password: existing.password }
+        : config,
+    );
+    void mailWorker?.kick();
+    return status;
+  });
+  ipcMain.handle('email:clear', () =>
+    database.purchaseOrders.setEmailConfig(null),
+  );
+  ipcMain.handle('email:test', (_event, input, sendTo) => {
+    const config = emailConfigSchema.parse(input);
+    const existing = database.purchaseOrders.getEmailConfig();
+    return testEmailConfig(
+      config.password === '' && existing
+        ? { ...config, password: existing.password }
+        : config,
+      z.string().trim().email().nullable().parse(sendTo),
+    );
+  });
+
   // Settings
   ipcMain.handle('settings:get', () => database.getSettings());
   ipcMain.handle('settings:update', (_event, input) => {
@@ -1778,6 +1928,17 @@ app.whenReady().then(async () => {
   }
   // Start the background sync loop immediately if cloud backup is enabled.
   recreateSyncEngine();
+  mailWorker = new MailWorker(
+    database,
+    () => cloudAccount,
+    () => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed())
+          window.webContents.send('purchaseOrders:changed');
+      }
+    },
+  );
+  mailWorker.start();
   protocol.handle('store-image', (request) => {
     const imageId = idSchema.safeParse(new URL(request.url).pathname.slice(1));
     if (!imageId.success) return new Response('Not found', { status: 404 });
@@ -1802,6 +1963,7 @@ app.on('window-all-closed', () => {
 });
 app.on('before-quit', () => {
   engine?.stop();
+  mailWorker?.stop();
   if (idleTimer) clearInterval(idleTimer);
   if (database) {
     try {

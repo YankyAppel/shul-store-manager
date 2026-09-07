@@ -1336,6 +1336,65 @@ export const migrations: Migration[] = [
       CREATE INDEX reorder_list_vendor_status_idx ON reorder_list(vendor_id, status);
     `,
   },
+  {
+    version: 30,
+    name: 'purchase_orders',
+    sql: `
+      CREATE TABLE purchase_orders (
+        id TEXT PRIMARY KEY,
+        number TEXT NOT NULL UNIQUE,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE RESTRICT,
+        vendor_name TEXT NOT NULL,
+        vendor_email TEXT,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'sent', 'partially_received', 'received', 'cancelled')),
+        sent_via TEXT CHECK (sent_via IS NULL OR sent_via IN ('email', 'manual')),
+        subject TEXT NOT NULL,
+        message TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        access_token TEXT NOT NULL,
+        sent_at TEXT,
+        published_at TEXT,
+        received_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX purchase_orders_vendor_idx ON purchase_orders(vendor_id, created_at);
+
+      CREATE TABLE purchase_order_lines (
+        id TEXT PRIMARY KEY,
+        purchase_order_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+        product_name TEXT NOT NULL,
+        barcode TEXT,
+        vendor_sku TEXT,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        unit_cost_cents INTEGER CHECK (unit_cost_cents IS NULL OR unit_cost_cents >= 0),
+        received_quantity INTEGER NOT NULL DEFAULT 0 CHECK (received_quantity >= 0),
+        position INTEGER NOT NULL
+      );
+      CREATE INDEX purchase_order_lines_po_idx ON purchase_order_lines(purchase_order_id, position);
+
+      ALTER TABLE reorder_list ADD COLUMN purchase_order_id TEXT REFERENCES purchase_orders(id) ON DELETE SET NULL;
+
+      CREATE TABLE outbound_emails (
+        id TEXT PRIMARY KEY,
+        purchase_order_id TEXT REFERENCES purchase_orders(id) ON DELETE CASCADE,
+        to_address TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        text_body TEXT NOT NULL,
+        html_body TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT
+      );
+      CREATE INDEX outbound_emails_status_idx ON outbound_emails(status, created_at);
+
+      ALTER TABLE device_settings ADD COLUMN email_config_secret TEXT;
+      ALTER TABLE device_settings ADD COLUMN email_config_encrypted INTEGER NOT NULL DEFAULT 0 CHECK (email_config_encrypted IN (0, 1));
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

@@ -11,6 +11,7 @@ import {
   type CatalogVendor,
   type CatalogVendorProduct,
   type Vendor,
+  type PurchaseOrder,
 } from '@shul-store/shared';
 
 const SITE_URL = 'https://sumasystems.com';
@@ -528,6 +529,30 @@ export class CloudAccountManager {
   }
 
   /** Publish a locally created vendor to the shared directory (same id). */
+  /**
+   * Publish a purchase order so the vendor can open it on the vendor portal
+   * with the token link. Idempotent on the PO id.
+   */
+  async publishPurchaseOrder(order: PurchaseOrder): Promise<void> {
+    await this.request('/api/store/purchase-orders', 'POST', {
+      id: order.id,
+      number: order.number,
+      vendorId: order.vendorId,
+      accessToken: order.accessToken,
+      status: order.status,
+      subject: order.subject,
+      message: order.message,
+      sentAt: order.sentAt,
+      lines: order.lines.map((line) => ({
+        productName: line.productName,
+        barcode: line.barcode,
+        vendorSku: line.vendorSku,
+        quantity: line.quantity,
+        unitCostCents: line.unitCostCents,
+      })),
+    });
+  }
+
   async publishVendor(vendor: Vendor): Promise<CatalogVendor> {
     const response = await this.request('/api/store/vendors', 'POST', {
       id: vendor.id,
