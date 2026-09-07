@@ -372,3 +372,82 @@ export function refundReceiptHtml(data: {
 ${receiptBarcodeMarkup('refund', refund.receiptNumber)}
 </body></html>`;
 }
+
+export interface PurchaseOrderEmailData {
+  storeName: string;
+  storeEmail: string | null;
+  storePhone?: string | null;
+  number: string;
+  vendorName: string;
+  message: string;
+  lines: ReadonlyArray<{
+    productName: string;
+    barcode: string | null;
+    vendorSku: string | null;
+    quantity: number;
+    unitCostCents: number | null;
+  }>;
+  /** Vendor-only link to view the order on the portal, if the PO was published. */
+  portalUrl: string | null;
+}
+
+export function purchaseOrderEmailText(data: PurchaseOrderEmailData): string {
+  const width = Math.max(
+    12,
+    ...data.lines.map((line) => line.productName.length),
+  );
+  const rows = data.lines.map((line) => {
+    const code = line.vendorSku ?? line.barcode ?? '';
+    const cost =
+      line.unitCostCents === null
+        ? ''
+        : ` @ ${formatCents(line.unitCostCents)}`;
+    return `${line.quantity.toString().padStart(5)}  ${line.productName.padEnd(width)}  ${code}${cost}`;
+  });
+  const total = data.lines.reduce(
+    (sum, line) => sum + line.quantity * (line.unitCostCents ?? 0),
+    0,
+  );
+  const priced = data.lines.some((line) => line.unitCostCents !== null);
+  return [
+    `Purchase order ${data.number}`,
+    `From: ${data.storeName}`,
+    '',
+    data.message,
+    '',
+    `  Qty  ${'Item'.padEnd(width)}  Code`,
+    ...rows,
+    priced ? `\nEstimated total: ${formatCents(total)}` : '',
+    data.portalUrl ? `\nView this order online: ${data.portalUrl}` : '',
+    '',
+    `${data.storeName}${data.storeEmail ? ` · ${data.storeEmail}` : ''}${data.storePhone ? ` · ${data.storePhone}` : ''}`,
+  ].join('\n');
+}
+
+export function purchaseOrderEmailHtml(data: PurchaseOrderEmailData): string {
+  const priced = data.lines.some((line) => line.unitCostCents !== null);
+  const rows = data.lines
+    .map(
+      (line) =>
+        `<tr><td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right;font-variant-numeric:tabular-nums"><b>${line.quantity}</b></td><td style="padding:8px 10px;border-bottom:1px solid #eee">${escapeHtml(line.productName)}</td><td style="padding:8px 10px;border-bottom:1px solid #eee;color:#666;font-family:monospace">${escapeHtml(line.vendorSku ?? line.barcode ?? '')}</td>${priced ? `<td style="padding:8px 10px;border-bottom:1px solid #eee;text-align:right">${line.unitCostCents === null ? '' : formatCents(line.unitCostCents)}</td>` : ''}</tr>`,
+    )
+    .join('');
+  const total = data.lines.reduce(
+    (sum, line) => sum + line.quantity * (line.unitCostCents ?? 0),
+    0,
+  );
+  const message = escapeHtml(data.message).replaceAll('\n', '<br>');
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Purchase order ${escapeHtml(data.number)}</title></head>
+<body style="margin:0;padding:24px;background:#f4f2ee;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1c1b1a">
+<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e6e2da">
+<div style="background:#1c1b1a;color:#f4efe4;padding:18px 24px"><div style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.75">Purchase order</div><div style="font-size:22px;font-weight:700">${escapeHtml(data.number)}</div><div style="font-size:14px;opacity:.85">from ${escapeHtml(data.storeName)}</div></div>
+<div style="padding:20px 24px;font-size:15px;line-height:1.5">${message}</div>
+<table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr style="background:#faf8f4;color:#666;font-size:12px;text-transform:uppercase;letter-spacing:.08em"><th style="padding:8px 10px;text-align:right">Qty</th><th style="padding:8px 10px;text-align:left">Item</th><th style="padding:8px 10px;text-align:left">Code</th>${priced ? '<th style="padding:8px 10px;text-align:right">Unit</th>' : ''}</tr></thead>
+<tbody>${rows}</tbody>
+${priced ? `<tfoot><tr><td colspan="${priced ? 3 : 2}" style="padding:10px;text-align:right;font-weight:700">Estimated total</td><td style="padding:10px;text-align:right;font-weight:700">${formatCents(total)}</td></tr></tfoot>` : ''}
+</table>
+${data.portalUrl ? `<div style="padding:20px 24px;text-align:center"><a href="${escapeHtml(data.portalUrl)}" style="display:inline-block;background:#1c1b1a;color:#f4efe4;text-decoration:none;padding:12px 22px;border-radius:999px;font-weight:600">View order online</a><div style="font-size:12px;color:#888;margin-top:8px">This link is private to you.</div></div>` : ''}
+<div style="padding:16px 24px;border-top:1px solid #eee;font-size:13px;color:#666">${escapeHtml(data.storeName)}${data.storeEmail ? ` · <a href="mailto:${escapeHtml(data.storeEmail)}" style="color:#666">${escapeHtml(data.storeEmail)}</a>` : ''}${data.storePhone ? ` · ${escapeHtml(data.storePhone)}` : ''}<br><span style="color:#aaa">Sent with SUMA POS</span></div>
+</div></body></html>`;
+}

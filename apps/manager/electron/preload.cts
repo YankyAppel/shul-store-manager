@@ -125,6 +125,29 @@ const api: StoreApi = {
     addLine: (productId, vendorId, quantity) =>
       ipcRenderer.invoke('vendors:addLine', productId, vendorId, quantity),
   },
+  purchaseOrders: {
+    list: (vendorId) => ipcRenderer.invoke('purchaseOrders:list', vendorId),
+    get: (id) => ipcRenderer.invoke('purchaseOrders:get', id),
+    create: (input) => ipcRenderer.invoke('purchaseOrders:create', input),
+    preview: (id) => ipcRenderer.invoke('purchaseOrders:preview', id),
+    send: (id, via) => ipcRenderer.invoke('purchaseOrders:send', id, via),
+    receive: (id, input) =>
+      ipcRenderer.invoke('purchaseOrders:receive', id, input),
+    cancel: (id) => ipcRenderer.invoke('purchaseOrders:cancel', id),
+    retryEmail: (id) => ipcRenderer.invoke('purchaseOrders:retryEmail', id),
+    subscribe: (listener) => {
+      const handler = () => listener();
+      ipcRenderer.on('purchaseOrders:changed', handler);
+      return () =>
+        ipcRenderer.removeListener('purchaseOrders:changed', handler);
+    },
+  },
+  email: {
+    status: () => ipcRenderer.invoke('email:status'),
+    save: (config) => ipcRenderer.invoke('email:save', config),
+    clear: () => ipcRenderer.invoke('email:clear'),
+    test: (config, sendTo) => ipcRenderer.invoke('email:test', config, sendTo),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (input) => ipcRenderer.invoke('settings:update', input),

@@ -2,11 +2,17 @@ import { useEffect, useMemo, useState } from 'react';
 import type {
   BuyingListLine,
   Product,
+  PurchaseOrderSummary,
   Vendor,
   VendorSummary,
 } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../../utils/formatters';
 import { VendorBadge, VendorEditorModal } from './VendorEditorModal';
+import {
+  OrderModal,
+  PurchaseOrderHistory,
+  ReceiveModal,
+} from './PurchaseOrderModals';
 
 export function VendorsScreen() {
   const [vendors, setVendors] = useState<VendorSummary[]>([]);
@@ -227,15 +233,21 @@ function VendorDetail({
   const [products, setProducts] = useState<Product[]>([]);
   const [addProductId, setAddProductId] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [orders, setOrders] = useState<PurchaseOrderSummary[]>([]);
+  const [storeName, setStoreName] = useState('');
+  const [ordering, setOrdering] = useState(false);
+  const [receivingId, setReceivingId] = useState<string | null>(null);
 
   const load = async () => {
     try {
-      const [list, catalog] = await Promise.all([
+      const [list, catalog, history] = await Promise.all([
         window.storeApi.vendors.buyingList(vendor.id),
         window.storeApi.products.list(false),
+        window.storeApi.purchaseOrders.list(vendor.id),
       ]);
       setLines(list);
       setProducts(catalog);
+      setOrders(history);
       setDrafts({});
     } catch (e) {
       setError(messageFrom(e));
@@ -243,6 +255,11 @@ function VendorDetail({
   };
   useEffect(() => {
     void load();
+    window.storeApi.settings
+      .get()
+      .then((settings) => setStoreName(settings.storeName))
+      .catch(() => undefined);
+    return window.storeApi.purchaseOrders.subscribe(() => void load());
   }, [vendor.id]);
 
   const total = lines.reduce(
@@ -362,10 +379,10 @@ function VendorDetail({
           <button
             type="button"
             className="primary"
-            disabled
-            title="Sending purchase orders arrives in the next update"
+            disabled={lines.length === 0}
+            onClick={() => setOrdering(true)}
           >
-            Order… (coming soon)
+            Order…
           </button>
         </div>
       </section>
@@ -468,6 +485,38 @@ function VendorDetail({
         </div>
       )}
 
+      <PurchaseOrderHistory
+        orders={orders}
+        onReceive={setReceivingId}
+        onChanged={load}
+        setError={setError}
+      />
+
+      {ordering && (
+        <OrderModal
+          vendor={vendor}
+          lines={lines}
+          storeName={storeName}
+          onClose={() => {
+            setOrdering(false);
+            void load();
+          }}
+          onDone={() => {
+            setOrdering(false);
+            void load();
+          }}
+        />
+      )}
+      {receivingId && (
+        <ReceiveModal
+          orderId={receivingId}
+          onClose={() => setReceivingId(null)}
+          onDone={() => {
+            setReceivingId(null);
+            void load();
+          }}
+        />
+      )}
       {editing !== undefined && (
         <VendorEditorModal
           vendor={editing}

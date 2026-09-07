@@ -47,6 +47,15 @@ import {
   type VendorProduct,
   type VendorSummary,
 } from './vendors.js';
+import type {
+  EmailConfig,
+  EmailConfigStatus,
+  PurchaseOrder,
+  PurchaseOrderInput,
+  PurchaseOrderSentVia,
+  PurchaseOrderSummary,
+  ReceivePurchaseOrderInput,
+} from './purchase-orders.js';
 
 export * from './barcode.js';
 export * from './backups.js';
@@ -74,6 +83,7 @@ export * from './sync.js';
 export * from './ui-helpers.js';
 export * from './ipc-requirements.js';
 export * from './vendors.js';
+export * from './purchase-orders.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -372,6 +382,37 @@ export interface StoreApi {
       vendorId: string,
       quantity: number | null,
     ): Promise<BuyingListLine>;
+  };
+  purchaseOrders: {
+    list(vendorId?: string): Promise<PurchaseOrderSummary[]>;
+    get(id: string): Promise<PurchaseOrder>;
+    /** Create a draft PO from reviewed buying-list lines. */
+    create(input: PurchaseOrderInput): Promise<PurchaseOrder>;
+    /** Rendered email preview (HTML + plain text) for a draft or sent PO. */
+    preview(
+      id: string,
+    ): Promise<{ html: string; text: string; to: string | null }>;
+    /** Mark the PO sent: `email` queues the email, `manual` records it as sent by hand. */
+    send(id: string, via: PurchaseOrderSentVia): Promise<PurchaseOrder>;
+    receive(
+      id: string,
+      input: ReceivePurchaseOrderInput,
+    ): Promise<PurchaseOrder>;
+    cancel(id: string): Promise<PurchaseOrder>;
+    /** Retry a failed email for this PO now. */
+    retryEmail(id: string): Promise<PurchaseOrderSummary>;
+    /** Fires when the background mail worker updates an order's email state. */
+    subscribe(listener: () => void): () => void;
+  };
+  email: {
+    status(): Promise<EmailConfigStatus>;
+    save(config: EmailConfig): Promise<EmailConfigStatus>;
+    clear(): Promise<EmailConfigStatus>;
+    /** Verify the SMTP credentials by connecting (and optionally sending a test message). */
+    test(
+      config: EmailConfig,
+      sendTo: string | null,
+    ): Promise<{ ok: boolean; error: string | null }>;
   };
   images: {
     choose(): Promise<StoredImage | null>;

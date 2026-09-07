@@ -11,6 +11,7 @@ import { messageFrom } from '../utils/formatters';
 import { CloudBackupSection } from './CloudBackupSection';
 import { CloudAccountSection } from './CloudAccountSection';
 import { LocalBackupSection } from './LocalBackupSection';
+import { EmailAccountSection } from './EmailAccountSection';
 import { StaffSection } from './StaffSection';
 import { Explain } from '../components/Explain';
 
@@ -965,6 +966,14 @@ export function SettingsScreen() {
         when the internet is unavailable, and changes are sent when it returns.
       </Explain>
       <CloudAccountSection />
+      <Explain
+        id="order-emails"
+        sentence="Order emails go to your vendors from your own email account when you press Send on a purchase order."
+      >
+        Nothing is sent without you reviewing it first. If the internet is down
+        the email waits and goes out automatically when you're back online.
+      </Explain>
+      <EmailAccountSection />
       <Explain
         id="backups"
         sentence="Backups are extra copies of your store records in case this computer has a problem."
