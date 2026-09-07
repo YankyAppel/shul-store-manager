@@ -8,6 +8,9 @@ import type {
 import {
   cloudEntitlementSchema,
   type BarcodeSuggestion,
+  type CatalogVendor,
+  type CatalogVendorProduct,
+  type Vendor,
 } from '@shul-store/shared';
 
 const SITE_URL = 'https://sumasystems.com';
@@ -474,5 +477,68 @@ export class CloudAccountManager {
       suggestion?: BarcodeSuggestion | null;
     };
     return value.suggestion ?? null;
+  }
+
+  /** Shared vendor directory, optionally only rows changed after `since`. */
+  async fetchVendors(since: string | null): Promise<CatalogVendor[]> {
+    const all: CatalogVendor[] = [];
+    let cursor = since;
+    for (let page = 0; page < 20; page += 1) {
+      const query = cursor ? `?since=${encodeURIComponent(cursor)}` : '';
+      const response = await this.request(`/api/store/vendors${query}`, 'GET');
+      const value = (await response.json()) as {
+        vendors: CatalogVendor[];
+        more: boolean;
+      };
+      all.push(...value.vendors);
+      const last = value.vendors.at(-1);
+      if (!value.more || !last || last.updated_at === cursor) break;
+      cursor = last.updated_at;
+    }
+    return all;
+  }
+
+  async fetchVendorProducts(
+    vendorId: string,
+    since: string | null,
+  ): Promise<CatalogVendorProduct[]> {
+    const query = new URLSearchParams({ vendor_id: vendorId });
+    if (since) query.set('since', since);
+    const response = await this.request(
+      `/api/store/vendor-products?${query.toString()}`,
+      'GET',
+    );
+    const value = (await response.json()) as {
+      products: CatalogVendorProduct[];
+    };
+    return value.products;
+  }
+
+  async fetchVendorProductsForBarcode(
+    barcode: string,
+  ): Promise<CatalogVendorProduct[]> {
+    const response = await this.request(
+      `/api/store/vendor-products?barcode=${encodeURIComponent(barcode)}`,
+      'GET',
+    );
+    const value = (await response.json()) as {
+      products: CatalogVendorProduct[];
+    };
+    return value.products;
+  }
+
+  /** Publish a locally created vendor to the shared directory (same id). */
+  async publishVendor(vendor: Vendor): Promise<CatalogVendor> {
+    const response = await this.request('/api/store/vendors', 'POST', {
+      id: vendor.id,
+      name: vendor.name,
+      email: vendor.email,
+      phone: vendor.phone,
+      website: vendor.website,
+      address: vendor.address,
+      notes: vendor.notes,
+    });
+    const value = (await response.json()) as { vendor: CatalogVendor };
+    return value.vendor;
   }
 }

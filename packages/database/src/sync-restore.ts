@@ -1,4 +1,5 @@
 import type { SqliteDatabase } from './sqlite.js';
+import { applyProductVendors } from './vendors.js';
 import type {
   AccountPaymentPayload,
   AuditEventPayload,
@@ -261,6 +262,7 @@ function applyProduct(
       payload.createdAt,
     );
   }
+  applyProductVendors(connection, payload.id, payload.vendors);
 }
 
 function applyInventoryMovement(

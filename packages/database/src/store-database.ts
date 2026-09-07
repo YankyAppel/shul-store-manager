@@ -79,6 +79,10 @@ import {
   type SyncConfigView,
   type SyncEntityType,
   type SyncStatus,
+  productVendorLinksSchema,
+  type ProductVendorLinkInput,
+  type Vendor,
+  type VendorInput,
 } from '@shul-store/shared';
 import { migrations, runMigrations } from './migrations.js';
 import { validateRefundRequest } from './refunds.js';
@@ -109,6 +113,7 @@ import {
   type ValidatedRestoreEvent,
 } from './sync-restore.js';
 import { dailyReport as buildDailyReport } from './reports.js';
+import { VendorStore } from './vendors.js';
 
 type Row = Record<string, unknown>;
 const now = (): string => new Date().toISOString();
@@ -221,6 +226,7 @@ export interface StoreDatabaseOptions {
 
 export class StoreDatabase {
   readonly connection: SqliteDatabase;
+  private vendorStore: VendorStore | null = null;
   private paymentService: PaymentService | null = null;
   private readonly secretStore: SecretStore;
   private readonly backupDirectory: string | null;
@@ -1235,6 +1241,7 @@ export class StoreDatabase {
             timestamp,
           );
         this.insertBarcodes(id, value.barcodes, timestamp);
+        this.vendors.replaceProductVendors(id, value.vendors);
         this.enqueueEntity('product', id);
         this.addAudit('product.created', 'product', id, { name: value.name });
       })();
@@ -1287,6 +1294,7 @@ export class StoreDatabase {
             .run(id);
           this.insertBarcodes(id, value.barcodes, now());
         }
+        this.vendors.replaceProductVendors(id, value.vendors);
         this.enqueueEntity('product', id);
         this.addAudit('product.updated', 'product', id, { name: value.name });
       })();
@@ -1319,6 +1327,68 @@ export class StoreDatabase {
         {},
       );
     })();
+  }
+
+  // --- VENDORS & BUYING LIST ---
+
+  /** Vendor catalog cache, product↔vendor links and the automatic buying list. */
+  get vendors(): VendorStore {
+    this.vendorStore ??= new VendorStore(this.connection);
+    return this.vendorStore;
+  }
+
+  /** Store-side vendor creation; the caller publishes it to the shared catalog. */
+  createVendor(input: VendorInput, id?: string): Vendor {
+    try {
+      return this.connection.transaction(() => {
+        const vendor = this.vendors.createVendor(input, id);
+        this.addAudit('vendor.created', 'vendor', vendor.id, {
+          name: vendor.name,
+        });
+        return vendor;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  updateVendor(id: string, input: VendorInput): Vendor {
+    try {
+      return this.connection.transaction(() => {
+        const vendor = this.vendors.updateVendor(id, input);
+        this.addAudit('vendor.updated', 'vendor', vendor.id, {
+          name: vendor.name,
+        });
+        return vendor;
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+  }
+
+  /** Change a product's vendor links without touching the rest of the product. */
+  setProductVendors(
+    productId: string,
+    links: ProductVendorLinkInput[],
+  ): Product {
+    const value = productVendorLinksSchema.parse(links);
+    try {
+      this.connection.transaction(() => {
+        const changed = this.vendors.replaceProductVendors(productId, value);
+        if (!changed) return;
+        const result = this.connection
+          .prepare('UPDATE products SET updated_at = ? WHERE id = ?')
+          .run(now(), productId);
+        if (result.changes === 0) throw new Error('Product not found');
+        this.enqueueEntity('product', productId);
+        this.addAudit('product.vendors_updated', 'product', productId, {
+          vendorIds: value.map((link) => link.vendorId),
+        });
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+    return this.getProduct(productId);
   }
 
   generateInternalBarcode(): string {
@@ -4498,6 +4568,7 @@ export class StoreDatabase {
         value: String(barcode.value),
         kind: String(barcode.kind) as Barcode['kind'],
       })),
+      vendors: this.vendors.listProductVendors(String(row.id)),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
@@ -4766,6 +4837,7 @@ export class StoreDatabase {
         kind: String(barcode.kind) as 'EXTERNAL' | 'CODE128_INTERNAL',
         position: Number(barcode.position),
       })),
+      vendors: this.vendors.productVendorPayload(productId),
     };
   }
 

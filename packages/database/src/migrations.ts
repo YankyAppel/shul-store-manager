@@ -1274,6 +1274,68 @@ export const migrations: Migration[] = [
       ALTER TABLE device_settings ADD COLUMN explain_dismissals_json TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 29,
+    name: 'vendors_and_buying_list',
+    sql: `
+      CREATE TABLE vendors (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        email TEXT,
+        phone TEXT,
+        website TEXT,
+        address TEXT,
+        notes TEXT,
+        status TEXT NOT NULL DEFAULT 'unverified' CHECK (status IN ('unverified', 'verified', 'suspended')),
+        has_account INTEGER NOT NULL DEFAULT 0 CHECK (has_account IN (0, 1)),
+        shared INTEGER NOT NULL DEFAULT 0 CHECK (shared IN (0, 1)),
+        default_reorder_qty INTEGER CHECK (default_reorder_qty IS NULL OR default_reorder_qty > 0),
+        account_number TEXT,
+        hide_list_price INTEGER NOT NULL DEFAULT 0 CHECK (hide_list_price IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX vendors_name_idx ON vendors(name COLLATE NOCASE);
+
+      CREATE TABLE vendor_products (
+        id TEXT PRIMARY KEY,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+        barcode TEXT NOT NULL COLLATE NOCASE,
+        sku TEXT,
+        name TEXT NOT NULL,
+        case_size INTEGER CHECK (case_size IS NULL OR case_size > 0),
+        min_order_qty INTEGER CHECK (min_order_qty IS NULL OR min_order_qty > 0),
+        price_cents INTEGER CHECK (price_cents IS NULL OR price_cents >= 0),
+        updated_at TEXT NOT NULL,
+        UNIQUE(vendor_id, barcode)
+      );
+      CREATE INDEX vendor_products_barcode_idx ON vendor_products(barcode);
+
+      CREATE TABLE product_vendors (
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE RESTRICT,
+        preferred INTEGER NOT NULL DEFAULT 0 CHECK (preferred IN (0, 1)),
+        cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents >= 0),
+        reorder_qty INTEGER CHECK (reorder_qty IS NULL OR reorder_qty > 0),
+        vendor_sku TEXT,
+        PRIMARY KEY (product_id, vendor_id)
+      );
+      CREATE INDEX product_vendors_vendor_idx ON product_vendors(vendor_id);
+      CREATE UNIQUE INDEX product_vendors_one_preferred_idx ON product_vendors(product_id) WHERE preferred = 1;
+
+      CREATE TABLE reorder_list (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        vendor_id TEXT NOT NULL REFERENCES vendors(id) ON DELETE RESTRICT,
+        quantity_override INTEGER CHECK (quantity_override IS NULL OR quantity_override > 0),
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'dismissed', 'ordered')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX reorder_list_active_product_idx ON reorder_list(product_id) WHERE status IN ('open', 'dismissed');
+      CREATE INDEX reorder_list_vendor_status_idx ON reorder_list(vendor_id, status);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

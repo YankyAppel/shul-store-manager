@@ -63,3 +63,4 @@ export {
   type RestoreOutcome,
   type ValidatedRestoreEvent,
 } from './sync-restore.js';
+export { VendorStore } from './vendors.js';

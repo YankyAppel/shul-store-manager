@@ -1293,3 +1293,30 @@ code {
     padding-right: 10px;
   }
 }
+
+/* Vendors */
+.vendor-links {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.vendor-links th {
+  text-align: left;
+  font-weight: 600;
+  color: #738079;
+  padding: 4px 6px;
+}
+.vendor-links td {
+  padding: 4px 6px;
+  vertical-align: middle;
+}
+.vendor-links input:not([type='radio']) {
+  width: 100%;
+  margin: 0;
+}
+.hint {
+  font-size: 13px;
+  color: #738079;
+  margin: 0 0 8px;
+}
