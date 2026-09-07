@@ -10,7 +10,8 @@ import {
   type BarcodeSuggestion,
 } from '@shul-store/shared';
 
-const SITE_URL = 'https://skvershul.softhere.work';
+const SITE_URL = 'https://sumasystems.com';
+const LEGACY_SITE_URLS = new Set(['https://skvershul.softhere.work']);
 const GRACE_MS = 14 * 24 * 60 * 60 * 1000;
 const REFRESH_THROTTLE_MS = 5 * 60 * 1000;
 type FetchImpl = typeof globalThis.fetch;
@@ -78,6 +79,17 @@ export class CloudAccountManager {
         await readFile(this.filename, 'utf8'),
       ) as Partial<Stored>;
       this.stored = { ...initial(), ...raw };
+      if (LEGACY_SITE_URLS.has(this.stored.siteUrl)) {
+        this.stored = {
+          ...initial(),
+          accountStarted: this.stored.accountStarted,
+          onboardingDismissed: this.stored.onboardingDismissed,
+          storeId: this.stored.storeId,
+        };
+        this.loaded = true;
+        await this.save();
+        return;
+      }
       if (this.stored.accessToken)
         this.stored.accessToken = this.secretStore.decrypt(
           this.stored.accessToken,
@@ -180,13 +192,13 @@ export class CloudAccountManager {
       `${this.stored.siteUrl}/api/store/config`,
     );
     if (!response.ok)
-      throw new Error('Could not load Store Manager configuration.');
+      throw new Error('Could not load Suma Store configuration.');
     const value = (await response.json()) as {
       supabase_url?: string;
       supabase_anon_key?: string;
     };
     if (!value.supabase_url || !value.supabase_anon_key)
-      throw new Error('Store Manager configuration is unavailable.');
+      throw new Error('Suma Store configuration is unavailable.');
     this.stored.supabaseUrl = value.supabase_url;
     this.stored.supabaseAnonKey = value.supabase_anon_key;
     await this.save();
@@ -423,18 +435,6 @@ export class CloudAccountManager {
     this.stored.accountStarted = true;
     await this.save();
     return this.publish();
-  }
-  async link(username: string, password: string): Promise<CloudAccountState> {
-    await this.request('/api/store/link', 'POST', { username, password });
-    await this.fetchEntitlement();
-    return this.publish();
-  }
-  async linkHint(): Promise<boolean> {
-    const response = await this.request('/api/store/link-hint', 'GET');
-    const value = (await response.json()) as {
-      matches_existing_shames?: boolean;
-    };
-    return value.matches_existing_shames === true;
   }
   async checkout(): Promise<void> {
     const value = await this.request('/api/store/checkout', 'POST', {});

@@ -208,9 +208,6 @@ const api: StoreApi = {
       ipcRenderer.invoke('cloudAccount:signUp', email, password),
     signOut: () => ipcRenderer.invoke('cloudAccount:signOut'),
     refresh: () => ipcRenderer.invoke('cloudAccount:refresh'),
-    link: (username, password) =>
-      ipcRenderer.invoke('cloudAccount:link', username, password),
-    linkHint: () => ipcRenderer.invoke('cloudAccount:linkHint'),
     checkout: () => ipcRenderer.invoke('cloudAccount:checkout'),
     portal: () => ipcRenderer.invoke('cloudAccount:portal'),
     lookupBarcodeSuggestion: (barcode) =>

@@ -13,7 +13,7 @@ jobs:
   windows:
     runs-on: windows-latest
     env:
-      RELEASE_REPOSITORY: YankyAppel/shul-store-manager-releases
+      RELEASE_REPOSITORY: YankyAppel/SUMA-store-POS-releases
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

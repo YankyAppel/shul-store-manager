@@ -85,7 +85,7 @@ trust and reputation).
 ## Manager automatic updates
 
 The manager's default update feed is the public GitHub Releases feed for
-`YankyAppel/shul-store-manager-releases`. The release repository must be public
+`YankyAppel/SUMA-store-POS-releases`. The release repository must be public
 so an installed manager can read its metadata without credentials. That target
 lives in `apps/manager/update-config.cjs`, and the release workflow's
 `RELEASE_REPOSITORY` value must match it. The manager checks about 30 seconds
