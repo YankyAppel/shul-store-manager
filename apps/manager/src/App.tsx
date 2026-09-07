@@ -18,6 +18,12 @@ import { SettingsScreen } from './features/SettingsScreen';
 import { KioskScreen } from './features/KioskScreen';
 import { CustomersScreen } from './features/customers/CustomersScreen';
 import { ReportsScreen } from './features/ReportsScreen';
+import { VendorsScreen } from './features/vendors/VendorsScreen';
+import {
+  ProductVendorsField,
+  draftsToLinks,
+  type VendorLinkDraft,
+} from './features/vendors/ProductVendorsField';
 import { FirstOwnerSetup, LockScreen } from './features/AuthScreens';
 import { CloudAccountOnboarding } from './features/CloudAccountOnboarding';
 
@@ -26,6 +32,7 @@ type View =
   | 'products'
   | 'categories'
   | 'inventory'
+  | 'vendors'
   | 'customers'
   | 'sales'
   | 'settings'
@@ -125,7 +132,7 @@ export function App() {
           ? 'checkout'
           : view === 'products' || view === 'categories'
             ? 'products.edit'
-            : view === 'inventory'
+            : view === 'inventory' || view === 'vendors'
               ? 'inventory.adjust'
               : view === 'customers'
                 ? 'customers.manage'
@@ -267,6 +274,14 @@ export function App() {
               ↕ <span>Inventory</span>
             </button>
           )}
+          {can('inventory.adjust') && (
+            <button
+              className={view === 'vendors' ? 'active' : ''}
+              onClick={() => setView('vendors')}
+            >
+              ⛟ <span>Vendors</span>
+            </button>
+          )}
           {can('customers.manage') && (
             <button
               className={view === 'customers' ? 'active' : ''}
@@ -327,6 +342,7 @@ export function App() {
                   products: 'Products',
                   categories: 'Categories',
                   inventory: 'Inventory',
+                  vendors: 'Vendors & ordering',
                   customers: 'Customers & Accounts',
                   sales: 'Sales history',
                   reports: 'Daily reports',
@@ -350,7 +366,9 @@ export function App() {
                           ? 'Review sales, cash reconciliation, and daily closes.'
                           : view === 'inventory'
                             ? 'Receive stock and record append-only adjustments.'
-                            : `Manage your store ${view}.`}
+                            : view === 'vendors'
+                              ? 'Suppliers, negotiated costs, and the suggested buying list.'
+                              : `Manage your store ${view}.`}
             </p>
           </div>
           <div className="header-actions">
@@ -514,6 +532,7 @@ export function App() {
         {view === 'settings' && <SettingsScreen />}
         {view === 'kiosk' && <KioskScreen />}
         {view === 'reports' && <ReportsScreen />}
+        {view === 'vendors' && <VendorsScreen />}
         {view === 'categories' && (
           <div className="category-grid">
             {visibleCategories.map((category) => (
@@ -923,6 +942,15 @@ function ProductModal({
     product?.barcodes.map((b) => b.value) ?? [],
   );
   const [barcode, setBarcode] = useState('');
+  const [vendorLinks, setVendorLinks] = useState<VendorLinkDraft[]>(
+    product?.vendors.map((link) => ({
+      vendorId: link.vendorId,
+      preferred: link.preferred,
+      cost: link.costCents === null ? '' : (link.costCents / 100).toFixed(2),
+      reorderQty: link.reorderQty === null ? '' : String(link.reorderQty),
+      vendorSku: link.vendorSku ?? '',
+    })) ?? [],
+  );
   const [saving, setSaving] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newCategorySecondaryName, setNewCategorySecondaryName] = useState('');
@@ -953,6 +981,7 @@ function ProductModal({
         taxable,
         lowStockThreshold: Number(threshold),
         barcodes,
+        vendors: draftsToLinks(vendorLinks),
       };
       if (product) await window.storeApi.products.update(product.id, input);
       else await window.storeApi.products.create(input);
@@ -1139,6 +1168,12 @@ function ProductModal({
             ))}
           </div>
         </div>
+        <ProductVendorsField
+          drafts={vendorLinks}
+          onChange={setVendorLinks}
+          barcodes={barcodes}
+          setError={setError}
+        />
         <footer>
           <button type="button" onClick={() => void close()}>
             Cancel

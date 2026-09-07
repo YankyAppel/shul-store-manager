@@ -78,6 +78,19 @@ export const productBarcodePayloadSchema = z.object({
 });
 export type ProductBarcodePayload = z.infer<typeof productBarcodePayloadSchema>;
 
+/** Vendor link carried with the product. The vendor snapshot lets a device
+ *  that has never seen the vendor create a local cache row on replay. */
+export const productVendorPayloadSchema = z.object({
+  vendorId: uuidString,
+  vendorName: z.string().min(1).max(200),
+  vendorEmail: z.string().nullable(),
+  preferred: z.boolean(),
+  costCents: nonNegativeCents.nullable(),
+  reorderQty: z.number().int().min(1).max(1_000_000).nullable(),
+  vendorSku: z.string().max(100).nullable(),
+});
+export type ProductVendorPayload = z.infer<typeof productVendorPayloadSchema>;
+
 export const productPayloadSchema = z.object({
   id: uuidString,
   categoryId: uuidString,
@@ -92,6 +105,7 @@ export const productPayloadSchema = z.object({
   createdAt: isoString,
   updatedAt: isoString,
   barcodes: z.array(productBarcodePayloadSchema).max(50),
+  vendors: z.array(productVendorPayloadSchema).max(20).default([]),
 });
 export type ProductPayload = z.infer<typeof productPayloadSchema>;
 

@@ -1005,6 +1005,7 @@ function InlineProductModal({
         taxable,
         lowStockThreshold: Number(threshold),
         barcodes: [barcode],
+        vendors: [],
       };
       const product = await window.storeApi.products.createDuringSale(
         input,

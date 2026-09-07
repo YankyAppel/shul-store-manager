@@ -106,6 +106,25 @@ const api: StoreApi = {
     addMovement: (input) => ipcRenderer.invoke('inventory:addMovement', input),
     list: (productId) => ipcRenderer.invoke('inventory:list', productId),
   },
+  vendors: {
+    list: () => ipcRenderer.invoke('vendors:list'),
+    get: (id) => ipcRenderer.invoke('vendors:get', id),
+    create: (input) => ipcRenderer.invoke('vendors:create', input),
+    update: (id, input) => ipcRenderer.invoke('vendors:update', id, input),
+    findSimilar: (name, email) =>
+      ipcRenderer.invoke('vendors:findSimilar', name, email),
+    refreshCatalog: () => ipcRenderer.invoke('vendors:refreshCatalog'),
+    catalogOffers: (barcodes) =>
+      ipcRenderer.invoke('vendors:catalogOffers', barcodes),
+    setProductVendors: (productId, links) =>
+      ipcRenderer.invoke('vendors:setProductVendors', productId, links),
+    buyingList: (vendorId) =>
+      ipcRenderer.invoke('vendors:buyingList', vendorId),
+    updateLine: (id, input) =>
+      ipcRenderer.invoke('vendors:updateLine', id, input),
+    addLine: (productId, vendorId, quantity) =>
+      ipcRenderer.invoke('vendors:addLine', productId, vendorId, quantity),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (input) => ipcRenderer.invoke('settings:update', input),

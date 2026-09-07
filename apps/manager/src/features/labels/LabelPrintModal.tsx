@@ -151,6 +151,13 @@ export function LabelPrintModal({
         taxable: product.taxable,
         lowStockThreshold: product.lowStockThreshold,
         barcodes: [...product.barcodes.map((barcode) => barcode.value), value],
+        vendors: product.vendors.map((link) => ({
+          vendorId: link.vendorId,
+          preferred: link.preferred,
+          costCents: link.costCents,
+          reorderQty: link.reorderQty,
+          vendorSku: link.vendorSku,
+        })),
       });
       setBarcodes((current) => ({ ...current, [product.id]: value }));
       await onProductsChanged();

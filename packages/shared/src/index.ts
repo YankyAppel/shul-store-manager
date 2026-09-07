@@ -36,6 +36,17 @@ import type {
   LocalBackupAttempt,
   LocalRestoreResult,
 } from './backups.js';
+import {
+  productVendorLinksSchema,
+  type BuyingListLine,
+  type BuyingListLineUpdate,
+  type ProductVendorLink,
+  type ProductVendorLinkInput,
+  type Vendor,
+  type VendorInput,
+  type VendorProduct,
+  type VendorSummary,
+} from './vendors.js';
 
 export * from './barcode.js';
 export * from './backups.js';
@@ -62,6 +73,7 @@ export * from './secret-store.js';
 export * from './sync.js';
 export * from './ui-helpers.js';
 export * from './ipc-requirements.js';
+export * from './vendors.js';
 
 const name = z.string().trim().min(1).max(200);
 const optionalName = z.string().trim().max(200).nullable().optional();
@@ -84,6 +96,7 @@ export const productInputSchema = z.object({
   taxable: z.boolean(),
   lowStockThreshold: z.number().int().min(0).max(1_000_000),
   barcodes: z.array(z.string().trim().min(1).max(100)).max(50).default([]),
+  vendors: productVendorLinksSchema.default([]),
 });
 export type ProductInput = z.infer<typeof productInputSchema>;
 
@@ -157,6 +170,7 @@ export interface Product {
   active: boolean;
   stockQuantity: number;
   barcodes: Barcode[];
+  vendors: ProductVendorLink[];
   createdAt: string;
   updatedAt: string;
 }
@@ -334,6 +348,27 @@ export interface StoreApi {
   inventory: {
     addMovement(input: InventoryMovementInput): Promise<InventoryMovement>;
     list(productId: string): Promise<InventoryMovement[]>;
+  };
+  vendors: {
+    list(): Promise<VendorSummary[]>;
+    get(id: string): Promise<Vendor>;
+    create(input: VendorInput): Promise<Vendor>;
+    update(id: string, input: VendorInput): Promise<Vendor>;
+    findSimilar(name: string, email: string | null): Promise<Vendor[]>;
+    /** Pull the shared vendor directory + catalog rows for linked vendors. */
+    refreshCatalog(): Promise<{ vendors: number; products: number }>;
+    catalogOffers(barcodes: string[]): Promise<VendorProduct[]>;
+    setProductVendors(
+      productId: string,
+      links: ProductVendorLinkInput[],
+    ): Promise<Product>;
+    buyingList(vendorId: string): Promise<BuyingListLine[]>;
+    updateLine(id: string, input: BuyingListLineUpdate): Promise<BuyingListLine>;
+    addLine(
+      productId: string,
+      vendorId: string,
+      quantity: number | null,
+    ): Promise<BuyingListLine>;
   };
   images: {
     choose(): Promise<StoredImage | null>;

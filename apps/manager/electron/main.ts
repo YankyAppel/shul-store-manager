@@ -44,6 +44,9 @@ import {
   dailyReportPrintInputSchema,
   deviceSettingsSchema,
   inventoryMovementInputSchema,
+  buyingListLineUpdateSchema,
+  productVendorLinksSchema,
+  vendorInputSchema,
   KIOSK_DISCOVERY_PORT,
   KIOSK_DISCOVERY_PROTOCOL_VERSION,
   encodeKioskDiscoveryBeacon,
@@ -164,6 +167,17 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'products:generateBarcode': 'products.edit',
   'inventory:addMovement': 'inventory.adjust',
   'inventory:list': 'inventory.adjust',
+  'vendors:list': 'inventory.adjust',
+  'vendors:get': 'inventory.adjust',
+  'vendors:create': 'products.edit',
+  'vendors:update': 'products.edit',
+  'vendors:findSimilar': 'products.edit',
+  'vendors:refreshCatalog': 'inventory.adjust',
+  'vendors:catalogOffers': 'products.edit',
+  'vendors:setProductVendors': 'products.edit',
+  'vendors:buyingList': 'inventory.adjust',
+  'vendors:updateLine': 'inventory.adjust',
+  'vendors:addLine': 'inventory.adjust',
   'settings:get': 'owner',
   'settings:update': 'owner',
   'settings:getDevice': 'owner',
@@ -875,6 +889,103 @@ function registerIpc(): void {
   );
   ipcMain.handle('inventory:list', (_event, productId) =>
     database.listInventoryMovements(idSchema.parse(productId)),
+  );
+
+  // Vendors & buying list
+  const publishUnsharedVendors = async (): Promise<void> => {
+    for (const vendor of database.vendors.listUnsharedVendors()) {
+      const shared = await cloudAccount.publishVendor(vendor);
+      database.vendors.upsertCatalogVendors([shared]);
+    }
+  };
+  ipcMain.handle('vendors:list', () => database.vendors.listVendorSummaries());
+  ipcMain.handle('vendors:get', (_event, id) =>
+    database.vendors.getVendor(idSchema.parse(id)),
+  );
+  ipcMain.handle('vendors:create', async (_event, input) => {
+    const vendor = database.createVendor(vendorInputSchema.parse(input));
+    // Best effort: offline vendors are published on the next catalog refresh.
+    await publishUnsharedVendors().catch(() => undefined);
+    return database.vendors.getVendor(vendor.id);
+  });
+  ipcMain.handle('vendors:update', (_event, id, input) =>
+    database.updateVendor(idSchema.parse(id), vendorInputSchema.parse(input)),
+  );
+  ipcMain.handle('vendors:findSimilar', (_event, name, email) =>
+    database.vendors.findSimilarVendors(
+      z.string().trim().min(1).max(200).parse(name),
+      z.string().trim().max(200).nullable().parse(email) || null,
+    ),
+  );
+  ipcMain.handle('vendors:refreshCatalog', async () => {
+    await publishUnsharedVendors();
+    const since = database.vendors.latestSharedVendorUpdate();
+    const vendors = database.vendors.upsertCatalogVendors(
+      await cloudAccount.fetchVendors(since),
+    );
+    let products = 0;
+    const linked = database.connection
+      .prepare(
+        'SELECT DISTINCT vendor_id FROM product_vendors UNION SELECT DISTINCT vendor_id FROM reorder_list',
+      )
+      .all() as { vendor_id: string }[];
+    for (const { vendor_id: vendorId } of linked) {
+      const vendor = database.vendors.findVendor(vendorId);
+      if (!vendor?.shared) continue;
+      products += database.vendors.upsertCatalogVendorProducts(
+        await cloudAccount.fetchVendorProducts(vendorId, null),
+      );
+    }
+    return { vendors, products };
+  });
+  ipcMain.handle('vendors:catalogOffers', async (_event, barcodes) => {
+    const values = z
+      .array(z.string().trim().min(1).max(100))
+      .max(50)
+      .parse(barcodes);
+    const results = await Promise.allSettled(
+      values.map((barcode) =>
+        cloudAccount.fetchVendorProductsForBarcode(barcode),
+      ),
+    );
+    const fetched = results.flatMap((result) =>
+      result.status === 'fulfilled' ? result.value : [],
+    );
+    if (fetched.length > 0) {
+      const missing = [...new Set(fetched.map((row) => row.vendor_id))].filter(
+        (id) => !database.vendors.findVendor(id),
+      );
+      if (missing.length > 0)
+        database.vendors.upsertCatalogVendors(
+          (await cloudAccount.fetchVendors(null)).filter((row) =>
+            missing.includes(row.id),
+          ),
+        );
+      database.vendors.upsertCatalogVendorProducts(fetched);
+    }
+    return database.vendors.listVendorProductsForBarcodes(values);
+  });
+  ipcMain.handle('vendors:setProductVendors', (_event, productId, links) =>
+    database.setProductVendors(
+      idSchema.parse(productId),
+      productVendorLinksSchema.parse(links),
+    ),
+  );
+  ipcMain.handle('vendors:buyingList', (_event, vendorId) =>
+    database.vendors.listBuyingList(idSchema.parse(vendorId)),
+  );
+  ipcMain.handle('vendors:updateLine', (_event, id, input) =>
+    database.vendors.updateBuyingListLine(
+      idSchema.parse(id),
+      buyingListLineUpdateSchema.parse(input),
+    ),
+  );
+  ipcMain.handle('vendors:addLine', (_event, productId, vendorId, quantity) =>
+    database.vendors.addBuyingListLine(
+      idSchema.parse(productId),
+      idSchema.parse(vendorId),
+      z.number().int().min(1).max(1_000_000).nullable().parse(quantity),
+    ),
   );
 
   // Settings
