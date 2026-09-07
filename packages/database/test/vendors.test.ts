@@ -82,7 +82,11 @@ describe('vendors and product links', () => {
   it('stores links, exposes them on the product and requires one preferred', () => {
     const created = product('Cola', 'COLA-1');
     expect(created.vendors).toEqual([
-      expect.objectContaining({ vendorId, vendorName: 'ABC Distributors', preferred: true }),
+      expect.objectContaining({
+        vendorId,
+        vendorName: 'ABC Distributors',
+        preferred: true,
+      }),
     ]);
     expect(() =>
       store.setProductVendors(created.id, [
@@ -106,15 +110,29 @@ describe('vendors and product links', () => {
     const entry = pending.find((e) => e.entityId === created.id);
     const payload = entry?.payload as { vendors?: unknown[] } | undefined;
     expect(payload?.vendors).toEqual([
-      expect.objectContaining({ vendorId, vendorName: 'ABC Distributors', preferred: true }),
+      expect.objectContaining({
+        vendorId,
+        vendorName: 'ABC Distributors',
+        preferred: true,
+      }),
     ]);
   });
 
   it('flags likely duplicate vendors', () => {
-    expect(store.vendors.findSimilarVendors('A.B.C. Dist', null).map((v) => v.id)).toEqual([vendorId]);
+    expect(
+      store.vendors.findSimilarVendors('A.B.C. Dist', null).map((v) => v.id),
+    ).toEqual([vendorId]);
     expect(store.vendors.findSimilarVendors('Zed', null)).toEqual([]);
-    expect(store.vendors.findSimilarVendors('abc distributors', null).map((v) => v.id)).toEqual([vendorId]);
-    expect(store.vendors.findSimilarVendors('Zed', 'ORDERS@abc.example').map((v) => v.id)).toEqual([vendorId]);
+    expect(
+      store.vendors
+        .findSimilarVendors('abc distributors', null)
+        .map((v) => v.id),
+    ).toEqual([vendorId]);
+    expect(
+      store.vendors
+        .findSimilarVendors('Zed', 'ORDERS@abc.example')
+        .map((v) => v.id),
+    ).toEqual([vendorId]);
   });
 });
 
@@ -140,7 +158,9 @@ describe('buying list', () => {
       status: 'open',
     });
 
-    const summary = store.vendors.listVendorSummaries().find((v) => v.id === vendorId);
+    const summary = store.vendors
+      .listVendorSummaries()
+      .find((v) => v.id === vendorId);
     expect(summary).toMatchObject({
       openLineCount: 1,
       openQuantity: 6,
@@ -168,13 +188,23 @@ describe('buying list', () => {
       },
     ]);
     let [line] = store.vendors.listBuyingList(vendorId);
-    expect(line).toMatchObject({ quantity: 12, unitCostCents: 800, listPriceCents: 800, vendorSku: 'ABC-COLA' });
+    expect(line).toMatchObject({
+      quantity: 12,
+      unitCostCents: 800,
+      listPriceCents: 800,
+      vendorSku: 'ABC-COLA',
+    });
 
-    store.setProductVendors(cola.id, [{ vendorId, preferred: true, costCents: 700, reorderQty: 24 }]);
+    store.setProductVendors(cola.id, [
+      { vendorId, preferred: true, costCents: 700, reorderQty: 24 },
+    ]);
     [line] = store.vendors.listBuyingList(vendorId);
     expect(line).toMatchObject({ quantity: 24, unitCostCents: 700 });
 
-    store.updateVendor(vendorId, { name: 'ABC Distributors', hideListPrice: true });
+    store.updateVendor(vendorId, {
+      name: 'ABC Distributors',
+      hideListPrice: true,
+    });
     [line] = store.vendors.listBuyingList(vendorId);
     expect(line.listPriceCents).toBeNull();
   });
@@ -186,17 +216,23 @@ describe('buying list', () => {
       { vendorId: otherVendorId, preferred: false },
     ]);
     let [line] = store.vendors.listBuyingList(vendorId);
-    line = store.vendors.updateBuyingListLine(line.id, { quantityOverride: 40 });
+    line = store.vendors.updateBuyingListLine(line.id, {
+      quantityOverride: 40,
+    });
     expect(line.quantity).toBe(40);
 
-    line = store.vendors.updateBuyingListLine(line.id, { vendorId: otherVendorId });
+    line = store.vendors.updateBuyingListLine(line.id, {
+      vendorId: otherVendorId,
+    });
     expect(store.vendors.listBuyingList(vendorId)).toEqual([]);
     expect(store.vendors.listBuyingList(otherVendorId)[0]?.quantity).toBe(40);
 
     store.vendors.updateBuyingListLine(line.id, { status: 'dismissed' });
     expect(store.vendors.listBuyingList(otherVendorId)).toEqual([]);
     // Still low, but dismissed: refresh must not re-add it.
-    expect(store.vendors.listBuyingList(undefined, ['dismissed'])).toHaveLength(1);
+    expect(store.vendors.listBuyingList(undefined, ['dismissed'])).toHaveLength(
+      1,
+    );
 
     const readded = store.vendors.addBuyingListLine(cola.id, vendorId, null);
     expect(readded.status).toBe('open');

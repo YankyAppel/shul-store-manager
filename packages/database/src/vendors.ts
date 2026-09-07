@@ -104,15 +104,29 @@ export class VendorStore {
 
   /** Vendors whose name or email looks like a duplicate of the given input. */
   findSimilarVendors(name: string, email: string | null): Vendor[] {
-    const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const normalized = name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '');
     const rows = this.connection
-      .prepare(`SELECT ${VENDOR_COLUMNS} FROM vendors WHERE status <> 'suspended'`)
+      .prepare(
+        `SELECT ${VENDOR_COLUMNS} FROM vendors WHERE status <> 'suspended'`,
+      )
       .all() as Row[];
     return rows.map(mapVendor).filter((vendor) => {
       const candidate = vendor.name.toLowerCase().replace(/[^a-z0-9]+/g, '');
-      if (normalized.length >= 3 && (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)))
+      if (
+        normalized.length >= 3 &&
+        (candidate === normalized ||
+          candidate.includes(normalized) ||
+          normalized.includes(candidate))
+      )
         return true;
-      return Boolean(email && vendor.email && vendor.email.toLowerCase() === email.toLowerCase());
+      return Boolean(
+        email &&
+        vendor.email &&
+        vendor.email.toLowerCase() === email.toLowerCase(),
+      );
     });
   }
 
@@ -207,13 +221,17 @@ export class VendorStore {
   /** Vendors created offline that still have to be published to the catalog. */
   listUnsharedVendors(): Vendor[] {
     const rows = this.connection
-      .prepare(`SELECT ${VENDOR_COLUMNS} FROM vendors WHERE shared = 0 ORDER BY created_at`)
+      .prepare(
+        `SELECT ${VENDOR_COLUMNS} FROM vendors WHERE shared = 0 ORDER BY created_at`,
+      )
       .all() as Row[];
     return rows.map(mapVendor);
   }
 
   markVendorShared(id: string): void {
-    this.connection.prepare('UPDATE vendors SET shared = 1 WHERE id = ?').run(id);
+    this.connection
+      .prepare('UPDATE vendors SET shared = 1 WHERE id = ?')
+      .run(id);
   }
 
   /** Newest catalog timestamp we hold, for incremental refreshes. */
@@ -326,7 +344,9 @@ export class VendorStore {
         .run(preferred.vendorId, now(), productId, preferred.vendorId);
     } else {
       this.connection
-        .prepare(`DELETE FROM reorder_list WHERE product_id = ? AND status IN ('open', 'dismissed')`)
+        .prepare(
+          `DELETE FROM reorder_list WHERE product_id = ? AND status IN ('open', 'dismissed')`,
+        )
         .run(productId);
     }
     return before !== JSON.stringify(this.listProductVendors(productId));
@@ -388,7 +408,13 @@ export class VendorStore {
       if (isLow) {
         low.add(productId);
         if (row.suggestion_status === null && !Number(row.ordered))
-          insert.run(randomUUID(), productId, String(row.vendor_id), timestamp, timestamp);
+          insert.run(
+            randomUUID(),
+            productId,
+            String(row.vendor_id),
+            timestamp,
+            timestamp,
+          );
       } else if (row.suggestion_status !== null) {
         clear.run(productId);
       }
@@ -406,7 +432,10 @@ export class VendorStore {
     }
   }
 
-  listBuyingList(vendorId?: string, statuses: ReorderStatus[] = ['open']): BuyingListLine[] {
+  listBuyingList(
+    vendorId?: string,
+    statuses: ReorderStatus[] = ['open'],
+  ): BuyingListLine[] {
     this.refreshBuyingList();
     const statusPlaceholders = statuses.map(() => '?').join(', ');
     const rows = this.connection
@@ -444,7 +473,9 @@ export class VendorStore {
       const hideList = Boolean(row.hide_list_price);
       const productCost = Number(row.purchase_cost_cents);
       const unitCost =
-        negotiated ?? (hideList ? null : listPrice) ?? (productCost > 0 ? productCost : null);
+        negotiated ??
+        (hideList ? null : listPrice) ??
+        (productCost > 0 ? productCost : null);
       return {
         id: String(row.id),
         productId: String(row.product_id),
@@ -465,7 +496,10 @@ export class VendorStore {
     });
   }
 
-  updateBuyingListLine(id: string, input: BuyingListLineUpdate): BuyingListLine {
+  updateBuyingListLine(
+    id: string,
+    input: BuyingListLineUpdate,
+  ): BuyingListLine {
     const value = buyingListLineUpdateSchema.parse(input);
     const row = this.connection
       .prepare(`SELECT product_id, status FROM reorder_list WHERE id = ?`)
@@ -474,7 +508,9 @@ export class VendorStore {
     if (row.status === 'ordered') throw new Error('Line already ordered');
     if (value.vendorId) {
       const linked = this.connection
-        .prepare('SELECT 1 FROM product_vendors WHERE product_id = ? AND vendor_id = ?')
+        .prepare(
+          'SELECT 1 FROM product_vendors WHERE product_id = ? AND vendor_id = ?',
+        )
         .get(String(row.product_id), value.vendorId);
       if (!linked) throw new Error('Vendor is not linked to this product');
     }
@@ -495,21 +531,31 @@ export class VendorStore {
         now(),
         id,
       );
-    const [line] = this.listBuyingList(undefined, ['open', 'dismissed', 'ordered']).filter(
-      (candidate) => candidate.id === id,
-    );
+    const [line] = this.listBuyingList(undefined, [
+      'open',
+      'dismissed',
+      'ordered',
+    ]).filter((candidate) => candidate.id === id);
     if (!line) throw new Error('Buying list line not found');
     return line;
   }
 
   /** Manually add a product to a vendor's buying list (must be linked). */
-  addBuyingListLine(productId: string, vendorId: string, quantity: number | null): BuyingListLine {
+  addBuyingListLine(
+    productId: string,
+    vendorId: string,
+    quantity: number | null,
+  ): BuyingListLine {
     const linked = this.connection
-      .prepare('SELECT 1 FROM product_vendors WHERE product_id = ? AND vendor_id = ?')
+      .prepare(
+        'SELECT 1 FROM product_vendors WHERE product_id = ? AND vendor_id = ?',
+      )
       .get(productId, vendorId);
     if (!linked) throw new Error('Vendor is not linked to this product');
     const existing = this.connection
-      .prepare(`SELECT id FROM reorder_list WHERE product_id = ? AND status IN ('open', 'dismissed')`)
+      .prepare(
+        `SELECT id FROM reorder_list WHERE product_id = ? AND status IN ('open', 'dismissed')`,
+      )
       .get(productId) as Row | undefined;
     const timestamp = now();
     let id: string;
@@ -529,7 +575,9 @@ export class VendorStore {
         )
         .run(id, productId, vendorId, quantity, timestamp, timestamp);
     }
-    const line = this.listBuyingList(undefined, ['open']).find((candidate) => candidate.id === id);
+    const line = this.listBuyingList(undefined, ['open']).find(
+      (candidate) => candidate.id === id,
+    );
     if (!line) throw new Error('Buying list line not found');
     return line;
   }
@@ -537,9 +585,13 @@ export class VendorStore {
   listVendorSummaries(): VendorSummary[] {
     const lines = this.listBuyingList(undefined, ['open']);
     const linkCounts = this.connection
-      .prepare('SELECT vendor_id, COUNT(*) AS n FROM product_vendors GROUP BY vendor_id')
+      .prepare(
+        'SELECT vendor_id, COUNT(*) AS n FROM product_vendors GROUP BY vendor_id',
+      )
       .all() as Row[];
-    const links = new Map(linkCounts.map((row) => [String(row.vendor_id), Number(row.n)]));
+    const links = new Map(
+      linkCounts.map((row) => [String(row.vendor_id), Number(row.n)]),
+    );
     return this.listVendors().map((vendor) => {
       const mine = lines.filter((line) => line.vendorId === vendor.id);
       return {
@@ -550,7 +602,8 @@ export class VendorStore {
           (sum, line) => sum + (line.unitCostCents ?? 0) * line.quantity,
           0,
         ),
-        unpricedLineCount: mine.filter((line) => line.unitCostCents === null).length,
+        unpricedLineCount: mine.filter((line) => line.unitCostCents === null)
+          .length,
         linkedProductCount: links.get(vendor.id) ?? 0,
       };
     });
@@ -569,14 +622,22 @@ export function applyProductVendors(
     `INSERT OR IGNORE INTO vendors (id, name, email, status, has_account, shared, created_at, updated_at)
      VALUES (?, ?, ?, 'unverified', 0, 0, ?, ?)`,
   );
-  connection.prepare('DELETE FROM product_vendors WHERE product_id = ?').run(productId);
+  connection
+    .prepare('DELETE FROM product_vendors WHERE product_id = ?')
+    .run(productId);
   const insert = connection.prepare(
     `INSERT INTO product_vendors (product_id, vendor_id, preferred, cost_cents, reorder_qty, vendor_sku)
      VALUES (?, ?, ?, ?, ?, ?)`,
   );
   let preferredSeen = false;
   for (const link of vendors) {
-    ensureVendor.run(link.vendorId, link.vendorName, link.vendorEmail, timestamp, timestamp);
+    ensureVendor.run(
+      link.vendorId,
+      link.vendorName,
+      link.vendorEmail,
+      timestamp,
+      timestamp,
+    );
     const preferred = link.preferred && !preferredSeen;
     if (preferred) preferredSeen = true;
     insert.run(

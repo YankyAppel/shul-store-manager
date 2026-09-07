@@ -1342,7 +1342,9 @@ export class StoreDatabase {
     try {
       return this.connection.transaction(() => {
         const vendor = this.vendors.createVendor(input, id);
-        this.addAudit('vendor.created', 'vendor', vendor.id, { name: vendor.name });
+        this.addAudit('vendor.created', 'vendor', vendor.id, {
+          name: vendor.name,
+        });
         return vendor;
       })();
     } catch (error) {
@@ -1354,7 +1356,9 @@ export class StoreDatabase {
     try {
       return this.connection.transaction(() => {
         const vendor = this.vendors.updateVendor(id, input);
-        this.addAudit('vendor.updated', 'vendor', vendor.id, { name: vendor.name });
+        this.addAudit('vendor.updated', 'vendor', vendor.id, {
+          name: vendor.name,
+        });
         return vendor;
       })();
     } catch (error) {
@@ -1363,7 +1367,10 @@ export class StoreDatabase {
   }
 
   /** Change a product's vendor links without touching the rest of the product. */
-  setProductVendors(productId: string, links: ProductVendorLinkInput[]): Product {
+  setProductVendors(
+    productId: string,
+    links: ProductVendorLinkInput[],
+  ): Product {
     const value = productVendorLinksSchema.parse(links);
     try {
       this.connection.transaction(() => {

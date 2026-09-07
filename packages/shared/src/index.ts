@@ -363,7 +363,10 @@ export interface StoreApi {
       links: ProductVendorLinkInput[],
     ): Promise<Product>;
     buyingList(vendorId: string): Promise<BuyingListLine[]>;
-    updateLine(id: string, input: BuyingListLineUpdate): Promise<BuyingListLine>;
+    updateLine(
+      id: string,
+      input: BuyingListLineUpdate,
+    ): Promise<BuyingListLine>;
     addLine(
       productId: string,
       vendorId: string,
