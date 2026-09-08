@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import type { StoreDatabase } from '@shul-store/database';
 import type { EmailConfig, OutboundEmail } from '@shul-store/shared';
 import type { CloudAccountManager } from './cloud-account.js';
+import type { GoogleOAuthClient } from './google-oauth.js';
 
 const MAX_ATTEMPTS = 8;
 const QUEUE_INTERVAL_MS = 60_000;
@@ -19,6 +20,7 @@ function isPermanentError(error: unknown): boolean {
       : 0;
   return (
     code === 'EAUTH' ||
+    code === 'EOAUTH2' ||
     code === 'EENVELOPE' ||
     code === 'EMESSAGE' ||
     (responseCode >= 500 && responseCode < 600)
@@ -30,21 +32,39 @@ export function describeMailError(error: unknown): string {
   const code =
     'code' in error ? String((error as { code?: unknown }).code) : '';
   if (code === 'EAUTH')
-    return 'The mail server rejected the username or password. For Gmail, use an App Password (Google Account → Security → 2-Step Verification → App passwords).';
+    return 'The mail server rejected the username or password. For Gmail, use an App Password (Google Account → Security → 2-Step Verification → App passwords) or Sign in with Google.';
+  if (code === 'EOAUTH2' || /invalid_grant/i.test(error.message))
+    return 'Google no longer accepts the saved sign-in. Open Settings → Order emails and sign in with Google again.';
   if (code === 'ESOCKET' || code === 'ECONNECTION' || code === 'ETIMEDOUT')
     return `Could not reach the mail server (${error.message}). Check the host, port and SSL setting, or your internet connection.`;
   return error.message;
 }
 
-function createTransport(config: EmailConfig) {
+export interface MailOptions {
+  googleClient?: GoogleOAuthClient;
+}
+
+function createTransport(config: EmailConfig, options: MailOptions) {
+  const auth =
+    config.authType === 'gmail'
+      ? {
+          type: 'OAuth2' as const,
+          user: config.username || config.fromAddress,
+          clientId: options.googleClient?.clientId,
+          clientSecret: options.googleClient?.clientSecret,
+          refreshToken: config.oauth?.refreshToken,
+          accessToken: config.oauth?.accessToken ?? undefined,
+          expires: config.oauth?.expiresAt ?? undefined,
+        }
+      : config.username
+        ? { user: config.username, pass: config.password }
+        : undefined;
   return nodemailer.createTransport({
     host: config.host,
     port: config.port,
     secure: config.secure,
     requireTLS: !config.secure,
-    auth: config.username
-      ? { user: config.username, pass: config.password }
-      : undefined,
+    auth,
     connectionTimeout: SEND_TIMEOUT_MS,
     greetingTimeout: SEND_TIMEOUT_MS,
     socketTimeout: SEND_TIMEOUT_MS,
@@ -54,8 +74,9 @@ function createTransport(config: EmailConfig) {
 export async function sendWithConfig(
   config: EmailConfig,
   email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+  options: MailOptions = {},
 ): Promise<void> {
-  const transport = createTransport(config);
+  const transport = createTransport(config, options);
   try {
     await transport.sendMail({
       from: { name: config.fromName, address: config.fromAddress },
@@ -74,23 +95,28 @@ export async function sendWithConfig(
 export async function testConfig(
   config: EmailConfig,
   sendTo: string | null,
+  options: MailOptions = {},
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
-    const transport = createTransport(config);
+    const transport = createTransport(config, options);
     try {
       await transport.verify();
     } finally {
       transport.close();
     }
     if (sendTo) {
-      await sendWithConfig(config, {
-        to: sendTo,
-        subject: 'SUMA POS test email',
-        textBody:
-          'Your purchase-order email account is set up correctly. Orders you send from SUMA POS will come from this address.',
-        htmlBody:
-          '<p>Your purchase-order email account is set up correctly.</p><p>Orders you send from SUMA POS will come from this address.</p>',
-      });
+      await sendWithConfig(
+        config,
+        {
+          to: sendTo,
+          subject: 'SUMA POS test email',
+          textBody:
+            'Your purchase-order email account is set up correctly. Orders you send from SUMA POS will come from this address.',
+          htmlBody:
+            '<p>Your purchase-order email account is set up correctly.</p><p>Orders you send from SUMA POS will come from this address.</p>',
+        },
+        options,
+      );
     }
     return { ok: true, error: null };
   } catch (error) {
@@ -119,6 +145,7 @@ export class MailWorker {
     > | null,
     private readonly onChange: () => void,
     private readonly send: MailSender = sendWithConfig,
+    private readonly options: MailOptions = {},
   ) {}
 
   start(): void {
@@ -158,7 +185,7 @@ export class MailWorker {
       }
       try {
         await this.ensurePublished(email.purchaseOrderId);
-        await this.send(config, email);
+        await this.send(config, email, this.options);
         store.markEmailSent(email.id);
       } catch (error) {
         const permanent = isPermanentError(error);

@@ -190,6 +190,57 @@ describe('purchase orders', () => {
     expect(store.purchaseOrders.setEmailConfig(null).configured).toBe(false);
   });
 
+  it('stores a Gmail OAuth grant without exposing the tokens', () => {
+    const status = store.purchaseOrders.setEmailConfig(
+      {
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        username: 'shop@gmail.com',
+        password: '',
+        authType: 'gmail',
+        oauth: {
+          refreshToken: 'refresh-secret',
+          accessToken: 'access-secret',
+          expiresAt: 1_800_000_000_000,
+        },
+        fromName: 'Shop',
+        fromAddress: 'shop@gmail.com',
+        ccSelf: false,
+      },
+      true,
+    );
+    expect(status).toMatchObject({
+      configured: true,
+      authType: 'gmail',
+      gmailAvailable: true,
+      fromAddress: 'shop@gmail.com',
+    });
+    expect(JSON.stringify(status)).not.toContain('secret');
+    expect(store.purchaseOrders.getEmailConfig()?.oauth?.refreshToken).toBe(
+      'refresh-secret',
+    );
+  });
+
+  it('reads SMTP configs saved before OAuth support as password auth', () => {
+    const legacy = {
+      host: 'smtp.example.com',
+      port: 587,
+      secure: false,
+      username: 'shop@example.com',
+      password: 'pw',
+      fromName: 'Shop',
+      fromAddress: 'shop@example.com',
+      ccSelf: false,
+    };
+    store.purchaseOrders.setEmailConfig(legacy as never);
+    expect(store.purchaseOrders.getEmailConfig()).toMatchObject({
+      ...legacy,
+      authType: 'password',
+      oauth: null,
+    });
+  });
+
   it('renders the email templates', () => {
     const data = {
       storeName: 'Corner Shop',

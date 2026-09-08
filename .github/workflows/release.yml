@@ -35,6 +35,11 @@ jobs:
           }
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+      - name: Bake in the Google OAuth client
+        run: node apps/manager/scripts/set-google-oauth-client.mjs
+        env:
+          SUMA_GOOGLE_CLIENT_ID: ${{ secrets.SUMA_GOOGLE_CLIENT_ID }}
+          SUMA_GOOGLE_CLIENT_SECRET: ${{ secrets.SUMA_GOOGLE_CLIENT_SECRET }}
       - name: Package manager installer
         run: npm run package:publish -w @shul-store/manager
         env:

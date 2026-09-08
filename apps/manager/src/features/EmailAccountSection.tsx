@@ -32,7 +32,10 @@ export function EmailAccountSection() {
   const [fromAddress, setFromAddress] = useState('');
   const [ccSelf, setCcSelf] = useState(true);
   const [testTo, setTestTo] = useState('');
-  const [busy, setBusy] = useState<'save' | 'test' | 'clear' | null>(null);
+  const [busy, setBusy] = useState<'save' | 'test' | 'clear' | 'google' | null>(
+    null,
+  );
+  const gmailLinked = status?.configured && status.authType === 'gmail';
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
@@ -87,14 +90,54 @@ export function EmailAccountSection() {
       secure,
       username: username.trim() || fromAddress.trim(),
       password,
+      authType: 'password',
+      oauth: null,
       fromName: fromName.trim() || 'Store',
       fromAddress: fromAddress.trim(),
       ccSelf,
     };
   }
 
+  /** Keeps the saved Gmail grant; only name / copy-me can change here. */
+  function gmailConfig(): EmailConfig | null {
+    if (!gmailLinked || !status) return null;
+    return {
+      host: status.host ?? 'smtp.gmail.com',
+      port: status.port ?? 465,
+      secure: status.secure ?? true,
+      username: status.username ?? status.fromAddress ?? '',
+      password: '',
+      authType: 'gmail',
+      oauth: null,
+      fromName: fromName.trim() || 'Store',
+      fromAddress: status.fromAddress ?? '',
+      ccSelf,
+    };
+  }
+
+  async function connectGoogle() {
+    setBusy('google');
+    setError('');
+    setNotice('Finish signing in with Google in your browser…');
+    try {
+      setStatus(
+        await window.storeApi.email.connectGmail({
+          fromName: fromName.trim(),
+          ccSelf,
+        }),
+      );
+      setPassword('');
+      setNotice('Gmail account linked. Queued orders will be sent now.');
+    } catch (e) {
+      setNotice('');
+      setError(messageFrom(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function save() {
-    const config = buildConfig();
+    const config = gmailConfig() ?? buildConfig();
     if (!config) return;
     setBusy('save');
     setError('');
@@ -111,7 +154,7 @@ export function EmailAccountSection() {
   }
 
   async function test() {
-    const config = buildConfig();
+    const config = gmailConfig() ?? buildConfig();
     if (!config) return;
     setBusy('test');
     setError('');
@@ -158,15 +201,35 @@ export function EmailAccountSection() {
       <h3 style={{ margin: '0 0 4px 0' }}>Order emails</h3>
       <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
         Purchase orders are emailed to vendors from <strong>your own</strong>{' '}
-        mailbox, so replies come straight back to you. For Gmail or Google
-        Workspace, create an App Password (Google Account → Security → 2-Step
-        Verification → App passwords) and use it here instead of your normal
-        password.
+        mailbox, so replies come straight back to you.{' '}
+        {status?.gmailAvailable
+          ? 'Gmail and Google Workspace users can simply sign in with Google; other providers need the mailbox password or an App Password.'
+          : 'For Gmail or Google Workspace, create an App Password (Google Account → Security → 2-Step Verification → App passwords) and use it here instead of your normal password.'}
       </p>
+      {status?.gmailAvailable && !gmailLinked && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            marginBottom: 12,
+          }}
+        >
+          <button
+            className="primary"
+            disabled={busy !== null}
+            onClick={() => void connectGoogle()}
+          >
+            {busy === 'google' ? 'Waiting for Google…' : 'Sign in with Google'}
+          </button>
+          <span className="muted">or set up any mailbox below</span>
+        </div>
+      )}
       {status?.configured && (
         <p className="hint">
-          Sending as <b>{status.fromName}</b> &lt;{status.fromAddress}&gt; via{' '}
-          {status.host}
+          Sending as <b>{status.fromName}</b> &lt;{status.fromAddress}&gt;{' '}
+          {gmailLinked ? 'via Google sign-in' : `via ${status.host}`}
           {status.pendingCount > 0 &&
             ` · ${status.pendingCount} email(s) waiting to send`}
           {status.failedCount > 0 &&
@@ -176,28 +239,32 @@ export function EmailAccountSection() {
         </p>
       )}
       <div className="form-grid">
-        <label>
-          Email provider
-          <select
-            value={preset}
-            onChange={(e) => choosePreset(e.target.value as PresetId)}
-          >
-            {EMAIL_PRESETS.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Send from address
-          <input
-            type="email"
-            value={fromAddress}
-            placeholder="orders@yourstore.com"
-            onChange={(e) => setFromAddress(e.target.value)}
-          />
-        </label>
+        {!gmailLinked && (
+          <label>
+            Email provider
+            <select
+              value={preset}
+              onChange={(e) => choosePreset(e.target.value as PresetId)}
+            >
+              {EMAIL_PRESETS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {!gmailLinked && (
+          <label>
+            Send from address
+            <input
+              type="email"
+              value={fromAddress}
+              placeholder="orders@yourstore.com"
+              onChange={(e) => setFromAddress(e.target.value)}
+            />
+          </label>
+        )}
         <label>
           Sender name
           <input
@@ -207,26 +274,30 @@ export function EmailAccountSection() {
             onChange={(e) => setFromName(e.target.value)}
           />
         </label>
-        <label>
-          Username <em>Usually the email address</em>
-          <input
-            value={username}
-            placeholder={fromAddress || 'you@example.com'}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-        </label>
-        <label>
-          Password / app password
-          <input
-            type="password"
-            value={password}
-            placeholder={
-              status?.configured ? 'Saved — enter to replace' : 'App password'
-            }
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        {preset === 'custom' && (
+        {!gmailLinked && (
+          <label>
+            Username <em>Usually the email address</em>
+            <input
+              value={username}
+              placeholder={fromAddress || 'you@example.com'}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </label>
+        )}
+        {!gmailLinked && (
+          <label>
+            Password / app password
+            <input
+              type="password"
+              value={password}
+              placeholder={
+                status?.configured ? 'Saved — enter to replace' : 'App password'
+              }
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+        )}
+        {!gmailLinked && preset === 'custom' && (
           <>
             <label>
               SMTP host
@@ -281,6 +352,13 @@ export function EmailAccountSection() {
         >
           {busy === 'save' ? 'Saving…' : 'Save email account'}
         </button>
+        {gmailLinked && (
+          <button disabled={busy !== null} onClick={() => void connectGoogle()}>
+            {busy === 'google'
+              ? 'Waiting for Google…'
+              : 'Switch Google account'}
+          </button>
+        )}
         <input
           type="email"
           value={testTo}

@@ -412,6 +412,11 @@ export interface StoreApi {
   email: {
     status(): Promise<EmailConfigStatus>;
     save(config: EmailConfig): Promise<EmailConfigStatus>;
+    /** Google sign-in (PKCE, system browser); saves a Gmail XOAUTH2 account. */
+    connectGmail(input: {
+      fromName: string;
+      ccSelf: boolean;
+    }): Promise<EmailConfigStatus>;
     clear(): Promise<EmailConfigStatus>;
     /** Verify the SMTP credentials by connecting (and optionally sending a test message). */
     test(
