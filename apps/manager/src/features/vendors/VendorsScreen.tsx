@@ -40,7 +40,7 @@ export function VendorsScreen() {
     try {
       const result = await window.storeApi.vendors.refreshCatalog();
       setNotice(
-        `Shared catalog updated: ${result.vendors} vendor${result.vendors === 1 ? '' : 's'}, ${result.products} product${result.products === 1 ? '' : 's'}.`,
+        `Shared catalog updated: ${result.vendors} vendor${result.vendors === 1 ? '' : 's'}, ${result.products} product${result.products === 1 ? '' : 's'}${result.merged > 0 ? `, ${result.merged} duplicate vendor${result.merged === 1 ? '' : 's'} merged` : ''}.`,
       );
       await refresh();
     } catch (e) {

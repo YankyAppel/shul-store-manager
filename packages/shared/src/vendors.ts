@@ -88,6 +88,14 @@ export const catalogVendorSchema = z.object({
 });
 export type CatalogVendor = z.infer<typeof catalogVendorSchema>;
 
+/** Admin merged `source_id` into `target_id`; local references must follow. */
+export const catalogVendorMergeSchema = z.object({
+  source_id: z.string().uuid(),
+  target_id: z.string().uuid(),
+  merged_at: z.string(),
+});
+export type CatalogVendorMerge = z.infer<typeof catalogVendorMergeSchema>;
+
 export const catalogVendorProductSchema = z.object({
   id: z.string().uuid(),
   vendor_id: z.string().uuid(),

@@ -9,6 +9,7 @@ import {
   cloudEntitlementSchema,
   type BarcodeSuggestion,
   type CatalogVendor,
+  type CatalogVendorMerge,
   type CatalogVendorProduct,
   type Vendor,
   type PurchaseOrder,
@@ -481,22 +482,33 @@ export class CloudAccountManager {
   }
 
   /** Shared vendor directory, optionally only rows changed after `since`. */
-  async fetchVendors(since: string | null): Promise<CatalogVendor[]> {
+  async fetchVendors(
+    since: string | null,
+  ): Promise<{ vendors: CatalogVendor[]; merges: CatalogVendorMerge[] }> {
     const all: CatalogVendor[] = [];
+    const merges = new Map<string, CatalogVendorMerge>();
     let cursor = since;
     for (let page = 0; page < 20; page += 1) {
       const query = cursor ? `?since=${encodeURIComponent(cursor)}` : '';
       const response = await this.request(`/api/store/vendors${query}`, 'GET');
       const value = (await response.json()) as {
         vendors: CatalogVendor[];
+        merges?: CatalogVendorMerge[];
         more: boolean;
       };
       all.push(...value.vendors);
+      for (const merge of value.merges ?? [])
+        merges.set(merge.source_id, merge);
       const last = value.vendors.at(-1);
       if (!value.more || !last || last.updated_at === cursor) break;
       cursor = last.updated_at;
     }
-    return all;
+    return {
+      vendors: all,
+      merges: [...merges.values()].sort((a, b) =>
+        a.merged_at.localeCompare(b.merged_at),
+      ),
+    };
   }
 
   async fetchVendorProducts(

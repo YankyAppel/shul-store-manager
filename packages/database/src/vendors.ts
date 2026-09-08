@@ -218,6 +218,80 @@ export class VendorStore {
     return count;
   }
 
+  /** Follow an admin merge in the shared catalog: every local reference to
+   *  `sourceId` moves to `targetId` and the source row is dropped. Returns the
+   *  ids of products whose vendor links changed (they need re-syncing), or
+   *  null when this store never knew the source vendor. Caller owns the
+   *  transaction; the target vendor must already exist locally. */
+  applyCatalogVendorMerge(sourceId: string, targetId: string): string[] | null {
+    if (sourceId === targetId || !this.findVendor(sourceId)) return null;
+    if (!this.findVendor(targetId)) throw new Error('Vendor not found');
+    const c = this.connection;
+    const products = (
+      c
+        .prepare('SELECT product_id FROM product_vendors WHERE vendor_id = ?')
+        .all(sourceId) as { product_id: string }[]
+    ).map((row) => row.product_id);
+
+    c.prepare(
+      `DELETE FROM vendor_products WHERE vendor_id = ? AND barcode IN
+         (SELECT barcode FROM vendor_products WHERE vendor_id = ?)`,
+    ).run(sourceId, targetId);
+    c.prepare(
+      'UPDATE vendor_products SET vendor_id = ? WHERE vendor_id = ?',
+    ).run(targetId, sourceId);
+
+    // Products linked to both: keep the target link, inheriting the source's
+    // preferred flag and any per-vendor cost/qty the target link lacks.
+    const promote = (
+      c
+        .prepare(
+          `SELECT s.product_id FROM product_vendors s
+             JOIN product_vendors t ON t.product_id = s.product_id AND t.vendor_id = ?
+           WHERE s.vendor_id = ? AND s.preferred = 1`,
+        )
+        .all(targetId, sourceId) as { product_id: string }[]
+    ).map((row) => row.product_id);
+    c.prepare(
+      `UPDATE product_vendors AS t SET
+         cost_cents = COALESCE(t.cost_cents, s.cost_cents),
+         reorder_qty = COALESCE(t.reorder_qty, s.reorder_qty),
+         vendor_sku = COALESCE(t.vendor_sku, s.vendor_sku)
+       FROM product_vendors AS s
+       WHERE t.vendor_id = ? AND s.vendor_id = ? AND s.product_id = t.product_id`,
+    ).run(targetId, sourceId);
+    const setPreferred = c.prepare(
+      'UPDATE product_vendors SET preferred = ? WHERE product_id = ? AND vendor_id = ?',
+    );
+    for (const productId of promote) {
+      setPreferred.run(0, productId, sourceId);
+      setPreferred.run(1, productId, targetId);
+    }
+    c.prepare(
+      `DELETE FROM product_vendors WHERE vendor_id = ? AND product_id IN
+         (SELECT product_id FROM product_vendors WHERE vendor_id = ?)`,
+    ).run(sourceId, targetId);
+    c.prepare(
+      'UPDATE product_vendors SET vendor_id = ? WHERE vendor_id = ?',
+    ).run(targetId, sourceId);
+
+    c.prepare(
+      'UPDATE reorder_list SET vendor_id = ?, updated_at = ? WHERE vendor_id = ?',
+    ).run(targetId, now(), sourceId);
+    c.prepare(
+      'UPDATE purchase_orders SET vendor_id = ? WHERE vendor_id = ?',
+    ).run(targetId, sourceId);
+    c.prepare(
+      `UPDATE vendors AS t SET
+         default_reorder_qty = COALESCE(t.default_reorder_qty, s.default_reorder_qty),
+         account_number = COALESCE(t.account_number, s.account_number),
+         hide_list_price = MAX(t.hide_list_price, s.hide_list_price)
+       FROM vendors AS s WHERE t.id = ? AND s.id = ?`,
+    ).run(targetId, sourceId);
+    c.prepare('DELETE FROM vendors WHERE id = ?').run(sourceId);
+    return products;
+  }
+
   /** Vendors created offline that still have to be published to the catalog. */
   listUnsharedVendors(): Vendor[] {
     const rows = this.connection

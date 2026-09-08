@@ -366,7 +366,11 @@ export interface StoreApi {
     update(id: string, input: VendorInput): Promise<Vendor>;
     findSimilar(name: string, email: string | null): Promise<Vendor[]>;
     /** Pull the shared vendor directory + catalog rows for linked vendors. */
-    refreshCatalog(): Promise<{ vendors: number; products: number }>;
+    refreshCatalog(): Promise<{
+      vendors: number;
+      products: number;
+      merged: number;
+    }>;
     catalogOffers(barcodes: string[]): Promise<VendorProduct[]>;
     setProductVendors(
       productId: string,

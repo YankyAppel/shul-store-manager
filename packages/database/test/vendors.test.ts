@@ -134,6 +134,76 @@ describe('vendors and product links', () => {
         .map((v) => v.id),
     ).toEqual([vendorId]);
   });
+
+  it('follows catalog vendor merges across links, catalog rows and suggestions', () => {
+    const cola = product('Cola', 'COLA-1');
+    const both = product('Water', 'WATER-1');
+    store.setProductVendors(both.id, [
+      { vendorId, preferred: true, costCents: 90 },
+      { vendorId: otherVendorId, preferred: false },
+    ]);
+    const only = product('Juice', 'JUICE-1');
+    store.setProductVendors(only.id, [
+      { vendorId: otherVendorId, preferred: true },
+    ]);
+    const stamp = new Date().toISOString();
+    const row = (vendor_id: string, barcode: string, price_cents: number) => ({
+      id: randomUUID(),
+      vendor_id,
+      barcode,
+      sku: null,
+      name: barcode,
+      case_size: null,
+      min_order_qty: null,
+      price_cents,
+      updated_at: stamp,
+    });
+    store.vendors.upsertCatalogVendorProducts([
+      row(vendorId, 'cola-1', 500),
+      row(vendorId, 'water-1', 100),
+      row(otherVendorId, 'water-1', 120),
+    ]);
+    expect(store.vendors.listBuyingList(vendorId)).toHaveLength(2);
+    store.markSyncEventsPushed(
+      store.pendingSyncEvents(50).map((e) => e.eventId),
+    );
+
+    expect(
+      store.applyCatalogVendorMerges([
+        { source_id: vendorId, target_id: otherVendorId },
+        { source_id: randomUUID(), target_id: otherVendorId },
+      ]),
+    ).toBe(1);
+
+    expect(store.vendors.findVendor(vendorId)).toBeNull();
+    expect(store.getProduct(cola.id).vendors).toEqual([
+      expect.objectContaining({ vendorId: otherVendorId, preferred: true }),
+    ]);
+    expect(store.getProduct(both.id).vendors).toEqual([
+      expect.objectContaining({
+        vendorId: otherVendorId,
+        preferred: true,
+        costCents: 90,
+      }),
+    ]);
+    expect(store.getProduct(only.id).vendors).toHaveLength(1);
+    const lines = store.vendors.listBuyingList(otherVendorId);
+    expect(lines.map((l) => l.productId).sort()).toEqual(
+      [cola.id, both.id, only.id].sort(),
+    );
+    expect(lines.find((l) => l.productId === both.id)?.listPriceCents).toBe(
+      120,
+    );
+    expect(lines.find((l) => l.productId === cola.id)?.listPriceCents).toBe(
+      500,
+    );
+    const resynced = store
+      .pendingSyncEvents(50)
+      .filter((e) => e.entityType === 'product')
+      .map((e) => e.entityId)
+      .sort();
+    expect(resynced).toEqual([cola.id, both.id].sort());
+  });
 });
 
 describe('buying list', () => {

@@ -942,8 +942,25 @@ function registerIpc(): void {
   ipcMain.handle('vendors:refreshCatalog', async () => {
     await publishUnsharedVendors();
     const since = database.vendors.latestSharedVendorUpdate();
-    const vendors = database.vendors.upsertCatalogVendors(
-      await cloudAccount.fetchVendors(since),
+    const catalog = await cloudAccount.fetchVendors(since);
+    const vendors = database.vendors.upsertCatalogVendors(catalog.vendors);
+    const pending = catalog.merges.filter(
+      (merge) =>
+        database.vendors.findVendor(merge.source_id) &&
+        !database.vendors.findVendor(merge.target_id),
+    );
+    if (pending.length > 0) {
+      const targets = new Set(pending.map((merge) => merge.target_id));
+      database.vendors.upsertCatalogVendors(
+        (await cloudAccount.fetchVendors(null)).vendors.filter((row) =>
+          targets.has(row.id),
+        ),
+      );
+    }
+    const merged = database.applyCatalogVendorMerges(
+      catalog.merges.filter((merge) =>
+        database.vendors.findVendor(merge.target_id),
+      ),
     );
     let products = 0;
     const linked = database.connection
@@ -958,7 +975,7 @@ function registerIpc(): void {
         await cloudAccount.fetchVendorProducts(vendorId, null),
       );
     }
-    return { vendors, products };
+    return { vendors, products, merged };
   });
   ipcMain.handle('vendors:catalogOffers', async (_event, barcodes) => {
     const values = z
@@ -979,7 +996,7 @@ function registerIpc(): void {
       );
       if (missing.length > 0)
         database.vendors.upsertCatalogVendors(
-          (await cloudAccount.fetchVendors(null)).filter((row) =>
+          (await cloudAccount.fetchVendors(null)).vendors.filter((row) =>
             missing.includes(row.id),
           ),
         );
