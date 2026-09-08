@@ -206,6 +206,69 @@ describe('vendors and product links', () => {
   });
 });
 
+describe('margin report', () => {
+  it('costs each product from negotiated, catalog list, then product cost', () => {
+    const cola = product('Cola', 'COLA-1');
+    product('Water', 'WATER-1');
+    const juice = product('Juice', 'JUICE-1');
+    store.setProductVendors(cola.id, [
+      { vendorId, preferred: true, costCents: 100 },
+    ]);
+    store.vendors.upsertCatalogVendorProducts([
+      {
+        id: randomUUID(),
+        vendor_id: vendorId,
+        barcode: 'cola-1',
+        sku: null,
+        name: 'Cola',
+        case_size: null,
+        min_order_qty: null,
+        price_cents: 180,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        id: randomUUID(),
+        vendor_id: vendorId,
+        barcode: 'water-1',
+        sku: null,
+        name: 'Water',
+        case_size: null,
+        min_order_qty: null,
+        price_cents: 200,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    receive(cola.id, 10);
+    receive(juice.id, 2);
+
+    const report = store.vendors.marginReport();
+    const byName = Object.fromEntries(
+      report.lines.map((line) => [line.productName, line]),
+    );
+    expect(byName.Cola).toMatchObject({
+      costCents: 100,
+      costSource: 'negotiated',
+      marginCents: 200,
+      vendorName: 'ABC Distributors',
+      stockQuantity: 10,
+    });
+    expect(byName.Water).toMatchObject({
+      costCents: 200,
+      costSource: 'catalog',
+      marginCents: 100,
+    });
+    expect(byName.Juice).toMatchObject({
+      costCents: 150,
+      costSource: 'product',
+      marginCents: 150,
+      marginRatio: 0.5,
+    });
+    expect(report.retailValueCents).toBe(12 * 300);
+    expect(report.costValueCents).toBe(10 * 100 + 2 * 150);
+    expect(report.missingCostCount).toBe(0);
+  });
+});
+
 describe('buying list', () => {
   it('suggests a product once stock reaches its threshold and clears it when restocked', () => {
     const cola = product('Cola', 'COLA-1', 5);

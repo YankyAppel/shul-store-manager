@@ -9,6 +9,8 @@ import {
   type BuyingListLineUpdate,
   type CatalogVendor,
   type CatalogVendorProduct,
+  type MarginCostSource,
+  type MarginReport,
   type ProductVendorLink,
   type ProductVendorLinkInput,
   type ProductVendorPayload,
@@ -290,6 +292,77 @@ export class VendorStore {
     ).run(targetId, sourceId);
     c.prepare('DELETE FROM vendors WHERE id = ?').run(sourceId);
     return products;
+  }
+
+  /** Margin per active product using the preferred vendor's cost
+   *  (negotiated → catalog list price → product purchase cost). */
+  marginReport(): MarginReport {
+    const rows = this.connection
+      .prepare(
+        `SELECT p.id, p.name, p.selling_price_cents, p.purchase_cost_cents, c.name AS category_name,
+                COALESCE((SELECT SUM(m.quantity_change) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS stock,
+                (SELECT b.value FROM product_barcodes b WHERE b.product_id = p.id ORDER BY b.kind = 'EXTERNAL' DESC, b.position LIMIT 1) AS barcode,
+                v.id AS vendor_id, v.name AS vendor_name, v.hide_list_price,
+                pv.cost_cents AS negotiated_cents,
+                (SELECT vp.price_cents FROM vendor_products vp
+                   WHERE vp.vendor_id = v.id
+                     AND vp.barcode IN (SELECT b.value FROM product_barcodes b WHERE b.product_id = p.id)
+                   ORDER BY vp.updated_at DESC LIMIT 1) AS list_price_cents
+         FROM products p
+         JOIN categories c ON c.id = p.category_id
+         LEFT JOIN product_vendors pv ON pv.product_id = p.id AND pv.preferred = 1
+         LEFT JOIN vendors v ON v.id = pv.vendor_id
+         WHERE p.active = 1
+         ORDER BY p.name COLLATE NOCASE`,
+      )
+      .all() as Row[];
+    let retailValueCents = 0;
+    let costValueCents = 0;
+    let missingCostCount = 0;
+    const lines = rows.map((row) => {
+      const sellingPriceCents = Number(row.selling_price_cents);
+      const negotiated = int(row.negotiated_cents);
+      const listPrice = row.hide_list_price ? null : int(row.list_price_cents);
+      const productCost = Number(row.purchase_cost_cents);
+      let costSource: MarginCostSource = 'none';
+      let costCents: number | null = null;
+      if (negotiated !== null) {
+        costSource = 'negotiated';
+        costCents = negotiated;
+      } else if (listPrice !== null) {
+        costSource = 'catalog';
+        costCents = listPrice;
+      } else if (productCost > 0) {
+        costSource = 'product';
+        costCents = productCost;
+      }
+      const stockQuantity = Number(row.stock);
+      if (costCents === null) missingCostCount += 1;
+      else if (stockQuantity > 0) {
+        retailValueCents += sellingPriceCents * stockQuantity;
+        costValueCents += costCents * stockQuantity;
+      }
+      const marginCents =
+        costCents === null ? null : sellingPriceCents - costCents;
+      return {
+        productId: String(row.id),
+        productName: String(row.name),
+        barcode: text(row.barcode),
+        categoryName: String(row.category_name),
+        vendorId: text(row.vendor_id),
+        vendorName: text(row.vendor_name),
+        sellingPriceCents,
+        costCents,
+        costSource,
+        marginCents,
+        marginRatio:
+          marginCents === null || sellingPriceCents <= 0
+            ? null
+            : marginCents / sellingPriceCents,
+        stockQuantity,
+      };
+    });
+    return { lines, retailValueCents, costValueCents, missingCostCount };
   }
 
   /** Vendors created offline that still have to be published to the catalog. */

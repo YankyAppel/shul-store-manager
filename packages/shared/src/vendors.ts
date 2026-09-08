@@ -213,3 +213,31 @@ export function resolveReorderQuantity(input: {
     input.overrideQty ?? input.caseSize ?? input.vendorDefaultQty ?? 1;
   return Math.max(base, input.minOrderQty ?? 1);
 }
+
+/** Where a product's unit cost came from when computing margins. */
+export type MarginCostSource = 'negotiated' | 'catalog' | 'product' | 'none';
+
+export interface ProductMarginLine {
+  productId: string;
+  productName: string;
+  barcode: string | null;
+  categoryName: string;
+  vendorId: string | null;
+  vendorName: string | null;
+  sellingPriceCents: number;
+  costCents: number | null;
+  costSource: MarginCostSource;
+  marginCents: number | null;
+  /** Margin as a share of the selling price, 0–1; null without a cost. */
+  marginRatio: number | null;
+  stockQuantity: number;
+}
+
+export interface MarginReport {
+  lines: ProductMarginLine[];
+  /** Products with a cost, weighted by stock: what the shelf would sell for
+   *  versus what it cost. */
+  retailValueCents: number;
+  costValueCents: number;
+  missingCostCount: number;
+}

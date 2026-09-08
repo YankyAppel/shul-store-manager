@@ -288,6 +288,7 @@ const api: StoreApi = {
         notes,
       }),
     listCloses: (limit) => ipcRenderer.invoke('reports:listCloses', limit),
+    margins: () => ipcRenderer.invoke('reports:margins'),
     print: (businessDate, report) =>
       ipcRenderer.invoke('reports:print', { businessDate, report }),
   },

@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { DailyClose, DailyReport } from '@shul-store/shared';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type {
+  DailyClose,
+  DailyReport,
+  MarginReport,
+  ProductMarginLine,
+} from '@shul-store/shared';
 import { parseUsdToCents } from '@shul-store/shared';
 import { formatMoney, messageFrom } from '../utils/formatters';
 
@@ -20,6 +25,168 @@ function cashPayments(report: DailyReport): number {
   return report.accountPayments
     .filter((payment) => payment.method === 'cash')
     .reduce((total, payment) => total + payment.amountCents, 0);
+}
+
+const COST_SOURCE_LABEL: Record<ProductMarginLine['costSource'], string> = {
+  negotiated: 'your price',
+  catalog: 'vendor list',
+  product: 'product cost',
+  none: 'no cost',
+};
+
+function formatPercent(ratio: number | null): string {
+  return ratio === null ? '—' : `${(ratio * 100).toFixed(1)}%`;
+}
+
+function MarginSection() {
+  const [report, setReport] = useState<MarginReport>();
+  const [error, setError] = useState('');
+  const [filter, setFilter] = useState('');
+  const [sort, setSort] = useState<'lowest' | 'name'>('lowest');
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    window.storeApi.reports
+      .margins()
+      .then((next) => {
+        if (!cancelled) setReport(next);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(messageFrom(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const lines = useMemo(() => {
+    if (!report) return [];
+    const needle = filter.trim().toLowerCase();
+    const matched = needle
+      ? report.lines.filter((line) =>
+          [line.productName, line.categoryName, line.vendorName ?? '']
+            .join(' ')
+            .toLowerCase()
+            .includes(needle),
+        )
+      : report.lines;
+    if (sort === 'name') return matched;
+    return [...matched].sort((a, b) => {
+      if (a.marginRatio === null) return b.marginRatio === null ? 0 : 1;
+      if (b.marginRatio === null) return -1;
+      return a.marginRatio - b.marginRatio;
+    });
+  }, [report, filter, sort]);
+
+  if (!open) {
+    return (
+      <section className="report-card reports-recent">
+        <h2>Margins</h2>
+        <p>
+          Selling price against what you pay the preferred vendor for every
+          active product.
+        </p>
+        <button type="button" onClick={() => setOpen(true)}>
+          Show margin report
+        </button>
+      </section>
+    );
+  }
+
+  const shelfMargin =
+    report && report.retailValueCents > 0
+      ? (report.retailValueCents - report.costValueCents) /
+        report.retailValueCents
+      : null;
+
+  return (
+    <section className="report-card reports-recent">
+      <h2>Margins</h2>
+      {error && <div className="alert">{error}</div>}
+      {!report && !error && <p>Loading…</p>}
+      {report && (
+        <>
+          <p>
+            Stock on hand would sell for {formatMoney(report.retailValueCents)}{' '}
+            and cost {formatMoney(report.costValueCents)} (
+            {formatPercent(shelfMargin)} margin).
+            {report.missingCostCount > 0 &&
+              ` ${report.missingCostCount} product${report.missingCostCount === 1 ? '' : 's'} have no cost yet.`}
+          </p>
+          <div className="reports-controls">
+            <label>
+              Search
+              <input
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+                placeholder="Product, category or vendor"
+              />
+            </label>
+            <label>
+              Sort
+              <select
+                value={sort}
+                onChange={(event) =>
+                  setSort(event.target.value as 'lowest' | 'name')
+                }
+              >
+                <option value="lowest">Lowest margin first</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Vendor</th>
+                <th>Price</th>
+                <th>Cost</th>
+                <th>Margin</th>
+                <th>%</th>
+                <th>Stock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((line) => (
+                <tr key={line.productId}>
+                  <td>
+                    {line.productName}
+                    <div className="muted">{line.categoryName}</div>
+                  </td>
+                  <td>{line.vendorName ?? '—'}</td>
+                  <td>{formatMoney(line.sellingPriceCents)}</td>
+                  <td>
+                    {line.costCents === null
+                      ? '—'
+                      : formatMoney(line.costCents)}
+                    <div className="muted">
+                      {COST_SOURCE_LABEL[line.costSource]}
+                    </div>
+                  </td>
+                  <td
+                    className={
+                      line.marginCents !== null && line.marginCents < 0
+                        ? 'short-text'
+                        : undefined
+                    }
+                  >
+                    {line.marginCents === null
+                      ? '—'
+                      : formatMoney(line.marginCents)}
+                  </td>
+                  <td>{formatPercent(line.marginRatio)}</td>
+                  <td>{line.stockQuantity}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+    </section>
+  );
 }
 
 export function ReportsScreen() {
@@ -324,6 +491,8 @@ export function ReportsScreen() {
           </div>
         )}
       </section>
+
+      <MarginSection />
     </div>
   );
 }

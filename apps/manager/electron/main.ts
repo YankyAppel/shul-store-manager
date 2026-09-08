@@ -262,6 +262,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'reports:daily': 'reports.view',
   'reports:close': 'reports.close',
   'reports:listCloses': 'reports.view',
+  'reports:margins': 'reports.view',
   'reports:print': 'reports.view',
   'auth:getState': 'public',
   'auth:listAccounts': 'public',
@@ -1584,6 +1585,7 @@ function registerIpc(): void {
       value.notes,
     );
   });
+  ipcMain.handle('reports:margins', () => database.vendors.marginReport());
   ipcMain.handle('reports:listCloses', (_event, limit) =>
     database.listDailyCloses(
       z.number().int().min(1).max(100).optional().parse(limit),

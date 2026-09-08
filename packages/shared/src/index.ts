@@ -40,6 +40,7 @@ import {
   productVendorLinksSchema,
   type BuyingListLine,
   type BuyingListLineUpdate,
+  type MarginReport,
   type ProductVendorLink,
   type ProductVendorLinkInput,
   type Vendor,
@@ -478,6 +479,7 @@ export interface StoreApi {
       notes?: string,
     ): Promise<DailyClose>;
     listCloses(limit?: number): Promise<DailyClose[]>;
+    margins(): Promise<MarginReport>;
     print(businessDate: string, report: DailyReport): Promise<PrintResult>;
   };
   refunds: {
