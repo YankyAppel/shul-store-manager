@@ -1397,6 +1397,37 @@ export class StoreDatabase {
     return this.getProduct(productId);
   }
 
+  /** Apply vendor merges announced by the shared catalog. Products whose
+   *  vendor links moved are re-queued for cloud sync. Returns how many merges
+   *  touched this store. */
+  applyCatalogVendorMerges(
+    merges: { source_id: string; target_id: string }[],
+  ): number {
+    let applied = 0;
+    this.connection.transaction(() => {
+      for (const merge of merges) {
+        const products = this.vendors.applyCatalogVendorMerge(
+          merge.source_id,
+          merge.target_id,
+        );
+        if (products === null) continue;
+        applied += 1;
+        const touch = this.connection.prepare(
+          'UPDATE products SET updated_at = ? WHERE id = ?',
+        );
+        for (const productId of new Set(products)) {
+          touch.run(now(), productId);
+          this.enqueueEntity('product', productId);
+        }
+        this.addAudit('vendor.merged', 'vendor', merge.target_id, {
+          sourceId: merge.source_id,
+          products: products.length,
+        });
+      }
+    })();
+    return applied;
+  }
+
   get purchaseOrders(): PurchaseOrderStore {
     this.purchaseOrderStore ??= new PurchaseOrderStore(
       this.connection,

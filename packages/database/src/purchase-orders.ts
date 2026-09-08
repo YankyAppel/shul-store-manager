@@ -433,7 +433,7 @@ export class PurchaseOrderStore {
     }
   }
 
-  getEmailConfigStatus(): EmailConfigStatus {
+  getEmailConfigStatus(gmailAvailable = false): EmailConfigStatus {
     const row = this.connection
       .prepare(
         'SELECT email_config_secret, email_config_encrypted FROM device_settings WHERE singleton_id = 1',
@@ -448,6 +448,8 @@ export class PurchaseOrderStore {
     return {
       configured: Boolean(row?.email_config_secret),
       encrypted: Number(row?.email_config_encrypted ?? 0) === 1,
+      authType: config?.authType ?? null,
+      gmailAvailable,
       host: config?.host ?? null,
       port: config?.port ?? null,
       secure: config?.secure ?? null,
@@ -460,7 +462,10 @@ export class PurchaseOrderStore {
     };
   }
 
-  setEmailConfig(config: EmailConfig | null): EmailConfigStatus {
+  setEmailConfig(
+    config: EmailConfig | null,
+    gmailAvailable = false,
+  ): EmailConfigStatus {
     const value = config === null ? null : emailConfigSchema.parse(config);
     this.connection
       .prepare(
@@ -471,6 +476,6 @@ export class PurchaseOrderStore {
         value === null ? 0 : this.secretStore.available ? 1 : 0,
         now(),
       );
-    return this.getEmailConfigStatus();
+    return this.getEmailConfigStatus(gmailAvailable);
   }
 }

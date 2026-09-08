@@ -9,6 +9,8 @@ const config: EmailConfig = {
   secure: true,
   username: 'shop@example.com',
   password: 'app-password',
+  authType: 'password',
+  oauth: null,
   fromName: 'Shop',
   fromAddress: 'shop@example.com',
   ccSelf: false,

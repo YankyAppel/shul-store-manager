@@ -40,6 +40,7 @@ import {
   productVendorLinksSchema,
   type BuyingListLine,
   type BuyingListLineUpdate,
+  type MarginReport,
   type ProductVendorLink,
   type ProductVendorLinkInput,
   type Vendor,
@@ -366,7 +367,11 @@ export interface StoreApi {
     update(id: string, input: VendorInput): Promise<Vendor>;
     findSimilar(name: string, email: string | null): Promise<Vendor[]>;
     /** Pull the shared vendor directory + catalog rows for linked vendors. */
-    refreshCatalog(): Promise<{ vendors: number; products: number }>;
+    refreshCatalog(): Promise<{
+      vendors: number;
+      products: number;
+      merged: number;
+    }>;
     catalogOffers(barcodes: string[]): Promise<VendorProduct[]>;
     setProductVendors(
       productId: string,
@@ -407,6 +412,11 @@ export interface StoreApi {
   email: {
     status(): Promise<EmailConfigStatus>;
     save(config: EmailConfig): Promise<EmailConfigStatus>;
+    /** Google sign-in (PKCE, system browser); saves a Gmail XOAUTH2 account. */
+    connectGmail(input: {
+      fromName: string;
+      ccSelf: boolean;
+    }): Promise<EmailConfigStatus>;
     clear(): Promise<EmailConfigStatus>;
     /** Verify the SMTP credentials by connecting (and optionally sending a test message). */
     test(
@@ -474,6 +484,7 @@ export interface StoreApi {
       notes?: string,
     ): Promise<DailyClose>;
     listCloses(limit?: number): Promise<DailyClose[]>;
+    margins(): Promise<MarginReport>;
     print(businessDate: string, report: DailyReport): Promise<PrintResult>;
   };
   refunds: {

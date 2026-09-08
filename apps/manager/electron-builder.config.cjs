@@ -14,6 +14,7 @@ module.exports = {
     'dist-electron/**',
     'package.json',
     'update-config.cjs',
+    'google-oauth.cjs',
     '!node_modules/@shul-store/payments/src/**',
   ],
   extraMetadata: {

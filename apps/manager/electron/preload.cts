@@ -147,6 +147,7 @@ const api: StoreApi = {
     save: (config) => ipcRenderer.invoke('email:save', config),
     clear: () => ipcRenderer.invoke('email:clear'),
     test: (config, sendTo) => ipcRenderer.invoke('email:test', config, sendTo),
+    connectGmail: (input) => ipcRenderer.invoke('email:connectGmail', input),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
@@ -288,6 +289,7 @@ const api: StoreApi = {
         notes,
       }),
     listCloses: (limit) => ipcRenderer.invoke('reports:listCloses', limit),
+    margins: () => ipcRenderer.invoke('reports:margins'),
     print: (businessDate, report) =>
       ipcRenderer.invoke('reports:print', { businessDate, report }),
   },

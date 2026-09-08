@@ -47,6 +47,7 @@ import {
   buyingListLineUpdateSchema,
   productVendorLinksSchema,
   emailConfigSchema,
+  type EmailConfig,
   purchaseOrderEmailHtml,
   purchaseOrderEmailText,
   purchaseOrderInputSchema,
@@ -106,6 +107,7 @@ import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
 import { ManagerSession, type IpcRequirement } from './session.js';
 import { CloudAccountManager } from './cloud-account.js';
 import { MailWorker, testConfig as testEmailConfig } from './mail.js';
+import { connectGmail, type GoogleOAuthClient } from './google-oauth.js';
 
 /**
  * electron-updater is CommonJS, so its bindings are only reachable through the
@@ -117,6 +119,11 @@ const require = createRequire(import.meta.url);
 const { githubUpdateRepository } = require('../update-config.cjs') as {
   githubUpdateRepository: { owner: string; repo: string };
 };
+const { googleOAuthClient } = require('../google-oauth.cjs') as {
+  googleOAuthClient: GoogleOAuthClient;
+};
+const gmailAvailable = googleOAuthClient.clientId.length > 0;
+const mailOptions = gmailAvailable ? { googleClient: googleOAuthClient } : {};
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -200,6 +207,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'email:save': 'owner',
   'email:clear': 'owner',
   'email:test': 'owner',
+  'email:connectGmail': 'owner',
   'settings:get': 'owner',
   'settings:update': 'owner',
   'settings:getDevice': 'owner',
@@ -262,6 +270,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'reports:daily': 'reports.view',
   'reports:close': 'reports.close',
   'reports:listCloses': 'reports.view',
+  'reports:margins': 'reports.view',
   'reports:print': 'reports.view',
   'auth:getState': 'public',
   'auth:listAccounts': 'public',
@@ -942,8 +951,25 @@ function registerIpc(): void {
   ipcMain.handle('vendors:refreshCatalog', async () => {
     await publishUnsharedVendors();
     const since = database.vendors.latestSharedVendorUpdate();
-    const vendors = database.vendors.upsertCatalogVendors(
-      await cloudAccount.fetchVendors(since),
+    const catalog = await cloudAccount.fetchVendors(since);
+    const vendors = database.vendors.upsertCatalogVendors(catalog.vendors);
+    const pending = catalog.merges.filter(
+      (merge) =>
+        database.vendors.findVendor(merge.source_id) &&
+        !database.vendors.findVendor(merge.target_id),
+    );
+    if (pending.length > 0) {
+      const targets = new Set(pending.map((merge) => merge.target_id));
+      database.vendors.upsertCatalogVendors(
+        (await cloudAccount.fetchVendors(null)).vendors.filter((row) =>
+          targets.has(row.id),
+        ),
+      );
+    }
+    const merged = database.applyCatalogVendorMerges(
+      catalog.merges.filter((merge) =>
+        database.vendors.findVendor(merge.target_id),
+      ),
     );
     let products = 0;
     const linked = database.connection
@@ -958,7 +984,7 @@ function registerIpc(): void {
         await cloudAccount.fetchVendorProducts(vendorId, null),
       );
     }
-    return { vendors, products };
+    return { vendors, products, merged };
   });
   ipcMain.handle('vendors:catalogOffers', async (_event, barcodes) => {
     const values = z
@@ -979,7 +1005,7 @@ function registerIpc(): void {
       );
       if (missing.length > 0)
         database.vendors.upsertCatalogVendors(
-          (await cloudAccount.fetchVendors(null)).filter((row) =>
+          (await cloudAccount.fetchVendors(null)).vendors.filter((row) =>
             missing.includes(row.id),
           ),
         );
@@ -1108,34 +1134,71 @@ function registerIpc(): void {
   });
 
   // Seller email account (SMTP)
+  // The renderer never sees secrets: an empty password means "keep the saved
+  // one", and a Gmail sign-in keeps the saved OAuth grant.
+  const withSavedSecrets = (config: EmailConfig): EmailConfig => {
+    const existing = database.purchaseOrders.getEmailConfig();
+    if (!existing) return config;
+    if (config.authType === 'gmail')
+      return { ...config, oauth: config.oauth ?? existing.oauth };
+    return config.password === ''
+      ? { ...config, password: existing.password }
+      : config;
+  };
   ipcMain.handle('email:status', () =>
-    database.purchaseOrders.getEmailConfigStatus(),
+    database.purchaseOrders.getEmailConfigStatus(gmailAvailable),
   );
   ipcMain.handle('email:save', (_event, input) => {
-    const config = emailConfigSchema.parse(input);
-    // An empty password means "keep the saved one" so the form can be edited
-    // without re-entering the secret.
-    const existing = database.purchaseOrders.getEmailConfig();
+    const config = withSavedSecrets(emailConfigSchema.parse(input));
+    if (config.authType === 'gmail' && !config.oauth)
+      throw new Error('Sign in with Google first.');
     const status = database.purchaseOrders.setEmailConfig(
-      config.password === '' && existing
-        ? { ...config, password: existing.password }
-        : config,
+      config,
+      gmailAvailable,
     );
     void mailWorker?.kick();
     return status;
   });
   ipcMain.handle('email:clear', () =>
-    database.purchaseOrders.setEmailConfig(null),
+    database.purchaseOrders.setEmailConfig(null, gmailAvailable),
   );
   ipcMain.handle('email:test', (_event, input, sendTo) => {
-    const config = emailConfigSchema.parse(input);
-    const existing = database.purchaseOrders.getEmailConfig();
+    const config = withSavedSecrets(emailConfigSchema.parse(input));
     return testEmailConfig(
-      config.password === '' && existing
-        ? { ...config, password: existing.password }
-        : config,
+      config,
       z.string().trim().email().nullable().parse(sendTo),
+      mailOptions,
     );
+  });
+  ipcMain.handle('email:connectGmail', async (_event, input) => {
+    if (!gmailAvailable)
+      throw new Error('Google sign-in is not available in this build.');
+    const { fromName, ccSelf } = z
+      .object({
+        fromName: z.string().trim().max(100),
+        ccSelf: z.boolean(),
+      })
+      .parse(input);
+    const grant = await connectGmail(googleOAuthClient, (url) =>
+      shell.openExternal(url),
+    );
+    const status = database.purchaseOrders.setEmailConfig(
+      {
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        username: grant.email,
+        password: '',
+        authType: 'gmail',
+        oauth: grant.oauth,
+        fromName: fromName || 'Store',
+        fromAddress: grant.email,
+        ccSelf,
+      },
+      gmailAvailable,
+    );
+    void mailWorker?.kick();
+    return status;
   });
 
   // Settings
@@ -1567,6 +1630,7 @@ function registerIpc(): void {
       value.notes,
     );
   });
+  ipcMain.handle('reports:margins', () => database.vendors.marginReport());
   ipcMain.handle('reports:listCloses', (_event, limit) =>
     database.listDailyCloses(
       z.number().int().min(1).max(100).optional().parse(limit),
@@ -1937,6 +2001,8 @@ app.whenReady().then(async () => {
           window.webContents.send('purchaseOrders:changed');
       }
     },
+    undefined,
+    mailOptions,
   );
   mailWorker.start();
   protocol.handle('store-image', (request) => {

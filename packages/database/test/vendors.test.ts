@@ -134,6 +134,139 @@ describe('vendors and product links', () => {
         .map((v) => v.id),
     ).toEqual([vendorId]);
   });
+
+  it('follows catalog vendor merges across links, catalog rows and suggestions', () => {
+    const cola = product('Cola', 'COLA-1');
+    const both = product('Water', 'WATER-1');
+    store.setProductVendors(both.id, [
+      { vendorId, preferred: true, costCents: 90 },
+      { vendorId: otherVendorId, preferred: false },
+    ]);
+    const only = product('Juice', 'JUICE-1');
+    store.setProductVendors(only.id, [
+      { vendorId: otherVendorId, preferred: true },
+    ]);
+    const stamp = new Date().toISOString();
+    const row = (vendor_id: string, barcode: string, price_cents: number) => ({
+      id: randomUUID(),
+      vendor_id,
+      barcode,
+      sku: null,
+      name: barcode,
+      case_size: null,
+      min_order_qty: null,
+      price_cents,
+      updated_at: stamp,
+    });
+    store.vendors.upsertCatalogVendorProducts([
+      row(vendorId, 'cola-1', 500),
+      row(vendorId, 'water-1', 100),
+      row(otherVendorId, 'water-1', 120),
+    ]);
+    expect(store.vendors.listBuyingList(vendorId)).toHaveLength(2);
+    store.markSyncEventsPushed(
+      store.pendingSyncEvents(50).map((e) => e.eventId),
+    );
+
+    expect(
+      store.applyCatalogVendorMerges([
+        { source_id: vendorId, target_id: otherVendorId },
+        { source_id: randomUUID(), target_id: otherVendorId },
+      ]),
+    ).toBe(1);
+
+    expect(store.vendors.findVendor(vendorId)).toBeNull();
+    expect(store.getProduct(cola.id).vendors).toEqual([
+      expect.objectContaining({ vendorId: otherVendorId, preferred: true }),
+    ]);
+    expect(store.getProduct(both.id).vendors).toEqual([
+      expect.objectContaining({
+        vendorId: otherVendorId,
+        preferred: true,
+        costCents: 90,
+      }),
+    ]);
+    expect(store.getProduct(only.id).vendors).toHaveLength(1);
+    const lines = store.vendors.listBuyingList(otherVendorId);
+    expect(lines.map((l) => l.productId).sort()).toEqual(
+      [cola.id, both.id, only.id].sort(),
+    );
+    expect(lines.find((l) => l.productId === both.id)?.listPriceCents).toBe(
+      120,
+    );
+    expect(lines.find((l) => l.productId === cola.id)?.listPriceCents).toBe(
+      500,
+    );
+    const resynced = store
+      .pendingSyncEvents(50)
+      .filter((e) => e.entityType === 'product')
+      .map((e) => e.entityId)
+      .sort();
+    expect(resynced).toEqual([cola.id, both.id].sort());
+  });
+});
+
+describe('margin report', () => {
+  it('costs each product from negotiated, catalog list, then product cost', () => {
+    const cola = product('Cola', 'COLA-1');
+    product('Water', 'WATER-1');
+    const juice = product('Juice', 'JUICE-1');
+    store.setProductVendors(cola.id, [
+      { vendorId, preferred: true, costCents: 100 },
+    ]);
+    store.vendors.upsertCatalogVendorProducts([
+      {
+        id: randomUUID(),
+        vendor_id: vendorId,
+        barcode: 'cola-1',
+        sku: null,
+        name: 'Cola',
+        case_size: null,
+        min_order_qty: null,
+        price_cents: 180,
+        updated_at: new Date().toISOString(),
+      },
+      {
+        id: randomUUID(),
+        vendor_id: vendorId,
+        barcode: 'water-1',
+        sku: null,
+        name: 'Water',
+        case_size: null,
+        min_order_qty: null,
+        price_cents: 200,
+        updated_at: new Date().toISOString(),
+      },
+    ]);
+    receive(cola.id, 10);
+    receive(juice.id, 2);
+
+    const report = store.vendors.marginReport();
+    const byName = Object.fromEntries(
+      report.lines.map((line) => [line.productName, line]),
+    );
+    expect(byName.Cola).toMatchObject({
+      costCents: 100,
+      costSource: 'negotiated',
+      marginCents: 200,
+      vendorName: 'ABC Distributors',
+      stockQuantity: 10,
+    });
+    expect(byName.Water).toMatchObject({
+      costCents: 200,
+      costSource: 'catalog',
+      marginCents: 100,
+    });
+    expect(byName.Juice).toMatchObject({
+      costCents: 150,
+      costSource: 'product',
+      marginCents: 150,
+      marginRatio: 0.5,
+    });
+    expect(report.retailValueCents).toBe(12 * 300);
+    expect(report.costValueCents).toBe(10 * 100 + 2 * 150);
+    expect(report.missingCostCount).toBe(0);
+  });
 });
 
 describe('buying list', () => {

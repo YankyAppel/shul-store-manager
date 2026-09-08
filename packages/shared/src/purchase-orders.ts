@@ -118,6 +118,15 @@ export interface OutboundEmail {
   sentAt: string | null;
 }
 
+/** Google OAuth grant for XOAUTH2 SMTP; the refresh token is long-lived. */
+export const gmailOAuthSchema = z.object({
+  refreshToken: z.string().min(1).max(2000),
+  accessToken: z.string().max(4000).nullable(),
+  /** Unix ms when `accessToken` stops working. */
+  expiresAt: z.number().int().nullable(),
+});
+export type GmailOAuth = z.infer<typeof gmailOAuthSchema>;
+
 /** Seller-configured SMTP account used to send purchase orders. */
 export const emailConfigSchema = z.object({
   host: z.string().trim().min(1).max(200),
@@ -125,6 +134,9 @@ export const emailConfigSchema = z.object({
   secure: z.boolean(),
   username: z.string().trim().max(200),
   password: z.string().max(500),
+  /** `password` = SMTP login; `gmail` = XOAUTH2 with `oauth`. */
+  authType: z.enum(['password', 'gmail']).default('password'),
+  oauth: gmailOAuthSchema.nullable().default(null),
   fromName: z.string().trim().min(1).max(100),
   fromAddress: z
     .string()
@@ -141,6 +153,9 @@ export type EmailConfig = z.infer<typeof emailConfigSchema>;
 export interface EmailConfigStatus {
   configured: boolean;
   encrypted: boolean;
+  authType: EmailConfig['authType'] | null;
+  /** The app ships with a Google OAuth client, so "Sign in with Google" works. */
+  gmailAvailable: boolean;
   host: string | null;
   port: number | null;
   secure: boolean | null;
