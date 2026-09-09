@@ -1,0 +1,25 @@
+{
+  "name": "@shul-store/brand",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./brand.css": "./src/brand.css"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings=0"
+  },
+  "dependencies": {
+    "three": "0.177.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.3",
+    "@types/three": "0.177.0",
+    "react": "^19.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

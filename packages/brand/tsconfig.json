@@ -8,5 +8,5 @@
     "declaration": false,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"]
 }

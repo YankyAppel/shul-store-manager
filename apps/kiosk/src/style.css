@@ -401,3 +401,33 @@ input {
     grid-template-columns: 1fr;
   }
 }
+
+/* Setup screens inside the SUMA shell */
+.suma-shell .pin-display {
+  border: 1px solid rgba(232, 233, 228, 0.18);
+  background: rgba(5, 11, 8, 0.55);
+  color: var(--suma-cream);
+  font-family: inherit;
+  letter-spacing: 0.18em;
+}
+
+.suma-shell .keypad {
+  max-width: none;
+  margin: 0;
+}
+
+.suma-shell .keypad button {
+  border: 1px solid rgba(232, 233, 228, 0.16);
+  border-radius: 12px;
+  background: rgba(232, 233, 228, 0.08);
+  color: var(--suma-cream);
+  font-weight: 500;
+}
+
+.suma-shell .keypad button:hover:not(:disabled) {
+  background: rgba(232, 233, 228, 0.16);
+}
+
+.suma-shell .manager-list {
+  width: 100%;
+}

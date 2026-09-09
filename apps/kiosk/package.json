@@ -13,6 +13,7 @@
     "lint": "eslint electron src --max-warnings=0"
   },
   "dependencies": {
+    "@shul-store/brand": "0.1.0",
     "@shul-store/database": "0.1.0",
     "@shul-store/payments": "1.0.0",
     "@shul-store/shared": "0.1.0",

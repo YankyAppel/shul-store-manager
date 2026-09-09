@@ -663,7 +663,8 @@ async function createWindow(): Promise<void> {
     height: 840,
     minWidth: 960,
     minHeight: 640,
-    title: 'Shul Store Manager',
+    title: 'SUMA Manager',
+    icon: path.join(import.meta.dirname, '../build/icon.png'),
     webPreferences: {
       preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,

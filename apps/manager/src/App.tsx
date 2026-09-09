@@ -110,10 +110,20 @@ export function App() {
     const unsubscribeLocked = window.storeApi.auth.subscribeLocked(() => {
       void window.storeApi.auth.getState().then(setAuthState);
     });
+    let cloudSignedIn: boolean | undefined;
+    const unsubscribeCloud = window.storeApi.cloudAccount.subscribe((state) => {
+      if (cloudSignedIn === true && !state.signedIn)
+        setShowCloudOnboarding(true);
+      cloudSignedIn = state.signedIn;
+    });
+    void window.storeApi.cloudAccount.getState().then((state) => {
+      cloudSignedIn ??= state.signedIn;
+    });
     return () => {
       mounted = false;
       unsubscribe();
       unsubscribeLocked();
+      unsubscribeCloud();
     };
   }, []);
 
@@ -179,11 +189,18 @@ export function App() {
     (category) => showInactive || category.active,
   );
 
-  if (!authState)
+  if (!authState || showCloudOnboarding === undefined)
     return (
       <div className="auth-screen">
         <p>Loading…</p>
       </div>
+    );
+  if (showCloudOnboarding)
+    return (
+      <CloudAccountOnboarding
+        intro
+        onDone={() => setShowCloudOnboarding(false)}
+      />
     );
   if (needsOwner)
     return (
@@ -203,11 +220,6 @@ export function App() {
         }
       />
     );
-  if (showCloudOnboarding)
-    return (
-      <CloudAccountOnboarding onDone={() => setShowCloudOnboarding(false)} />
-    );
-
   async function toggleProduct(product: Product) {
     try {
       await window.storeApi.products.setActive(product.id, !product.active);
