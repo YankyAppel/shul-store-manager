@@ -77,7 +77,10 @@ function composeMessage(
 }
 
 /** Access tokens refreshed in this process, keyed by refresh token. */
-const accessTokens = new Map<string, { accessToken: string; expiresAt: number }>();
+const accessTokens = new Map<
+  string,
+  { accessToken: string; expiresAt: number }
+>();
 
 async function gmailAccessToken(
   config: EmailConfig,
@@ -154,7 +157,8 @@ async function sendViaGmailApi(
   const body = (await response.json().catch(() => ({}))) as {
     error?: { message?: string };
   };
-  const message = body.error?.message ?? `Gmail rejected the message (${response.status})`;
+  const message =
+    body.error?.message ?? `Gmail rejected the message (${response.status})`;
   if (response.status === 401 || response.status === 403) {
     accessTokens.delete(config.oauth?.refreshToken ?? '');
     throw new GmailApiError(message, 'EOAUTH2', response.status);

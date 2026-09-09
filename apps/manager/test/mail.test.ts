@@ -148,7 +148,10 @@ describe('sendWithConfig (Gmail API)', () => {
 
   it('refreshes the token and posts a base64url MIME message to users.messages.send', async () => {
     const calls: { url: string; init: RequestInit }[] = [];
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       const url = String(input);
       calls.push({ url, init: init ?? {} });
       if (url.startsWith('https://oauth2.googleapis.com/token'))
@@ -186,7 +189,10 @@ describe('sendWithConfig (Gmail API)', () => {
   it('reports a revoked grant as a re-sign-in problem', async () => {
     const fetchImpl = (async () =>
       Response.json(
-        { error: 'invalid_grant', error_description: 'Token has been revoked.' },
+        {
+          error: 'invalid_grant',
+          error_description: 'Token has been revoked.',
+        },
         { status: 400 },
       )) as typeof fetch;
     await expect(
