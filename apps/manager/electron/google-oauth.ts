@@ -3,8 +3,9 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { GmailOAuth } from '@shul-store/shared';
 
-/** Full mail scope: Google only allows SMTP XOAUTH2 with this scope. */
-const SCOPES = ['https://mail.google.com/', 'openid', 'email'];
+/** Narrowest Gmail scope that allows `users.messages.send`. */
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send';
+const SCOPES = [GMAIL_SEND_SCOPE, 'openid', 'email'];
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL = 'https://openidconnect.googleapis.com/v1/userinfo';
@@ -64,6 +65,24 @@ async function exchange(
     );
   }
   return value;
+}
+
+/** Exchange the stored refresh token for a fresh access token. */
+export async function refreshAccessToken(
+  client: GoogleOAuthClient,
+  refreshToken: string,
+  fetchImpl: FetchImpl = globalThis.fetch,
+): Promise<{ accessToken: string; expiresAt: number }> {
+  const token = await exchange(fetchImpl, {
+    client_id: client.clientId,
+    client_secret: client.clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  });
+  return {
+    accessToken: token.access_token,
+    expiresAt: Date.now() + token.expires_in * 1000,
+  };
 }
 
 /**
@@ -161,7 +180,7 @@ export async function connectGmail(
       throw new Error(
         'Google did not return a refresh token. Remove SUMA POS under Google Account → Security → Third-party access and try again.',
       );
-    if (!token.scope?.includes('https://mail.google.com/'))
+    if (!token.scope?.split(' ').includes(GMAIL_SEND_SCOPE))
       throw new Error(
         'Sending email was not allowed. Tick every permission on the Google consent screen and try again.',
       );

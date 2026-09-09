@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { StoreDatabase } from '@shul-store/database';
 import type { EmailConfig, PurchaseOrder } from '@shul-store/shared';
-import { MailWorker, describeMailError } from '../electron/mail.js';
+import {
+  MailWorker,
+  describeMailError,
+  sendWithConfig,
+} from '../electron/mail.js';
 
 const config: EmailConfig = {
   host: 'smtp.example.com',
@@ -130,5 +134,76 @@ describe('MailWorker', () => {
         Object.assign(new Error('boom'), { code: 'ECONNECTION' }),
       ),
     ).toContain('Could not reach the mail server');
+  });
+});
+
+describe('sendWithConfig (Gmail API)', () => {
+  const gmailConfig: EmailConfig = {
+    ...config,
+    authType: 'gmail',
+    password: '',
+    oauth: { refreshToken: 'rt', accessToken: 'stale', expiresAt: 0 },
+  };
+  const googleClient = { clientId: 'cid', clientSecret: 'sec' };
+
+  it('refreshes the token and posts a base64url MIME message to users.messages.send', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const url = String(input);
+      calls.push({ url, init: init ?? {} });
+      if (url.startsWith('https://oauth2.googleapis.com/token'))
+        return Response.json({ access_token: 'fresh', expires_in: 3600 });
+      return Response.json({ id: 'msg1' });
+    }) as typeof fetch;
+    await sendWithConfig(
+      gmailConfig,
+      {
+        to: 'orders@abc.example',
+        subject: 'PO-1',
+        textBody: 'hello',
+        htmlBody: '<p>hello</p>',
+      },
+      { googleClient, fetchImpl },
+    );
+    expect(calls.map((c) => c.url)).toEqual([
+      'https://oauth2.googleapis.com/token',
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/send',
+    ]);
+    const tokenBody = String(calls[0]!.init.body);
+    expect(tokenBody).toContain('grant_type=refresh_token');
+    expect(tokenBody).toContain('refresh_token=rt');
+    const send = calls[1]!.init;
+    expect((send.headers as Record<string, string>).authorization).toBe(
+      'Bearer fresh',
+    );
+    const raw = (JSON.parse(String(send.body)) as { raw: string }).raw;
+    const mime = Buffer.from(raw, 'base64url').toString();
+    expect(mime).toContain('To: orders@abc.example');
+    expect(mime).toContain('Subject: PO-1');
+    expect(mime).toContain('hello');
+  });
+
+  it('reports a revoked grant as a re-sign-in problem', async () => {
+    const fetchImpl = (async () =>
+      Response.json(
+        {
+          error: 'invalid_grant',
+          error_description: 'Token has been revoked.',
+        },
+        { status: 400 },
+      )) as typeof fetch;
+    await expect(
+      sendWithConfig(
+        {
+          ...gmailConfig,
+          oauth: { refreshToken: 'revoked', accessToken: null, expiresAt: 0 },
+        },
+        { to: 'a@b.c', subject: 's', textBody: 't', htmlBody: '<p>t</p>' },
+        { googleClient, fetchImpl },
+      ),
+    ).rejects.toMatchObject({ code: 'EOAUTH2' });
   });
 });

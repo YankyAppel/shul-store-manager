@@ -1,12 +1,28 @@
 import nodemailer from 'nodemailer';
+import MailComposer from 'nodemailer/lib/mail-composer/index.js';
+import type Mail from 'nodemailer/lib/mailer/index.js';
 import type { StoreDatabase } from '@shul-store/database';
 import type { EmailConfig, OutboundEmail } from '@shul-store/shared';
 import type { CloudAccountManager } from './cloud-account.js';
-import type { GoogleOAuthClient } from './google-oauth.js';
+import { refreshAccessToken, type GoogleOAuthClient } from './google-oauth.js';
 
 const MAX_ATTEMPTS = 8;
 const QUEUE_INTERVAL_MS = 60_000;
 const SEND_TIMEOUT_MS = 30_000;
+const GMAIL_SEND_URL =
+  'https://gmail.googleapis.com/gmail/v1/users/me/messages/send';
+/** Refresh a little early so the token cannot expire mid-request. */
+const TOKEN_SKEW_MS = 60_000;
+
+class GmailApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'EOAUTH2' | 'EMESSAGE' | 'ECONNECTION',
+    readonly responseCode: number,
+  ) {
+    super(message);
+  }
+}
 
 /** SMTP failures that will not fix themselves by retrying later. */
 function isPermanentError(error: unknown): boolean {
@@ -42,23 +58,120 @@ export function describeMailError(error: unknown): string {
 
 export interface MailOptions {
   googleClient?: GoogleOAuthClient;
+  fetchImpl?: typeof globalThis.fetch;
 }
 
-function createTransport(config: EmailConfig, options: MailOptions) {
-  const auth =
-    config.authType === 'gmail'
-      ? {
-          type: 'OAuth2' as const,
-          user: config.username || config.fromAddress,
-          clientId: options.googleClient?.clientId,
-          clientSecret: options.googleClient?.clientSecret,
-          refreshToken: config.oauth?.refreshToken,
-          accessToken: config.oauth?.accessToken ?? undefined,
-          expires: config.oauth?.expiresAt ?? undefined,
-        }
-      : config.username
-        ? { user: config.username, pass: config.password }
-        : undefined;
+function composeMessage(
+  config: EmailConfig,
+  email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+): Mail.Options {
+  return {
+    from: { name: config.fromName, address: config.fromAddress },
+    to: email.to,
+    ...(config.ccSelf ? { cc: config.fromAddress } : {}),
+    replyTo: config.fromAddress,
+    subject: email.subject,
+    text: email.textBody,
+    html: email.htmlBody,
+  };
+}
+
+/** Access tokens refreshed in this process, keyed by refresh token. */
+const accessTokens = new Map<
+  string,
+  { accessToken: string; expiresAt: number }
+>();
+
+async function gmailAccessToken(
+  config: EmailConfig,
+  options: MailOptions,
+): Promise<string> {
+  const refreshToken = config.oauth?.refreshToken;
+  if (!refreshToken || !options.googleClient)
+    throw new GmailApiError(
+      'Google sign-in is not configured.',
+      'EOAUTH2',
+      401,
+    );
+  const cached = accessTokens.get(refreshToken) ?? config.oauth;
+  if (
+    cached?.accessToken &&
+    cached.expiresAt &&
+    cached.expiresAt - TOKEN_SKEW_MS > Date.now()
+  )
+    return cached.accessToken;
+  try {
+    const fresh = await refreshAccessToken(
+      options.googleClient,
+      refreshToken,
+      options.fetchImpl,
+    );
+    accessTokens.set(refreshToken, fresh);
+    return fresh.accessToken;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new GmailApiError(
+      message,
+      /invalid_grant|invalid_client|unauthorized|revoked|expired/i.test(message)
+        ? 'EOAUTH2'
+        : 'ECONNECTION',
+      401,
+    );
+  }
+}
+
+/**
+ * Send through the Gmail REST API (`gmail.send` scope) rather than SMTP:
+ * SMTP XOAUTH2 requires the full mail scope, which is far broader than the
+ * app needs.
+ */
+async function sendViaGmailApi(
+  config: EmailConfig,
+  email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+  options: MailOptions,
+): Promise<void> {
+  const accessToken = await gmailAccessToken(config, options);
+  const raw = await new MailComposer(composeMessage(config, email))
+    .compile()
+    .build();
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  let response: Response;
+  try {
+    response = await fetchImpl(GMAIL_SEND_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ raw: raw.toString('base64url') }),
+      signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new GmailApiError(
+      error instanceof Error ? error.message : String(error),
+      'ECONNECTION',
+      0,
+    );
+  }
+  if (response.ok) return;
+  const body = (await response.json().catch(() => ({}))) as {
+    error?: { message?: string };
+  };
+  const message =
+    body.error?.message ?? `Gmail rejected the message (${response.status})`;
+  if (response.status === 401 || response.status === 403) {
+    accessTokens.delete(config.oauth?.refreshToken ?? '');
+    throw new GmailApiError(message, 'EOAUTH2', response.status);
+  }
+  if (response.status >= 500)
+    throw new GmailApiError(message, 'ECONNECTION', 0);
+  throw new GmailApiError(message, 'EMESSAGE', response.status);
+}
+
+function createTransport(config: EmailConfig) {
+  const auth = config.username
+    ? { user: config.username, pass: config.password }
+    : undefined;
   return nodemailer.createTransport({
     host: config.host,
     port: config.port,
@@ -76,17 +189,13 @@ export async function sendWithConfig(
   email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
   options: MailOptions = {},
 ): Promise<void> {
-  const transport = createTransport(config, options);
+  if (config.authType === 'gmail') {
+    await sendViaGmailApi(config, email, options);
+    return;
+  }
+  const transport = createTransport(config);
   try {
-    await transport.sendMail({
-      from: { name: config.fromName, address: config.fromAddress },
-      to: email.to,
-      ...(config.ccSelf ? { cc: config.fromAddress } : {}),
-      replyTo: config.fromAddress,
-      subject: email.subject,
-      text: email.textBody,
-      html: email.htmlBody,
-    });
+    await transport.sendMail(composeMessage(config, email));
   } finally {
     transport.close();
   }
@@ -98,11 +207,15 @@ export async function testConfig(
   options: MailOptions = {},
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
-    const transport = createTransport(config, options);
-    try {
-      await transport.verify();
-    } finally {
-      transport.close();
+    if (config.authType === 'gmail') {
+      await gmailAccessToken(config, options);
+    } else {
+      const transport = createTransport(config);
+      try {
+        await transport.verify();
+      } finally {
+        transport.close();
+      }
     }
     if (sendTo) {
       await sendWithConfig(
