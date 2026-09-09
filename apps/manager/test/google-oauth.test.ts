@@ -47,7 +47,7 @@ describe('connectGmail', () => {
           access_token: 'access',
           refresh_token: 'refresh',
           expires_in: 3600,
-          scope: 'https://mail.google.com/ openid email',
+          scope: 'https://www.googleapis.com/auth/gmail.send openid email',
         }),
         'https://openidconnect.googleapis.com/v1/userinfo': () => ({
           email: 'shop@gmail.com',
@@ -76,7 +76,7 @@ describe('connectGmail', () => {
     expect(consent.searchParams.get('code_challenge_method')).toBe('S256');
     expect(consent.searchParams.get('access_type')).toBe('offline');
     expect(consent.searchParams.get('scope')).toContain(
-      'https://mail.google.com/',
+      'https://www.googleapis.com/auth/gmail.send',
     );
     expect(consent.searchParams.get('redirect_uri')).toMatch(
       /^http:\/\/127\.0\.0\.1:\d+\/oauth\/callback$/,
