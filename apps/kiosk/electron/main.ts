@@ -1355,6 +1355,8 @@ async function createWindow(): Promise<void> {
     fullscreen: true,
     kiosk: true,
     autoHideMenuBar: true,
+    title: 'SUMA Kiosk',
+    icon: path.join(import.meta.dirname, '../build/icon.png'),
     webPreferences: {
       preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,

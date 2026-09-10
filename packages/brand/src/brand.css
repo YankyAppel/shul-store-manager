@@ -1,0 +1,357 @@
+:root {
+  --suma-ink: #050b08;
+  --suma-void: #0a1710;
+  --suma-deep: #14432c;
+  --suma-green: #1f5e3f;
+  --suma-cream: #e8e9e4;
+  --suma-panel: #f1f1ec;
+  --suma-copper: #b87333;
+  --suma-mute: #8fa295;
+  --suma-coin-move: 1100ms;
+  --suma-panel-move: 480ms;
+  --suma-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Full-window marble stage the boot, sign-in and setup screens sit on. */
+.suma-shell {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  color: var(--suma-cream);
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(
+      120% 90% at 50% 0%,
+      rgba(31, 94, 63, 0.12) 0%,
+      rgba(10, 23, 16, 0) 62%
+    ),
+    radial-gradient(
+      70% 55% at 50% 108%,
+      rgba(184, 115, 51, 0.14) 0%,
+      rgba(10, 23, 16, 0) 70%
+    ),
+    var(--suma-stone) center / cover no-repeat,
+    linear-gradient(180deg, #0c1c13 0%, #0a1710 55%, #050b08 100%);
+}
+
+.suma-shell__grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+}
+
+/* The coin is positioned by its centre so it shrinks in place while it rises. */
+.suma-shell__coin {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(52vh, 52vw);
+  height: min(52vh, 52vw);
+  transform: translate(-50%, -50%) scale(1);
+  transition: transform var(--suma-coin-move) var(--suma-ease);
+  will-change: transform;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.suma-shell--rising .suma-shell__coin,
+.suma-shell--ready .suma-shell__coin {
+  transform: translate(-50%, calc(-50% - 50vh + 12vh)) scale(0.34);
+}
+
+.suma-shell__coin-scene {
+  width: 100%;
+  height: 100%;
+}
+
+.suma-coin-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 10%;
+  animation: suma-coin-float 4s ease-in-out infinite;
+}
+
+@keyframes suma-coin-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4%);
+  }
+}
+
+.suma-shell__content {
+  position: absolute;
+  inset: 0;
+  padding: 22vh 0 48px;
+  display: flex;
+  justify-content: center;
+  overflow-y: auto;
+  scrollbar-width: none;
+  z-index: 1;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 20vh, #000 100%);
+}
+
+.suma-shell__content::-webkit-scrollbar {
+  display: none;
+}
+
+.suma-panels {
+  position: relative;
+  width: min(560px, calc(100vw - 48px));
+  min-height: min-content;
+}
+
+.suma-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 18px;
+  animation: suma-panel-fade-in 700ms var(--suma-ease) both;
+}
+
+.suma-panel--enter {
+  animation: suma-panel-in var(--suma-panel-move) var(--suma-ease) both;
+}
+
+.suma-panel--leave {
+  position: absolute;
+  inset: 0 0 auto 0;
+  animation: suma-panel-out var(--suma-panel-move) var(--suma-ease) both;
+  pointer-events: none;
+}
+
+@keyframes suma-panel-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes suma-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(80px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes suma-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-80px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .suma-shell__coin,
+  .suma-panel,
+  .suma-coin-fallback {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Type */
+.suma-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--suma-copper);
+}
+
+.suma-eyebrow--plain {
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+
+.suma-title {
+  margin: 0;
+  font-weight: 500;
+  font-size: clamp(28px, 4.2vw, 44px);
+  line-height: 1.04;
+  letter-spacing: -0.008em;
+  text-transform: uppercase;
+  color: var(--suma-cream);
+}
+
+.suma-lede {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--suma-mute);
+}
+
+.suma-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--suma-mute);
+}
+
+/* Forms */
+.suma-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.suma-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--suma-mute);
+}
+
+.suma-input,
+.suma-button {
+  height: 52px;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 16px;
+  transition:
+    border-color 160ms,
+    background 160ms,
+    transform 120ms;
+}
+
+.suma-input {
+  width: 100%;
+  padding: 0 18px;
+  color: var(--suma-cream);
+  background: rgba(5, 11, 8, 0.55);
+  border: 1px solid rgba(232, 233, 228, 0.22);
+  outline: none;
+  backdrop-filter: blur(6px);
+}
+
+.suma-input::placeholder {
+  color: rgba(232, 233, 228, 0.5);
+}
+
+.suma-input:focus {
+  border-color: var(--suma-copper);
+}
+
+.suma-button {
+  padding: 0 22px;
+  border: 1px solid var(--suma-copper);
+  background: var(--suma-copper);
+  color: var(--suma-ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.suma-button:hover:not(:disabled) {
+  background: #c98443;
+}
+
+.suma-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.suma-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.suma-button--ghost {
+  background: transparent;
+  color: var(--suma-cream);
+  border-color: rgba(232, 233, 228, 0.22);
+}
+
+.suma-button--ghost:hover:not(:disabled) {
+  background: rgba(232, 233, 228, 0.08);
+}
+
+.suma-button--link {
+  height: auto;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: var(--suma-mute);
+  font-size: 14px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.suma-button--link:hover:not(:disabled) {
+  background: none;
+  color: var(--suma-cream);
+}
+
+/* Input with a filled arrow button attached on the right. */
+.suma-inline {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.suma-inline .suma-input {
+  flex: 1;
+}
+
+.suma-inline .suma-button {
+  width: 52px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.suma-alert,
+.suma-success {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align: left;
+}
+
+.suma-alert {
+  background: rgba(150, 40, 40, 0.35);
+  border: 1px solid rgba(255, 120, 120, 0.4);
+  color: #ffd9d9;
+}
+
+.suma-success {
+  background: rgba(31, 94, 63, 0.4);
+  border: 1px solid rgba(143, 200, 160, 0.4);
+  color: #d8f0e0;
+}

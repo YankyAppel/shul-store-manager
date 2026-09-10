@@ -3,13 +3,19 @@ const { githubUpdateRepository } = require('./update-config.cjs');
 
 module.exports = {
   appId: 'org.shulstore.kiosk',
-  productName: 'Shul Store Kiosk',
+  productName: 'SUMA Kiosk',
   asar: true,
   npmRebuild: false,
   directories: {
     output: 'release',
   },
-  files: ['dist/**', 'dist-electron/**', 'package.json', 'update-config.cjs'],
+  files: [
+    'dist/**',
+    'dist-electron/**',
+    'package.json',
+    'build/icon.png',
+    'update-config.cjs',
+  ],
   extraMetadata: {
     version,
   },
@@ -21,7 +27,9 @@ module.exports = {
       ...githubUpdateRepository,
     },
   ],
+  icon: 'build/icon.ico',
   win: {
+    icon: 'build/icon.ico',
     target: [{ target: 'nsis', arch: ['x64'] }],
   },
   nsis: {

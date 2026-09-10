@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ArrowIcon, BrandPanels, BrandShell } from '@shul-store/brand';
 import {
   type KioskCartLine,
   type KioskPriceQuote,
@@ -7,6 +8,7 @@ import {
   type KioskReaderConfig,
   type UpdateCheckResult,
 } from '@shul-store/shared';
+import '@shul-store/brand/brand.css';
 import './style.css';
 
 const IDLE_RESET_MS = 60000;
@@ -66,16 +68,15 @@ function PairingScreen({
   state: KioskPublicState;
   onPaired: (next: KioskPublicState) => void;
 }) {
+  const [step, setStep] = useState<'welcome' | 'signIn' | 'local'>('welcome');
   const [host, setHost] = useState(state.host);
   const [port, setPort] = useState(String(state.port || 3939));
   const [code, setCode] = useState('');
   const [name, setName] = useState(state.kioskName || 'Kiosk');
   const [pin, setPin] = useState('');
   const [message, setMessage] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const [cloudMode, setCloudMode] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const managers = state.discoveredManagers;
@@ -90,10 +91,13 @@ function PairingScreen({
     setPort(String(managerPort));
     setAdvanced(true);
   }
+  function go(next: 'welcome' | 'signIn' | 'local') {
+    setMessage('');
+    setStep(next);
+  }
   async function pair() {
     setBusy(true);
     setMessage('');
-    setSuccessMessage('');
     try {
       const next = await window.kioskApi.pair({
         host: host.trim(),
@@ -109,193 +113,239 @@ function PairingScreen({
       setBusy(false);
     }
   }
-  async function cloudSignIn(signUp: boolean) {
+  async function cloudSignIn() {
     setBusy(true);
     setMessage('');
     try {
-      const next = await (
-        signUp ? window.kioskApi.cloudSignUp : window.kioskApi.cloudSignIn
-      )({
+      const next = await window.kioskApi.cloudSignIn({
         email: email.trim(),
         password,
         adminPin: pin,
       });
       onPaired(next);
     } catch (error) {
-      const text =
-        error instanceof Error ? error.message : 'Cloud setup failed.';
-      if (signUp && text.startsWith('Account created')) setSuccessMessage(text);
-      else setMessage(text);
+      setMessage(
+        error instanceof Error ? error.message : 'Cloud setup failed.',
+      );
     } finally {
       setBusy(false);
     }
   }
   return (
-    <main className="setup-screen">
-      <h1>Set up this self-checkout</h1>
-      <div className="mode-switch">
-        <button
-          type="button"
-          className={cloudMode ? 'primary' : 'secondary'}
-          onClick={() => setCloudMode(true)}
-        >
-          Sign in with the store's cloud account
-        </button>
-        <button
-          type="button"
-          className={!cloudMode ? 'primary' : 'secondary'}
-          onClick={() => setCloudMode(false)}
-        >
-          Pair over the local network
-        </button>
-      </div>
-      {cloudMode ? (
-        <>
-          <p>Use the same POS cloud account as the shul's manager.</p>
-          <label>
-            Email
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </label>
-          <label>
-            Password
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          <label>
-            Admin PIN for this kiosk
-            <output className="pin-display">
-              {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
-            </output>
-          </label>
-          <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
-          {message && <p className="error-message">{message}</p>}
-          {successMessage && (
-            <p className="success-message">{successMessage}</p>
-          )}
-          <div className="button-row">
-            <button
-              type="button"
-              className="primary wide-button"
-              disabled={busy || !email.trim() || !password || pin.length < 4}
-              onClick={() => void cloudSignIn(false)}
-            >
-              {busy ? 'Signing in…' : 'Sign in and set up kiosk'}
-            </button>
-            <button
-              type="button"
-              className="secondary wide-button"
-              disabled={busy || !email.trim() || !password || pin.length < 4}
-              onClick={() => void cloudSignIn(true)}
-            >
-              Create cloud account
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p>
-            Choose your store, then enter the six-digit pairing code shown by
-            the shames.
-          </p>
-          {managers.length > 0 ? (
-            <div className="manager-list">
-              {managers.map((manager) => (
-                <button
-                  type="button"
-                  className="secondary wide-button"
-                  key={`${manager.host}:${manager.port}`}
-                  onClick={() => selectManager(manager.host, manager.port)}
-                >
-                  {manager.storeName}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="muted">
-              No manager found yet. If this continues, open Advanced below.
+    <BrandShell>
+      <BrandPanels panelKey={step}>
+        {step === 'welcome' && (
+          <>
+            <p className="suma-eyebrow">SUMA Systems</p>
+            <h1 className="suma-title">Welcome to SUMA</h1>
+            <p className="suma-lede">
+              Set up this self-checkout with the store's SUMA account. Accounts
+              are created in SUMA Manager.
             </p>
-          )}
-          <button
-            type="button"
-            className="secondary wide-button"
-            onClick={() => setAdvanced((value) => !value)}
-          >
-            {advanced ? 'Hide Advanced' : 'Advanced'}
-          </button>
-          {advanced && (
-            <>
-              <label>
-                Manager host
+            <form
+              className="suma-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (email.trim()) go('signIn');
+              }}
+            >
+              <div className="suma-inline">
                 <input
-                  value={host}
-                  onChange={(event) => setHost(event.target.value)}
+                  autoFocus
+                  className="suma-input"
+                  type="email"
+                  placeholder="Store account email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                />
+                <button
+                  className="suma-button"
+                  type="submit"
+                  disabled={!email.trim()}
+                  aria-label="Continue"
+                >
+                  <ArrowIcon />
+                </button>
+              </div>
+            </form>
+            <button
+              type="button"
+              className="suma-button suma-button--link"
+              onClick={() => go('local')}
+            >
+              Pair over the local network instead
+            </button>
+          </>
+        )}
+        {step === 'signIn' && (
+          <>
+            <p className="suma-eyebrow suma-eyebrow--plain">{email.trim()}</p>
+            <h1 className="suma-title">Sign in</h1>
+            <form
+              className="suma-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void cloudSignIn();
+              }}
+            >
+              <input
+                autoFocus
+                className="suma-input"
+                type="password"
+                placeholder="Password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+              />
+              <label className="suma-field">
+                Admin PIN for this kiosk
+                <output className="pin-display">
+                  {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
+                </output>
+              </label>
+              <Keypad
+                value={pin}
+                onChange={setPin}
+                maxLength={ADMIN_PIN_LENGTH}
+              />
+              {message && <div className="suma-alert">{message}</div>}
+              <button
+                type="submit"
+                className="suma-button"
+                disabled={busy || !password || pin.length < 4}
+              >
+                {busy ? 'Signing in…' : 'Sign in and set up kiosk'}
+              </button>
+              <button
+                type="button"
+                className="suma-button suma-button--link"
+                disabled={busy}
+                onClick={() => go('welcome')}
+              >
+                Use a different email
+              </button>
+            </form>
+            <KioskReaderSetup status={state.readerStatus} />
+          </>
+        )}
+        {step === 'local' && (
+          <>
+            <p className="suma-eyebrow">Local network</p>
+            <h1 className="suma-title">Pair this kiosk</h1>
+            <p className="suma-lede">
+              Choose your store, then enter the six-digit pairing code shown in
+              SUMA Manager.
+            </p>
+            <div className="suma-form">
+              {managers.length > 0 ? (
+                <div className="manager-list">
+                  {managers.map((manager) => (
+                    <button
+                      type="button"
+                      className="suma-button suma-button--ghost"
+                      key={`${manager.host}:${manager.port}`}
+                      onClick={() => selectManager(manager.host, manager.port)}
+                    >
+                      {manager.storeName}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="suma-note">
+                  No manager found yet. If this continues, open Advanced below.
+                </p>
+              )}
+              <button
+                type="button"
+                className="suma-button suma-button--link"
+                onClick={() => setAdvanced((value) => !value)}
+              >
+                {advanced ? 'Hide Advanced' : 'Advanced'}
+              </button>
+              {advanced && (
+                <>
+                  <label className="suma-field">
+                    Manager host
+                    <input
+                      className="suma-input"
+                      value={host}
+                      onChange={(event) => setHost(event.target.value)}
+                    />
+                  </label>
+                  <label className="suma-field">
+                    Port
+                    <input
+                      className="suma-input"
+                      inputMode="numeric"
+                      value={port}
+                      onChange={(event) => setPort(event.target.value)}
+                    />
+                  </label>
+                </>
+              )}
+              <label className="suma-field">
+                Kiosk name
+                <input
+                  className="suma-input"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
                 />
               </label>
-              <label>
-                Port
-                <input
-                  inputMode="numeric"
-                  value={port}
-                  onChange={(event) => setPort(event.target.value)}
-                />
+              <label className="suma-field">
+                Six-digit pairing code
+                <output className="pin-display">
+                  {code || '—'.repeat(PAIRING_CODE_LENGTH)}
+                </output>
               </label>
-            </>
-          )}
-          <label>
-            Kiosk name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </label>
-          <label>
-            Six-digit pairing code
-            <output className="pin-display">
-              {code || '—'.repeat(PAIRING_CODE_LENGTH)}
-            </output>
-          </label>
-          <Keypad
-            value={code}
-            onChange={setCode}
-            maxLength={PAIRING_CODE_LENGTH}
-          />
-          <label>
-            Admin PIN for this kiosk
-            <output className="pin-display">
-              {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
-            </output>
-          </label>
-          <Keypad value={pin} onChange={setPin} maxLength={ADMIN_PIN_LENGTH} />
-          {message && <p className="error-message">{message}</p>}
-          <button
-            type="button"
-            className="primary wide-button"
-            disabled={
-              busy ||
-              code.length !== 6 ||
-              pin.length < 4 ||
-              !host.trim() ||
-              !Number(port)
-            }
-            onClick={() => void pair()}
-          >
-            {busy ? 'Pairing…' : 'Pair this kiosk'}
-          </button>
-          <p className="setup-exit-hint">
-            To exit kiosk mode: tap the store name 5 times or press the Shames
-            button, then enter the admin PIN.
-          </p>
-        </>
-      )}
-      <KioskReaderSetup status={state.readerStatus} />
-    </main>
+              <Keypad
+                value={code}
+                onChange={setCode}
+                maxLength={PAIRING_CODE_LENGTH}
+              />
+              <label className="suma-field">
+                Admin PIN for this kiosk
+                <output className="pin-display">
+                  {pin ? '•'.repeat(pin.length) : 'Enter 4–12 digits'}
+                </output>
+              </label>
+              <Keypad
+                value={pin}
+                onChange={setPin}
+                maxLength={ADMIN_PIN_LENGTH}
+              />
+              {message && <div className="suma-alert">{message}</div>}
+              <button
+                type="button"
+                className="suma-button"
+                disabled={
+                  busy ||
+                  code.length !== 6 ||
+                  pin.length < 4 ||
+                  !host.trim() ||
+                  !Number(port)
+                }
+                onClick={() => void pair()}
+              >
+                {busy ? 'Pairing…' : 'Pair this kiosk'}
+              </button>
+              <button
+                type="button"
+                className="suma-button suma-button--link"
+                onClick={() => go('welcome')}
+              >
+                Sign in with the store account instead
+              </button>
+              <p className="suma-note">
+                To exit kiosk mode: tap the store name 5 times or press the
+                admin button, then enter the admin PIN.
+              </p>
+            </div>
+            <KioskReaderSetup status={state.readerStatus} />
+          </>
+        )}
+      </BrandPanels>
+    </BrandShell>
   );
 }
 

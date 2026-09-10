@@ -23,6 +23,8 @@ type FetchImpl = typeof globalThis.fetch;
 interface Stored {
   accountStarted: boolean;
   onboardingDismissed: boolean;
+  /** Set by an explicit sign-out; brings the welcome screen back next launch. */
+  signedOut: boolean;
   siteUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
@@ -48,6 +50,7 @@ function initial(): Stored {
   return {
     accountStarted: false,
     onboardingDismissed: false,
+    signedOut: false,
     siteUrl: SITE_URL,
     supabaseUrl: '',
     supabaseAnonKey: '',
@@ -89,6 +92,7 @@ export class CloudAccountManager {
           ...initial(),
           accountStarted: this.stored.accountStarted,
           onboardingDismissed: this.stored.onboardingDismissed,
+          signedOut: this.stored.signedOut,
           storeId: this.stored.storeId,
         };
         this.loaded = true;
@@ -173,6 +177,7 @@ export class CloudAccountManager {
 
   async shouldShowOnboarding(): Promise<boolean> {
     await this.load();
+    if (this.stored.signedOut) return true;
     if (this.stored.accountStarted || this.stored.onboardingDismissed)
       return false;
     if (this.hasLegacySync?.()) {
@@ -186,6 +191,7 @@ export class CloudAccountManager {
   async dismissOnboarding(): Promise<void> {
     await this.load();
     this.stored.onboardingDismissed = true;
+    this.stored.signedOut = false;
     await this.save();
   }
 
@@ -288,6 +294,7 @@ export class CloudAccountManager {
       this.stored.expiresAt = null;
       this.stored.email = value.user?.email ?? body.email ?? null;
       this.stored.accountStarted = true;
+      this.stored.signedOut = false;
       await this.save();
       return false;
     }
@@ -298,6 +305,7 @@ export class CloudAccountManager {
     this.stored.expiresAt = Date.now() + (value.expires_in ?? 3600) * 1000;
     this.stored.email = value.user?.email ?? this.stored.email;
     this.stored.accountStarted = true;
+    this.stored.signedOut = false;
     await this.save();
     return true;
   }
@@ -438,6 +446,7 @@ export class CloudAccountManager {
     this.stored.expiresAt = null;
     this.stored.email = null;
     this.stored.accountStarted = true;
+    this.stored.signedOut = true;
     await this.save();
     return this.publish();
   }
