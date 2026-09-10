@@ -120,7 +120,7 @@
   inset: 0;
   padding: 22vh 0 48px;
   display: flex;
-  justify-content: center;
+  justify-content: safe center;
   overflow-y: auto;
   scrollbar-width: none;
   z-index: 1;
@@ -321,6 +321,15 @@
   font-size: 13px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
+}
+
+/* .suma-inline squashes buttons to icon size; the logo picker wants text buttons. */
+.suma-logo-picker .suma-inline {
+  justify-content: center;
+}
+.suma-logo-picker .suma-inline .suma-button {
+  width: auto;
+  padding: 10px 18px;
 }
 
 .suma-check {
