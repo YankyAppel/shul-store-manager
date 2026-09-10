@@ -22,6 +22,31 @@ const optionalPrinterNameSchema = z
   .optional()
   .transform((value) => (value && value.length > 0 ? value : null));
 
+/**
+ * Store logos are kept as `data:` URLs inside store_settings so the bytes sync
+ * to the cloud with the settings payload (the images table never leaves the
+ * device) and can be embedded directly in receipt/email HTML.
+ */
+export const storeLogoSchema = z
+  .string()
+  .max(2_000_000)
+  .refine(
+    (value) =>
+      /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+    { message: 'Logo must be a PNG, JPEG or WebP image' },
+  );
+
+export function parseImageDataUrl(
+  value: string | null,
+): { mimeType: string; base64: string } | null {
+  if (!value) return null;
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(
+    value,
+  );
+  if (!match) return null;
+  return { mimeType: match[1]!, base64: match[2]! };
+}
+
 export const storeSettingsSchema = z.object({
   storeName: z.string().trim().min(1).max(200),
   contactLines: z.array(z.string().trim().min(1).max(200)).max(4),
@@ -47,8 +72,24 @@ export const storeSettingsSchema = z.object({
     .default('thermal_40x30'),
   cardProcessingEnabled: z.boolean().default(false),
   cardProcessorId: z.string().nullable().default(null),
+  logoDataUrl: storeLogoSchema.nullable().default(null),
+  /** Set once the onboarding store-profile wizard has run (or been skipped). */
+  profileCompleted: z.boolean().default(false),
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
+
+/** Inputs the post-sign-up store profile wizard collects. */
+export const storeProfileInputSchema = z.object({
+  storeName: z.string().trim().min(1).max(200),
+  addressLines: z.array(z.string().trim().min(1).max(200)).max(2),
+  phone: z.string().trim().max(200),
+  email: z.union([z.literal(''), z.string().trim().email().max(200)]),
+  receiptFooter: z.string().trim().max(1000),
+  logoDataUrl: storeLogoSchema.nullable(),
+  orderFromName: z.string().trim().max(100),
+  orderCcSelf: z.boolean(),
+});
+export type StoreProfileInput = z.infer<typeof storeProfileInputSchema>;
 
 const httpsUrlSchema = z
   .string()

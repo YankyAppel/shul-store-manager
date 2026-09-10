@@ -8,6 +8,7 @@ import {
   type UpdateCheckResult,
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
+import { fileToLogoDataUrl } from '../utils/logo';
 import { CloudBackupSection } from './CloudBackupSection';
 import { CloudAccountSection } from './CloudAccountSection';
 import { LocalBackupSection } from './LocalBackupSection';
@@ -44,6 +45,7 @@ export function SettingsScreen() {
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [printerError, setPrinterError] = useState('');
   const [appVersion, setAppVersion] = useState('');
+  const [logoError, setLogoError] = useState('');
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(
     null,
   );
@@ -175,6 +177,19 @@ export function SettingsScreen() {
     }
   }
 
+  async function chooseStoreLogo(file: File | undefined) {
+    if (!file) return;
+    try {
+      const logoDataUrl = await fileToLogoDataUrl(file);
+      setLogoError('');
+      setSettings((current) =>
+        current ? { ...current, logoDataUrl } : current,
+      );
+    } catch (error) {
+      setLogoError(messageFrom(error));
+    }
+  }
+
   async function checkReader() {
     setCheckingReader(true);
     try {
@@ -250,6 +265,50 @@ export function SettingsScreen() {
               setSettings({ ...settings, storeName: e.target.value })
             }
           />
+        </label>
+        <label>
+          Store logo <em>Printed on receipts and shown on vendor emails</em>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              marginTop: 6,
+            }}
+          >
+            {settings.logoDataUrl ? (
+              <img
+                src={settings.logoDataUrl}
+                alt="Store logo"
+                style={{
+                  maxWidth: 140,
+                  maxHeight: 56,
+                  borderRadius: 6,
+                  background: '#fff',
+                  padding: 4,
+                }}
+              />
+            ) : (
+              <em>No logo</em>
+            )}
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={(e) => {
+                void chooseStoreLogo(e.target.files?.[0]);
+                e.target.value = '';
+              }}
+            />
+            {settings.logoDataUrl && (
+              <button
+                type="button"
+                onClick={() => setSettings({ ...settings, logoDataUrl: null })}
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          {logoError && <em style={{ color: '#b3261e' }}>{logoError}</em>}
         </label>
         <label>
           Receipt contact/address lines <em>One per line</em>

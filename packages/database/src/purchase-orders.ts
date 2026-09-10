@@ -4,6 +4,7 @@ import {
   purchaseOrderInputSchema,
   purchaseOrderTotalCents,
   receivePurchaseOrderInputSchema,
+  type EmailAttachment,
   type EmailConfig,
   type EmailConfigStatus,
   type OutboundEmail,
@@ -47,6 +48,14 @@ function mapLine(row: Row): PurchaseOrderLine {
 }
 
 function mapEmail(row: Row): OutboundEmail {
+  let attachments: EmailAttachment[] = [];
+  try {
+    attachments = JSON.parse(
+      String(row.attachments_json ?? '[]'),
+    ) as EmailAttachment[];
+  } catch {
+    attachments = [];
+  }
   return {
     id: String(row.id),
     purchaseOrderId: text(row.purchase_order_id),
@@ -54,6 +63,7 @@ function mapEmail(row: Row): OutboundEmail {
     subject: String(row.subject),
     textBody: String(row.text_body),
     htmlBody: String(row.html_body),
+    attachments,
     status: String(row.status) as OutboundEmailStatus,
     attempts: Number(row.attempts),
     lastError: text(row.last_error),
@@ -344,12 +354,13 @@ export class PurchaseOrderStore {
     subject: string;
     textBody: string;
     htmlBody: string;
+    attachments?: EmailAttachment[];
   }): OutboundEmail {
     const id = randomUUID();
     this.connection
       .prepare(
-        `INSERT INTO outbound_emails (id, purchase_order_id, to_address, subject, text_body, html_body, status, attempts, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
+        `INSERT INTO outbound_emails (id, purchase_order_id, to_address, subject, text_body, html_body, attachments_json, status, attempts, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
       )
       .run(
         id,
@@ -358,6 +369,7 @@ export class PurchaseOrderStore {
         input.subject,
         input.textBody,
         input.htmlBody,
+        JSON.stringify(input.attachments ?? []),
         now(),
       );
     return this.getEmail(id);

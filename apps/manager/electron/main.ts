@@ -69,9 +69,12 @@ import {
   recordRefundInputSchema,
   statementHtml,
   statementOptionsSchema,
+  parseImageDataUrl,
   processorConfigInputSchema,
+  storeProfileInputSchema,
   storeSettingsSchema,
   type AccountPaymentReceiptData,
+  type OnboardingProfile,
   type CustomerStatementData,
   type LabelPrintRequest,
   type PrinterInfo,
@@ -303,6 +306,11 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'cloudAccount:portal': 'owner',
   'cloudAccount:lookupBarcodeSuggestion': 'public',
   'cloudAccount:shareBarcodeSuggestion': 'public',
+  // Onboarding runs before any staff session can exist; the handlers
+  // themselves require a signed-in cloud account.
+  'onboarding:getProfile': 'public',
+  'onboarding:saveProfile': 'public',
+  'onboarding:skipProfile': 'public',
   'staff:list': 'owner',
   'staff:create': 'owner',
   'staff:update': 'owner',
@@ -1096,7 +1104,8 @@ function registerIpc(): void {
   );
 
   // Purchase orders
-  const composePurchaseOrderEmail = (order: PurchaseOrder) => {
+  const STORE_LOGO_CID = 'store-logo@suma';
+  const composePurchaseOrderEmail = (order: PurchaseOrder, preview = false) => {
     const settings = database.getSettings();
     const contact = settings.contactLines;
     const storeEmail = contact.find((line) => line.includes('@')) ?? null;
@@ -1104,11 +1113,20 @@ function registerIpc(): void {
       contact.find(
         (line) => /\d{3}.*\d{4}/.test(line) && !line.includes('@'),
       ) ?? null;
+    const logo = parseImageDataUrl(settings.logoDataUrl);
+    // Mail clients strip data-URI images, so the logo goes out as an inline
+    // (cid) attachment; the preview iframe can render the data URL directly.
+    const logoUrl = !logo
+      ? null
+      : preview
+        ? settings.logoDataUrl
+        : `cid:${STORE_LOGO_CID}`;
     const data = {
       storeName: settings.storeName,
       storeEmail:
         database.purchaseOrders.getEmailConfig()?.fromAddress ?? storeEmail,
       storePhone,
+      logoUrl,
       number: order.number,
       vendorName: order.vendorName,
       message: order.message,
@@ -1121,6 +1139,17 @@ function registerIpc(): void {
       html: purchaseOrderEmailHtml(data),
       text: purchaseOrderEmailText(data),
       to: order.vendorEmail,
+      attachments:
+        logo && !preview
+          ? [
+              {
+                filename: `store-logo.${logo.mimeType.split('/')[1] ?? 'png'}`,
+                contentType: logo.mimeType,
+                contentBase64: logo.base64,
+                cid: STORE_LOGO_CID,
+              },
+            ]
+          : [],
     };
   };
   ipcMain.handle('purchaseOrders:list', (_event, vendorId) =>
@@ -1135,7 +1164,10 @@ function registerIpc(): void {
     database.createPurchaseOrder(purchaseOrderInputSchema.parse(input)),
   );
   ipcMain.handle('purchaseOrders:preview', (_event, id) =>
-    composePurchaseOrderEmail(database.purchaseOrders.get(idSchema.parse(id))),
+    composePurchaseOrderEmail(
+      database.purchaseOrders.get(idSchema.parse(id)),
+      true,
+    ),
   );
   ipcMain.handle('purchaseOrders:send', async (_event, id, via) => {
     const orderId = idSchema.parse(id);
@@ -1158,6 +1190,7 @@ function registerIpc(): void {
         subject: order.subject,
         textBody: email.text,
         htmlBody: email.html,
+        attachments: email.attachments,
       });
       void mailWorker?.kick();
     } else if (cloudAccount.isAccountSyncConfigured()) {
@@ -1258,6 +1291,63 @@ function registerIpc(): void {
     );
     void mailWorker?.kick();
     return status;
+  });
+
+  // Onboarding: the store-profile wizard runs between cloud sign-in and the
+  // platform, when staff-mode may be on but no staff session exists yet. The
+  // channels are public to the permission layer and gate on the cloud account
+  // being signed in instead.
+  const requireCloudSignIn = async (): Promise<void> => {
+    const state = await cloudAccount.getState();
+    if (!state.signedIn) throw new Error('Sign in to your SUMA account first.');
+  };
+  ipcMain.handle(
+    'onboarding:getProfile',
+    async (): Promise<OnboardingProfile> => {
+      await requireCloudSignIn();
+      return {
+        settings: database.getSettings(),
+        orderEmail:
+          database.purchaseOrders.getEmailConfigStatus(gmailAvailable),
+      };
+    },
+  );
+  ipcMain.handle('onboarding:saveProfile', async (_event, raw) => {
+    await requireCloudSignIn();
+    const input = storeProfileInputSchema.parse(raw);
+    const current = database.getSettings();
+    const contactLines = [
+      ...input.addressLines,
+      ...(input.phone ? [input.phone] : []),
+      ...(input.email ? [input.email] : []),
+    ].slice(0, 4);
+    const updated = database.updateSettings({
+      ...current,
+      storeName: input.storeName,
+      contactLines,
+      receiptFooter: input.receiptFooter,
+      logoDataUrl: input.logoDataUrl,
+      profileCompleted: true,
+    });
+    const emailConfig = database.purchaseOrders.getEmailConfig();
+    if (emailConfig) {
+      database.purchaseOrders.setEmailConfig(
+        {
+          ...emailConfig,
+          fromName: input.orderFromName || input.storeName,
+          ccSelf: input.orderCcSelf,
+        },
+        gmailAvailable,
+      );
+    }
+    return updated;
+  });
+  ipcMain.handle('onboarding:skipProfile', async () => {
+    await requireCloudSignIn();
+    return database.updateSettings({
+      ...database.getSettings(),
+      profileCompleted: true,
+    });
   });
 
   // Settings
