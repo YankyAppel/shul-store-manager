@@ -5,9 +5,11 @@ import {
   BrandShell,
   GoogleIcon,
 } from '@shul-store/brand';
+import type { OnboardingProfile } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
+import { StoreProfileWizard } from './StoreProfileWizard';
 
-type Step = 'email' | 'account' | 'confirm';
+type Step = 'email' | 'account' | 'confirm' | 'profile';
 type Mode = 'signIn' | 'signUp';
 
 export function CloudAccountOnboarding({
@@ -26,6 +28,7 @@ export function CloudAccountOnboarding({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [googleAvailable, setGoogleAvailable] = useState(false);
+  const [profile, setProfile] = useState<OnboardingProfile | null>(null);
 
   useEffect(() => {
     void window.storeApi.cloudAccount
@@ -71,7 +74,7 @@ export function CloudAccountOnboarding({
         );
         setStep('confirm');
       } else {
-        onDone();
+        await afterSignIn();
       }
     } catch (error) {
       setMessage(messageFrom(error));
@@ -85,10 +88,29 @@ export function CloudAccountOnboarding({
     setMessage('Finish signing in with Google in your browser…');
     try {
       await window.storeApi.cloudAccount.signInWithGoogle(email);
-      onDone();
+      await afterSignIn();
     } catch (error) {
       setMessage(messageFrom(error));
       setBusy(false);
+    }
+  }
+
+  /**
+   * Once the cloud account is signed in, run the store-profile wizard unless
+   * this store already completed it (flag synced from another device, or an
+   * account that predates the wizard).
+   */
+  async function afterSignIn() {
+    try {
+      const fetched = await window.storeApi.onboarding.getProfile();
+      if (fetched.settings.profileCompleted) {
+        onDone();
+        return;
+      }
+      setProfile(fetched);
+      setStep('profile');
+    } catch {
+      onDone();
     }
   }
 
@@ -219,6 +241,9 @@ export function CloudAccountOnboarding({
               </button>
             </form>
           </>
+        )}
+        {step === 'profile' && profile && (
+          <StoreProfileWizard profile={profile} onDone={onDone} />
         )}
         {step === 'confirm' && (
           <>

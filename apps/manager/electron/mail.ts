@@ -61,9 +61,16 @@ export interface MailOptions {
   fetchImpl?: typeof globalThis.fetch;
 }
 
+/** The fields a queued email needs in order to send; attachments optional. */
+type SendableEmail = Pick<
+  OutboundEmail,
+  'to' | 'subject' | 'textBody' | 'htmlBody'
+> &
+  Partial<Pick<OutboundEmail, 'attachments'>>;
+
 function composeMessage(
   config: EmailConfig,
-  email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+  email: SendableEmail,
 ): Mail.Options {
   return {
     from: { name: config.fromName, address: config.fromAddress },
@@ -73,6 +80,12 @@ function composeMessage(
     subject: email.subject,
     text: email.textBody,
     html: email.htmlBody,
+    attachments: (email.attachments ?? []).map((attachment) => ({
+      filename: attachment.filename,
+      contentType: attachment.contentType,
+      content: Buffer.from(attachment.contentBase64, 'base64'),
+      ...(attachment.cid ? { cid: attachment.cid } : {}),
+    })),
   };
 }
 
@@ -127,7 +140,7 @@ async function gmailAccessToken(
  */
 async function sendViaGmailApi(
   config: EmailConfig,
-  email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+  email: SendableEmail,
   options: MailOptions,
 ): Promise<void> {
   const accessToken = await gmailAccessToken(config, options);
@@ -186,7 +199,7 @@ function createTransport(config: EmailConfig) {
 
 export async function sendWithConfig(
   config: EmailConfig,
-  email: Pick<OutboundEmail, 'to' | 'subject' | 'textBody' | 'htmlBody'>,
+  email: SendableEmail,
   options: MailOptions = {},
 ): Promise<void> {
   if (config.authType === 'gmail') {

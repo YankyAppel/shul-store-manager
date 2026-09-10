@@ -1395,6 +1395,18 @@ export const migrations: Migration[] = [
       ALTER TABLE device_settings ADD COLUMN email_config_encrypted INTEGER NOT NULL DEFAULT 0 CHECK (email_config_encrypted IN (0, 1));
     `,
   },
+  {
+    version: 31,
+    name: 'store_profile',
+    sql: `
+      ALTER TABLE store_settings ADD COLUMN logo_data_url TEXT;
+      ALTER TABLE store_settings ADD COLUMN profile_completed INTEGER NOT NULL DEFAULT 0 CHECK (profile_completed IN (0, 1));
+      -- Databases that already have real business data predate the onboarding
+      -- wizard; they must not be sent through the profile step.
+      UPDATE store_settings SET profile_completed = 1 WHERE EXISTS (SELECT 1 FROM products);
+      ALTER TABLE outbound_emails ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');
