@@ -441,7 +441,15 @@ export interface StoreApi {
   cloudAccount: {
     getState(): Promise<import('./cloud-account.js').CloudAccountState>;
     shouldShowOnboarding(): Promise<boolean>;
-    dismissOnboarding(): Promise<void>;
+    /** `true`/`false` when the cloud answered, `null` when it could not. */
+    lookupEmail(email: string): Promise<boolean | null>;
+    googleSignInAvailable(): Promise<boolean>;
+    signInWithGoogle(
+      email: string,
+    ): Promise<import('./cloud-account.js').CloudAccountState>;
+    setPassword(
+      password: string,
+    ): Promise<import('./cloud-account.js').CloudAccountState>;
     signIn(
       email: string,
       password: string,

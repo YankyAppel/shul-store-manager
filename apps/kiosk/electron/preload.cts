@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   KioskApi,
   KioskCartLine,
+  KioskCloudGoogleSignInInput,
   KioskCloudSignInInput,
   KioskPairInput,
   UpdateCheckResult,
@@ -12,8 +13,8 @@ const api: KioskApi = {
   pair: (input: KioskPairInput) => ipcRenderer.invoke('kiosk:pair', input),
   cloudSignIn: (input: KioskCloudSignInInput) =>
     ipcRenderer.invoke('kiosk:cloudSignIn', input),
-  cloudSignUp: (input: KioskCloudSignInInput) =>
-    ipcRenderer.invoke('kiosk:cloudSignUp', input),
+  cloudSignInWithGoogle: (input: KioskCloudGoogleSignInInput) =>
+    ipcRenderer.invoke('kiosk:cloudSignInWithGoogle', input),
   getReaderStatus: () => ipcRenderer.invoke('kiosk:getReaderStatus'),
   saveReaderConfig: (input) =>
     ipcRenderer.invoke('kiosk:saveReaderConfig', input),

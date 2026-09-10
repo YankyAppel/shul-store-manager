@@ -15,6 +15,7 @@ module.exports = {
     'package.json',
     'build/icon.png',
     'update-config.cjs',
+    'google-oauth.cjs',
   ],
   extraMetadata: {
     version,

@@ -1,8 +1,14 @@
-import { useState, type FormEvent } from 'react';
-import { ArrowIcon, BrandPanels, BrandShell } from '@shul-store/brand';
+import { useEffect, useState, type FormEvent } from 'react';
+import {
+  ArrowIcon,
+  BrandPanels,
+  BrandShell,
+  GoogleIcon,
+} from '@shul-store/brand';
 import { messageFrom } from '../utils/formatters';
 
 type Step = 'email' | 'account' | 'confirm';
+type Mode = 'signIn' | 'signUp';
 
 export function CloudAccountOnboarding({
   intro,
@@ -15,19 +21,41 @@ export function CloudAccountOnboarding({
   const [step, setStep] = useState<Step>('email');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [mode, setMode] = useState<Mode>('signIn');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [googleAvailable, setGoogleAvailable] = useState(false);
 
-  function continueWithEmail(event: FormEvent) {
+  useEffect(() => {
+    void window.storeApi.cloudAccount
+      .googleSignInAvailable()
+      .then(setGoogleAvailable)
+      .catch(() => setGoogleAvailable(false));
+  }, []);
+
+  async function continueWithEmail(event: FormEvent) {
     event.preventDefault();
     if (!email) return;
+    setBusy(true);
     setMessage('');
-    setStep('account');
+    try {
+      const exists = await window.storeApi.cloudAccount.lookupEmail(email);
+      setMode(exists === false ? 'signUp' : 'signIn');
+      setStep('account');
+    } catch (error) {
+      setMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (mode === 'signUp' && password !== confirmPassword) {
+      setMessage('The passwords do not match.');
+      return;
+    }
     setBusy(true);
     setMessage('');
     try {
@@ -36,6 +64,7 @@ export function CloudAccountOnboarding({
           ? await window.storeApi.cloudAccount.signIn(email, password)
           : await window.storeApi.cloudAccount.signUp(email, password);
       setPassword('');
+      setConfirmPassword('');
       if (mode === 'signUp' && !state.signedIn) {
         setMessage(
           'Account created — confirm the link in your email, then sign in.',
@@ -51,16 +80,29 @@ export function CloudAccountOnboarding({
     }
   }
 
-  async function skip() {
+  async function continueWithGoogle() {
     setBusy(true);
+    setMessage('Finish signing in with Google in your browser…');
     try {
-      await window.storeApi.cloudAccount.dismissOnboarding();
+      await window.storeApi.cloudAccount.signInWithGoogle(email);
       onDone();
     } catch (error) {
       setMessage(messageFrom(error));
       setBusy(false);
     }
   }
+
+  const googleButton = googleAvailable && (
+    <button
+      type="button"
+      className="suma-button suma-button--google"
+      disabled={busy}
+      onClick={() => void continueWithGoogle()}
+    >
+      <GoogleIcon />
+      {mode === 'signIn' ? 'Sign in with Google' : 'Sign up with Google'}
+    </button>
+  );
 
   return (
     <BrandShell intro={intro}>
@@ -71,9 +113,12 @@ export function CloudAccountOnboarding({
             <h1 className="suma-title">Welcome to SUMA</h1>
             <p className="suma-lede">
               Checkout, inventory and ordering for your store — offline-first on
-              this PC, synced to the SUMA cloud when you want it.
+              this PC, backed by your SUMA account in the cloud.
             </p>
-            <form className="suma-form" onSubmit={continueWithEmail}>
+            <form
+              className="suma-form"
+              onSubmit={(event) => void continueWithEmail(event)}
+            >
               <div className="suma-inline">
                 <input
                   autoFocus
@@ -87,33 +132,34 @@ export function CloudAccountOnboarding({
                 <button
                   className="suma-button"
                   type="submit"
-                  disabled={!email}
+                  disabled={!email || busy}
                   aria-label="Continue"
                 >
                   <ArrowIcon />
                 </button>
               </div>
+              {message && <div className="suma-alert">{message}</div>}
             </form>
-            <button
-              type="button"
-              className="suma-button suma-button--link"
-              disabled={busy}
-              onClick={() => void skip()}
-            >
-              Not now — use this PC only
-            </button>
           </>
         )}
         {step === 'account' && (
           <>
             <p className="suma-eyebrow suma-eyebrow--plain">{email}</p>
             <h1 className="suma-title">
-              {mode === 'signIn' ? 'Sign in' : 'Create your account'}
+              {mode === 'signIn' ? 'Welcome back' : 'Create your account'}
             </h1>
+            {mode === 'signUp' && googleAvailable && (
+              <p className="suma-note">
+                Signing up with Google also lets SUMA send purchase orders to
+                your vendors from your Gmail address.
+              </p>
+            )}
             <form
               className="suma-form"
               onSubmit={(event) => void submit(event)}
             >
+              {googleButton}
+              {googleAvailable && <div className="suma-divider">or</div>}
               <input
                 autoFocus
                 className="suma-input"
@@ -127,17 +173,25 @@ export function CloudAccountOnboarding({
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
               />
+              {mode === 'signUp' && (
+                <input
+                  className="suma-input"
+                  type="password"
+                  placeholder="Confirm password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                />
+              )}
               {message && <div className="suma-alert">{message}</div>}
               <button
                 className="suma-button"
                 type="submit"
-                disabled={busy || !password}
+                disabled={
+                  busy || !password || (mode === 'signUp' && !confirmPassword)
+                }
               >
-                {busy
-                  ? 'Working…'
-                  : mode === 'signIn'
-                    ? 'Sign in'
-                    : 'Create account'}
+                {busy ? 'Working…' : mode === 'signIn' ? 'Sign in' : 'Continue'}
               </button>
               <button
                 type="button"
@@ -181,13 +235,6 @@ export function CloudAccountOnboarding({
               }}
             >
               I confirmed — sign in
-            </button>
-            <button
-              type="button"
-              className="suma-button suma-button--link"
-              onClick={onDone}
-            >
-              Continue to SUMA Manager
             </button>
           </>
         )}
