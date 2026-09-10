@@ -519,7 +519,7 @@ export function CheckoutScreen({
                     : ''
                 }
                 onClick={() => setPayment('integrated_card')}
-                style={{ background: '#0d2d20', color: 'white' }}
+                style={{ background: '#0a1710', color: 'white' }}
               >
                 Pay now
               </button>
@@ -756,8 +756,8 @@ export function CheckoutScreen({
               <div style={{ marginTop: '10px' }}>
                 <div
                   style={{
-                    background: '#f8f9fa',
-                    border: '1px solid #e0e5e2',
+                    background: '#f1f1ec',
+                    border: '1px solid rgba(5,11,8,0.10)',
                     borderRadius: '8px',
                     padding: '12px',
                     marginBottom: '10px',
@@ -773,7 +773,7 @@ export function CheckoutScreen({
                         border: 0,
                         background: 'transparent',
                         padding: 0,
-                        color: '#277052',
+                        color: '#1f5e3f',
                         fontSize: '12px',
                       }}
                       onClick={() => {
@@ -854,7 +854,7 @@ export function CheckoutScreen({
                       <span
                         style={{
                           color:
-                            projectedBalanceCents > 0 ? '#87352a' : '#1e684a',
+                            projectedBalanceCents > 0 ? '#87352a' : '#1f5e3f',
                         }}
                       >
                         {projectedBalanceCents > 0
@@ -1216,7 +1216,7 @@ function Receipt({
         {isAccount && (
           <div
             style={{
-              background: '#f8f9fa',
+              background: '#f1f1ec',
               padding: '8px 12px',
               borderRadius: '6px',
               marginBottom: '12px',
@@ -1282,7 +1282,7 @@ function Receipt({
               <p
                 style={{
                   fontWeight: 'bold',
-                  color: '#1e684a',
+                  color: '#1f5e3f',
                   margin: '4px 0',
                 }}
               >

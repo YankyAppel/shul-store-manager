@@ -182,7 +182,7 @@ export function CustomersScreen({
                         color: owesMoney
                           ? '#87352a'
                           : hasCredit
-                            ? '#1e684a'
+                            ? '#1f5e3f'
                             : 'inherit',
                       }}
                     >
@@ -202,7 +202,7 @@ export function CustomersScreen({
                         color:
                           customer.availableCreditCents < 0
                             ? '#87352a'
-                            : '#1e684a',
+                            : '#1f5e3f',
                       }}
                     >
                       {formatMoney(customer.availableCreditCents)}

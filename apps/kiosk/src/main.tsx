@@ -5,6 +5,7 @@ import {
   BrandPanels,
   BrandShell,
   GoogleIcon,
+  sumaCoinImageUrl,
 } from '@shul-store/brand';
 import {
   type KioskCartLine,
@@ -1214,6 +1215,7 @@ function App() {
             This kiosk must be paired again if it restarts.
           </p>
         )}
+        <img src={sumaCoinImageUrl} className="attract-coin" alt="" />
         <h1>Touch to begin</h1>
         <p>Scan an item or choose one on the next screen.</p>
         <button

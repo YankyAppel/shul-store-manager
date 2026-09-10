@@ -229,7 +229,7 @@ export function CustomerDetailsView({
                   customer.currentBalanceCents > 0
                     ? '#87352a'
                     : customer.currentBalanceCents < 0
-                      ? '#1e684a'
+                      ? '#1f5e3f'
                       : '#333',
               }}
             >
@@ -259,7 +259,7 @@ export function CustomerDetailsView({
               <b
                 style={{
                   color:
-                    customer.availableCreditCents < 0 ? '#87352a' : '#1e684a',
+                    customer.availableCreditCents < 0 ? '#87352a' : '#1f5e3f',
                 }}
               >
                 {formatMoney(customer.availableCreditCents)}

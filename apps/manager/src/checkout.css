@@ -9,7 +9,7 @@
 .settings-form,
 .sale-details {
   background: #fff;
-  border: 1px solid #e0e5e2;
+  border: 1px solid rgba(5, 11, 8, 0.1);
   border-radius: 10px;
   padding: 20px;
 }
@@ -17,7 +17,7 @@
   width: 100%;
   font-size: 18px;
   padding: 15px;
-  border: 2px solid #277052;
+  border: 2px solid #1f5e3f;
   border-radius: 9px;
 }
 .search-results {
@@ -32,7 +32,7 @@
 .search-results span,
 .cart-line small {
   display: block;
-  color: #74847b;
+  color: #6f7d75;
   margin-top: 4px;
 }
 .cart h3 {
@@ -44,7 +44,7 @@
   align-items: center;
   gap: 15px;
   padding: 13px 0;
-  border-top: 1px solid #e5e9e6;
+  border-top: 1px solid rgba(5, 11, 8, 0.1);
 }
 .stepper {
   display: flex;
@@ -76,7 +76,7 @@
   margin-top: 8px;
 }
 .pay-box {
-  border-top: 1px solid #e1e6e3;
+  border-top: 1px solid rgba(5, 11, 8, 0.12);
   margin-top: 15px;
 }
 .pay-box label {
@@ -90,8 +90,8 @@
 }
 .success {
   padding: 16px;
-  background: #e3f4e9;
-  color: #17603d;
+  background: #dfece2;
+  color: #1f5e3f;
   border-radius: 9px;
   margin-bottom: 15px;
   font-weight: bold;
@@ -121,7 +121,7 @@
   width: 100%;
   padding: 10px;
   margin-top: 5px;
-  border: 1px solid #ccd6d0;
+  border: 1px solid rgba(5, 11, 8, 0.22);
   border-radius: 7px;
 }
 .sales-history {
@@ -147,7 +147,7 @@
   flex: 1;
 }
 .history {
-  border-top: 1px solid #e2e8e4;
+  border-top: 1px solid rgba(5, 11, 8, 0.1);
   padding-top: 12px;
 }
 .history h3 {

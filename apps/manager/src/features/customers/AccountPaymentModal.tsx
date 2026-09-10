@@ -186,7 +186,7 @@ export function AccountPaymentModal({
               <b
                 style={{
                   color:
-                    customer.currentBalanceCents > 0 ? '#87352a' : '#1e684a',
+                    customer.currentBalanceCents > 0 ? '#87352a' : '#1f5e3f',
                 }}
               >
                 {customer.currentBalanceCents > 0

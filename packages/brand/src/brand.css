@@ -1,3 +1,19 @@
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/inter-var-latin.woff2') format('woff2-variations');
+}
+
+@font-face {
+  font-family: 'Playfair Display';
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+  src: url('../assets/playfair-var-latin.woff2') format('woff2-variations');
+}
+
 :root {
   --suma-ink: #050b08;
   --suma-void: #0a1710;
@@ -7,6 +23,10 @@
   --suma-panel: #f1f1ec;
   --suma-copper: #b87333;
   --suma-mute: #8fa295;
+  --suma-font-sans:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Arial,
+    sans-serif;
+  --suma-font-serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
   --suma-coin-move: 1100ms;
   --suma-panel-move: 480ms;
   --suma-ease: cubic-bezier(0.22, 1, 0.36, 1);

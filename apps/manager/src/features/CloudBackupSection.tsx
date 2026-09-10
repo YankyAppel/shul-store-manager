@@ -154,7 +154,11 @@ export function CloudBackupSection() {
   return (
     <section
       className="settings-form"
-      style={{ borderTop: '1px solid #e0e5e2', marginTop: 16, paddingTop: 16 }}
+      style={{
+        borderTop: '1px solid rgba(5,11,8,0.10)',
+        marginTop: 16,
+        paddingTop: 16,
+      }}
     >
       <details>
         <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
@@ -162,7 +166,7 @@ export function CloudBackupSection() {
         </summary>
         <div style={{ paddingTop: 12 }}>
           <h3 style={{ margin: '0 0 4px 0' }}>Cloud backup (optional)</h3>
-          <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
+          <p style={{ margin: '0 0 12px', color: '#5f6d65', fontSize: '13px' }}>
             Cloud backup is <strong>optional</strong>. The store works fully
             offline and the local database is always the source of truth. Enable
             it to keep a durable backup in your own Supabase project and to
@@ -241,7 +245,7 @@ export function CloudBackupSection() {
               {syncing ? 'Syncing…' : 'Sync now'}
             </button>
             {savedMessage && (
-              <span style={{ color: '#1c6448', fontSize: '13px' }}>
+              <span style={{ color: '#1f5e3f', fontSize: '13px' }}>
                 {savedMessage}
               </span>
             )}
@@ -252,7 +256,7 @@ export function CloudBackupSection() {
               className="alert"
               style={{
                 marginTop: 12,
-                color: testResult.ok ? '#1c6448' : undefined,
+                color: testResult.ok ? '#1f5e3f' : undefined,
               }}
             >
               {testResult.message}
@@ -265,7 +269,7 @@ export function CloudBackupSection() {
             </div>
           )}
           {syncResult && !syncResult.error && (
-            <div className="alert" style={{ marginTop: 12, color: '#1c6448' }}>
+            <div className="alert" style={{ marginTop: 12, color: '#1f5e3f' }}>
               Pushed {syncResult.pushed} event(s); {syncResult.remaining}{' '}
               pending.
               {syncResult.skipped ? ' (A sync was already running.)' : ''}
@@ -361,12 +365,12 @@ function RestorePanel(props: {
       style={{
         marginTop: 16,
         padding: 12,
-        border: '1px dashed #9db2a3',
+        border: '1px dashed rgba(5,11,8,0.25)',
         borderRadius: 6,
       }}
     >
       <h4 style={{ margin: '0 0 4px 0' }}>Restore from cloud</h4>
-      <p style={{ margin: '0 0 10px', color: '#66776d', fontSize: '13px' }}>
+      <p style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: '13px' }}>
         This fresh installation has no local data yet. You can restore a
         previous backup from your Supabase project. This replaces the empty
         local database and is only available now — once data exists, restore is
@@ -413,7 +417,7 @@ function RestorePanel(props: {
           className="alert"
           style={{
             marginTop: 12,
-            color: props.restoreResult.ok ? '#1c6448' : undefined,
+            color: props.restoreResult.ok ? '#1f5e3f' : undefined,
             whiteSpace: 'pre-wrap',
           }}
         >

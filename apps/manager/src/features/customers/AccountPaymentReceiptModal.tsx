@@ -68,7 +68,7 @@ export function AccountPaymentReceiptModal({
 
             <div
               style={{
-                background: '#f8f9fa',
+                background: '#f1f1ec',
                 padding: '10px',
                 borderRadius: '6px',
                 marginBottom: '12px',
@@ -91,7 +91,7 @@ export function AccountPaymentReceiptModal({
               <span>Previous balance</span>
               <b>{formatMoney(payment.previousBalanceCents)}</b>
             </p>
-            <p style={{ color: '#1e684a', fontWeight: 'bold' }}>
+            <p style={{ color: '#1f5e3f', fontWeight: 'bold' }}>
               <span>Payment applied</span>
               <b>-{formatMoney(payment.amountCents)}</b>
             </p>

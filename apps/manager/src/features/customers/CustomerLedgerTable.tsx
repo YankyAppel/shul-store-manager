@@ -94,7 +94,7 @@ export function CustomerLedgerTable({
                   style={{
                     textAlign: 'right',
                     fontWeight: 'bold',
-                    color: isCharge ? '#87352a' : '#1e684a',
+                    color: isCharge ? '#87352a' : '#1f5e3f',
                   }}
                 >
                   {isCharge ? '+' : ''}
