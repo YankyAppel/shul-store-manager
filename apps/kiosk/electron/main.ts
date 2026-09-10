@@ -619,6 +619,7 @@ function localCatalog(): ReturnType<typeof kioskCatalogResponseSchema.parse> {
   const settings = localDatabase.getSettings();
   return {
     storeName: settings.storeName,
+    storeLogoDataUrl: settings.logoDataUrl ?? null,
     categories: localDatabase.listCategories().map((category) => ({
       id: category.id,
       name: category.name,

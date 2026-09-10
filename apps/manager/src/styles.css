@@ -213,9 +213,6 @@ aside {
   height: 38px;
   display: grid;
   place-items: center;
-  border-radius: 11px;
-  background: #b87333;
-  overflow: hidden;
 }
 
 .brand-mark img {

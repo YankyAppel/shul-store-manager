@@ -339,6 +339,7 @@ export class KioskServer {
       if (req.method === 'GET' && url.pathname === '/api/catalog') {
         return json(res, 200, {
           storeName: this.db.getSettings().storeName,
+          storeLogoDataUrl: this.db.getSettings().logoDataUrl ?? null,
           categories: this.db.listCategories().map((category) => ({
             id: category.id,
             name: category.name,

@@ -85,10 +85,50 @@ main {
   margin: 0;
 }
 
-.attract-coin {
-  width: min(34vh, 300px);
-  height: auto;
-  margin-bottom: 1vh;
+.attract-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.attract-logo {
+  max-width: min(34vh, 280px);
+  max-height: 160px;
+  object-fit: contain;
+}
+
+.attract-store-name {
+  min-height: auto;
+  padding: 6px 12px;
+  border: 0;
+  color: #050b08;
+  background: transparent;
+  font-family: var(--suma-font-serif);
+  font-size: clamp(1.4rem, 3vw, 2.2rem);
+  font-weight: 500;
+  letter-spacing: -0.008em;
+}
+
+.powered-by {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5f6d65;
+  font-size: 0.75rem;
+}
+
+.powered-by img {
+  width: 26px;
+  height: 26px;
+}
+
+.powered-by strong {
+  color: #050b08;
 }
 
 .start-button {

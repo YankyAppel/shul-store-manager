@@ -1200,22 +1200,34 @@ function App() {
             onClose={() => setAdminOpen(false)}
           />
         )}
-        <button type="button" className="store-name" onClick={tapStoreName}>
-          {state.storeName || 'Self-checkout'}
-        </button>
+        <div className="attract-identity">
+          {state.catalog?.storeLogoDataUrl && (
+            <img
+              src={state.catalog.storeLogoDataUrl}
+              className="attract-logo"
+              alt=""
+            />
+          )}
+          <button
+            type="button"
+            className="attract-store-name"
+            onClick={tapStoreName}
+          >
+            {state.storeName || 'Self-checkout'}
+          </button>
+        </div>
         <button
           type="button"
           className="shames-button"
           onClick={() => setAdminOpen(true)}
         >
-          Shames
+          Admin
         </button>
         {state.tokenPersistenceWarning && (
           <p className="warning-message">
             This kiosk must be paired again if it restarts.
           </p>
         )}
-        <img src={sumaCoinImageUrl} className="attract-coin" alt="" />
         <h1>Touch to begin</h1>
         <p>Scan an item or choose one on the next screen.</p>
         <button
@@ -1225,6 +1237,12 @@ function App() {
         >
           Start shopping
         </button>
+        <div className="powered-by">
+          <img src={sumaCoinImageUrl} alt="" />
+          <span>
+            Powered by <strong>SUMA Systems</strong>
+          </span>
+        </div>
       </main>
     );
   return (
@@ -1251,7 +1269,7 @@ function App() {
           className="shames-button"
           onClick={() => setAdminOpen(true)}
         >
-          Shames
+          Admin
         </button>
       </header>
       <div className="shopping-layout">
