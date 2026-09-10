@@ -59,6 +59,7 @@ import {
   KIOSK_DISCOVERY_PORT,
   KIOSK_DISCOVERY_PROTOCOL_VERSION,
   encodeKioskDiscoveryBeacon,
+  escapeHtml,
   isHttpsUpdateFeedUrl,
   labelPrintRequestSchema,
   labelsHtml,
@@ -70,10 +71,12 @@ import {
   statementHtml,
   statementOptionsSchema,
   parseImageDataUrl,
+  integrationRequestSchema,
   processorConfigInputSchema,
   storeProfileInputSchema,
   storeSettingsSchema,
   type AccountPaymentReceiptData,
+  type IntegrationRequestResult,
   type OnboardingProfile,
   type CustomerStatementData,
   type LabelPrintRequest,
@@ -311,6 +314,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'onboarding:getProfile': 'public',
   'onboarding:saveProfile': 'public',
   'onboarding:skipProfile': 'public',
+  'onboarding:requestIntegration': 'public',
   'staff:list': 'owner',
   'staff:create': 'owner',
   'staff:update': 'owner',
@@ -1305,10 +1309,12 @@ function registerIpc(): void {
     'onboarding:getProfile',
     async (): Promise<OnboardingProfile> => {
       await requireCloudSignIn();
+      const account = await cloudAccount.getState();
       return {
         settings: database.getSettings(),
         orderEmail:
           database.purchaseOrders.getEmailConfigStatus(gmailAvailable),
+        accountEmail: account.email,
       };
     },
   );
@@ -1328,6 +1334,10 @@ function registerIpc(): void {
       receiptFooter: input.receiptFooter,
       logoDataUrl: input.logoDataUrl,
       profileCompleted: true,
+      cardProcessingEnabled: input.cardProcessorId
+        ? true
+        : current.cardProcessingEnabled,
+      cardProcessorId: input.cardProcessorId ?? current.cardProcessorId,
     });
     const emailConfig = database.purchaseOrders.getEmailConfig();
     if (emailConfig) {
@@ -1349,6 +1359,35 @@ function registerIpc(): void {
       profileCompleted: true,
     });
   });
+  ipcMain.handle(
+    'onboarding:requestIntegration',
+    async (_event, raw): Promise<IntegrationRequestResult> => {
+      await requireCloudSignIn();
+      const input = integrationRequestSchema.parse(raw);
+      // No mail account on this device yet — the wizard shows a mailto
+      // fallback instead of queueing an email that could never send.
+      if (!database.purchaseOrders.getEmailConfig()) return { queued: false };
+      const account = await cloudAccount.getState();
+      const details = [
+        `Store: ${database.getSettings().storeName}`,
+        `From: ${input.name} <${input.contactEmail}>`,
+        `SUMA account: ${account.email ?? '—'}`,
+        `Requested processor: ${input.processor}`,
+        ...(input.notes ? [`Notes: ${input.notes}`] : []),
+      ];
+      database.purchaseOrders.enqueueEmail({
+        purchaseOrderId: null,
+        to: 'support@sumasystems.com',
+        subject: `Custom integration request: ${input.processor}`,
+        textBody: details.join('\n'),
+        htmlBody: `<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#1a1a1a">${details
+          .map((line) => `<p>${escapeHtml(line)}</p>`)
+          .join('')}</div>`,
+      });
+      void mailWorker?.kick();
+      return { queued: true };
+    },
+  );
 
   // Settings
   ipcMain.handle('settings:get', () => database.getSettings());

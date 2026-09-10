@@ -161,8 +161,17 @@ function applySettings(
   // one; an absent flag means the account predates the wizard, so the profile
   // counts as completed.
   const current = connection
-    .prepare('SELECT logo_data_url FROM store_settings WHERE singleton_id = 1')
-    .get() as { logo_data_url: string | null } | undefined;
+    .prepare(
+      `SELECT logo_data_url, card_processing_enabled, card_processor_id
+       FROM store_settings WHERE singleton_id = 1`,
+    )
+    .get() as
+    | {
+        logo_data_url: string | null;
+        card_processing_enabled: number;
+        card_processor_id: string | null;
+      }
+    | undefined;
   const logoDataUrl =
     payload.logoDataUrl === undefined
       ? (current?.logo_data_url ?? null)
@@ -173,6 +182,18 @@ function applySettings(
       : payload.profileCompleted
         ? 1
         : 0;
+  // Card processing is absent on events from before the onboarding wizard;
+  // an absent value keeps whatever the device has configured.
+  const cardProcessingEnabled =
+    payload.cardProcessingEnabled === undefined
+      ? ((current?.card_processing_enabled as number | undefined) ?? 0)
+      : payload.cardProcessingEnabled
+        ? 1
+        : 0;
+  const cardProcessorId =
+    payload.cardProcessorId === undefined
+      ? ((current?.card_processor_id as string | null | undefined) ?? null)
+      : payload.cardProcessorId;
   connection
     .prepare(
       `UPDATE store_settings SET
@@ -182,6 +203,7 @@ function applySettings(
         overdue_days = ?, receipt_printer_name = ?, receipt_paper_width_mm = ?,
         label_printer_name = ?, default_label_template = ?,
         logo_data_url = ?, profile_completed = ?,
+        card_processing_enabled = ?, card_processor_id = ?,
         updated_at = ?
        WHERE singleton_id = 1`,
     )
@@ -203,6 +225,8 @@ function applySettings(
       payload.defaultLabelTemplate,
       logoDataUrl,
       profileCompleted,
+      cardProcessingEnabled,
+      cardProcessorId,
       payload.updatedAt ?? now(),
     );
 }
