@@ -476,6 +476,12 @@ export interface StoreApi {
     refresh(): Promise<import('./cloud-account.js').CloudAccountState>;
     checkout(): Promise<void>;
     portal(): Promise<void>;
+    /** Plan catalog + subscription state for the onboarding billing step. */
+    listPlans(): Promise<import('./checkout.js').StorePlansResult>;
+    /** Embedded Stripe checkout session for a chosen plan (card on file). */
+    embeddedCheckout(
+      planId: string,
+    ): Promise<import('./checkout.js').EmbeddedCheckoutPayload>;
     lookupBarcodeSuggestion(
       barcode: string,
     ): Promise<import('./cloud-account.js').BarcodeSuggestion | null>;

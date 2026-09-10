@@ -266,6 +266,9 @@ const api: StoreApi = {
     refresh: () => ipcRenderer.invoke('cloudAccount:refresh'),
     checkout: () => ipcRenderer.invoke('cloudAccount:checkout'),
     portal: () => ipcRenderer.invoke('cloudAccount:portal'),
+    listPlans: () => ipcRenderer.invoke('cloudAccount:listPlans'),
+    embeddedCheckout: (planId) =>
+      ipcRenderer.invoke('cloudAccount:embeddedCheckout', planId),
     lookupBarcodeSuggestion: (barcode) =>
       ipcRenderer.invoke('cloudAccount:lookupBarcodeSuggestion', barcode),
     shareBarcodeSuggestion: (barcode, name) =>

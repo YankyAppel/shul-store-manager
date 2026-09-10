@@ -520,3 +520,47 @@
   border-color: var(--suma-copper);
   background: rgba(184, 115, 51, 0.14);
 }
+
+/* Mount point for Stripe embedded checkout inside the billing step. */
+.suma-stripe-mount {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
+/* Onboarding → platform handoff: onboarding fades out, the app slides in
+   from the right on the same easing curve as the panel transitions. */
+.suma-onboarding-exit {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  animation: suma-stage-out 680ms var(--suma-ease) both;
+}
+
+.suma-app-enter {
+  animation: suma-app-in 680ms var(--suma-ease) both;
+}
+
+@keyframes suma-stage-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+@keyframes suma-app-in {
+  from {
+    opacity: 0;
+    transform: translateX(56px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

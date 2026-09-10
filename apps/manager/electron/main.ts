@@ -307,6 +307,8 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'cloudAccount:refresh': 'public',
   'cloudAccount:checkout': 'owner',
   'cloudAccount:portal': 'owner',
+  'cloudAccount:listPlans': 'public',
+  'cloudAccount:embeddedCheckout': 'public',
   'cloudAccount:lookupBarcodeSuggestion': 'public',
   'cloudAccount:shareBarcodeSuggestion': 'public',
   // Onboarding runs before any staff session can exist; the handlers
@@ -807,6 +809,12 @@ function registerIpc(): void {
   ipcMain.handle('cloudAccount:refresh', () => cloudAccount.refresh());
   ipcMain.handle('cloudAccount:checkout', () => cloudAccount.checkout());
   ipcMain.handle('cloudAccount:portal', () => cloudAccount.portal());
+  ipcMain.handle('cloudAccount:listPlans', () => cloudAccount.listPlans());
+  ipcMain.handle('cloudAccount:embeddedCheckout', (_event, planId) =>
+    cloudAccount.embeddedCheckout(
+      z.string().trim().min(1).max(100).parse(planId),
+    ),
+  );
   ipcMain.handle('cloudAccount:lookupBarcodeSuggestion', (_event, barcode) =>
     cloudAccount
       .lookupBarcodeSuggestion(z.string().trim().min(1).max(100).parse(barcode))

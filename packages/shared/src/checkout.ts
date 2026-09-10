@@ -108,6 +108,31 @@ export const integrationRequestSchema = z.object({
 });
 export type IntegrationRequest = z.infer<typeof integrationRequestSchema>;
 
+/** A subscription plan offered during onboarding billing. */
+export interface StorePlan {
+  id: string;
+  name: string;
+  description: string;
+  priceCents: number;
+  interval: 'month' | 'year';
+}
+
+export interface StorePlansResult {
+  plans: StorePlan[];
+  /** True when the account already has an active subscription. */
+  active: boolean;
+  status: string;
+  /** False when the site lacks Stripe keys — the step shows a skip notice. */
+  billingConfigured: boolean;
+}
+
+/** Response for mounting Stripe embedded checkout in the app. */
+export interface EmbeddedCheckoutPayload {
+  clientSecret: string;
+  publishableKey: string;
+  plan: StorePlan;
+}
+
 const httpsUrlSchema = z
   .string()
   .trim()
