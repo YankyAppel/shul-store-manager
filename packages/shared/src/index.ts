@@ -249,6 +249,14 @@ export interface RefundIntentAttention {
 export interface OnboardingProfile {
   settings: StoreSettings;
   orderEmail: EmailConfigStatus;
+  /** Signed-in SUMA account email — prefills the integration-request form. */
+  accountEmail: string | null;
+}
+
+/** Result of emailing a custom-integration request to SUMA support. */
+export interface IntegrationRequestResult {
+  /** false when no email account is configured on this device. */
+  queued: boolean;
 }
 
 export interface StoreApi {
@@ -517,6 +525,9 @@ export interface StoreApi {
       input: import('./checkout.js').StoreProfileInput,
     ): Promise<StoreSettings>;
     skipProfile(): Promise<StoreSettings>;
+    requestIntegration(
+      request: import('./checkout.js').IntegrationRequest,
+    ): Promise<IntegrationRequestResult>;
   };
 
   settings: {

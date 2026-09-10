@@ -78,6 +78,14 @@ export const storeSettingsSchema = z.object({
 });
 export type StoreSettings = z.infer<typeof storeSettingsSchema>;
 
+/** Processor ids the onboarding wizard can pick. */
+export const cardProcessorChoiceSchema = z.enum([
+  'cardknox-bbpos',
+  'usaepay-payment-engine',
+  'simulated',
+]);
+export type CardProcessorChoice = z.infer<typeof cardProcessorChoiceSchema>;
+
 /** Inputs the post-sign-up store profile wizard collects. */
 export const storeProfileInputSchema = z.object({
   storeName: z.string().trim().min(1).max(200),
@@ -88,8 +96,17 @@ export const storeProfileInputSchema = z.object({
   logoDataUrl: storeLogoSchema.nullable(),
   orderFromName: z.string().trim().max(100),
   orderCcSelf: z.boolean(),
+  cardProcessorId: cardProcessorChoiceSchema.nullable().default(null),
 });
 export type StoreProfileInput = z.infer<typeof storeProfileInputSchema>;
+
+export const integrationRequestSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  contactEmail: z.string().trim().email().max(320),
+  processor: z.string().trim().min(1).max(200),
+  notes: z.string().trim().max(2000).default(''),
+});
+export type IntegrationRequest = z.infer<typeof integrationRequestSchema>;
 
 const httpsUrlSchema = z
   .string()

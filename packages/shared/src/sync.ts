@@ -64,6 +64,10 @@ export const settingsPayloadSchema = storeSettingsSchema.extend({
   updatedAt: isoString.optional(),
   logoDataUrl: storeLogoSchema.nullable().optional(),
   profileCompleted: z.boolean().optional(),
+  // Optional so events written before the onboarding wizard exist don't
+  // overwrite a device's processor choice with schema defaults.
+  cardProcessingEnabled: z.boolean().optional(),
+  cardProcessorId: z.string().nullable().optional(),
 });
 export type SettingsPayload = z.infer<typeof settingsPayloadSchema>;
 

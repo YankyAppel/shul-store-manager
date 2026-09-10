@@ -1,20 +1,52 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { BrandPanels } from '@shul-store/brand';
-import type { OnboardingProfile } from '@shul-store/shared';
+import type {
+  CardProcessorChoice,
+  OnboardingProfile,
+} from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 import { fileToLogoDataUrl } from '../utils/logo';
 
-type WizardStep = 'store' | 'receipt' | 'emails';
+type WizardStep = 'store' | 'receipt' | 'emails' | 'processor';
 const STEP_INDEX: Record<WizardStep, number> = {
   store: 1,
   receipt: 2,
   emails: 3,
+  processor: 4,
 };
 
+const PROCESSOR_OPTIONS: {
+  id: CardProcessorChoice;
+  name: string;
+  blurb: string;
+  hardware: string;
+}[] = [
+  {
+    id: 'cardknox-bbpos',
+    name: 'Sola / Cardknox — BBPOS reader',
+    blurb: 'Chip & tap on a reader plugged into this PC.',
+    hardware:
+      'A BBPOS reader (e.g. Chipper 2X BT, WisePOS E) ordered through your Sola/Cardknox merchant account.',
+  },
+  {
+    id: 'usaepay-payment-engine',
+    name: 'USAePay — Payment Engine',
+    blurb: 'A standalone Wi-Fi terminal the app pairs to with a code.',
+    hardware:
+      'A standalone terminal (e.g. Castles MP200) loaded with USAePay Payment Engine, from your merchant provider.',
+  },
+  {
+    id: 'simulated',
+    name: 'Simulated — training mode',
+    blurb: 'Fake approvals for staff training. No real charges.',
+    hardware: 'No hardware needed.',
+  },
+];
+
 /**
- * Post-sign-up store profile wizard: identity & contact, receipt details and
- * vendor order-email details. Everything here stays editable afterwards under
- * Settings → General / Order emails.
+ * Post-sign-up store profile wizard: identity & contact, receipt details,
+ * vendor order-email details and the card-processor choice. Everything here
+ * stays editable afterwards under Settings.
  */
 export function StoreProfileWizard({
   profile,
@@ -48,6 +80,16 @@ export function StoreProfileWizard({
     profile.orderEmail.fromName ?? profile.settings.storeName,
   );
   const [orderCcSelf, setOrderCcSelf] = useState(profile.orderEmail.ccSelf);
+  const [cardProcessorId, setCardProcessorId] =
+    useState<CardProcessorChoice | null>(null);
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [reqName, setReqName] = useState(profile.settings.storeName);
+  const [reqEmail, setReqEmail] = useState(profile.accountEmail ?? '');
+  const [reqProcessor, setReqProcessor] = useState('');
+  const [reqNotes, setReqNotes] = useState('');
+  const [reqBusy, setReqBusy] = useState(false);
+  const [reqStatus, setReqStatus] = useState<'sent' | 'manual' | null>(null);
+  const [reqMessage, setReqMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
@@ -106,6 +148,7 @@ export function StoreProfileWizard({
         logoDataUrl,
         orderFromName: orderFromName.trim(),
         orderCcSelf,
+        cardProcessorId,
       });
       onDone();
     } catch (error) {
@@ -114,8 +157,28 @@ export function StoreProfileWizard({
     }
   }
 
+  async function sendRequest(event: FormEvent) {
+    event.preventDefault();
+    setReqBusy(true);
+    setReqMessage('');
+    setReqStatus(null);
+    try {
+      const result = await window.storeApi.onboarding.requestIntegration({
+        name: reqName.trim(),
+        contactEmail: reqEmail.trim(),
+        processor: reqProcessor.trim(),
+        notes: reqNotes.trim(),
+      });
+      setReqStatus(result.queued ? 'sent' : 'manual');
+    } catch (error) {
+      setReqMessage(messageFrom(error));
+    } finally {
+      setReqBusy(false);
+    }
+  }
+
   const stepLabel = (
-    <p className="suma-eyebrow">Store profile · step {STEP_INDEX[step]} of 3</p>
+    <p className="suma-eyebrow">Store profile · step {STEP_INDEX[step]} of 4</p>
   );
   const skipLink = (
     <button
@@ -272,7 +335,13 @@ export function StoreProfileWizard({
               ? `Purchase orders are sent from ${profile.orderEmail.fromAddress}.`
               : 'No email account connected yet — you can add one later under Settings → Order emails.'}
           </p>
-          <form className="suma-form" onSubmit={(event) => void save(event)}>
+          <form
+            className="suma-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setStep('processor');
+            }}
+          >
             <label className="suma-field">
               <span>Vendor emails come from</span>
               <input
@@ -292,7 +361,7 @@ export function StoreProfileWizard({
             </label>
             {message && <div className="suma-alert">{message}</div>}
             <button className="suma-button" type="submit" disabled={busy}>
-              {busy ? 'Saving…' : 'Finish'}
+              Continue
             </button>
             <button
               type="button"
@@ -304,6 +373,119 @@ export function StoreProfileWizard({
             </button>
             {skipLink}
           </form>
+        </>
+      )}
+      {step === 'processor' && (
+        <>
+          {stepLabel}
+          <h1 className="suma-title">Card processing</h1>
+          <p className="suma-lede">
+            Choose how customers pay by card. Everything syncs to your other
+            devices and stays editable under Settings.
+          </p>
+          <div className="suma-options">
+            {PROCESSOR_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className={`suma-option${
+                  cardProcessorId === option.id ? ' suma-option--selected' : ''
+                }`}
+                onClick={() => setCardProcessorId(option.id)}
+              >
+                <strong>{option.name}</strong>
+                <span>{option.blurb}</span>
+                <small>Hardware: {option.hardware}</small>
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="suma-button suma-button--link"
+            onClick={() => setRequestOpen((open) => !open)}
+          >
+            Use a different processor — request an integration
+          </button>
+          {requestOpen && (
+            <form
+              className="suma-form"
+              onSubmit={(event) => void sendRequest(event)}
+            >
+              <input
+                className="suma-input"
+                placeholder="Your name"
+                autoComplete="name"
+                value={reqName}
+                onChange={(event) => setReqName(event.target.value)}
+              />
+              <input
+                className="suma-input"
+                type="email"
+                placeholder="Contact email"
+                autoComplete="email"
+                value={reqEmail}
+                onChange={(event) => setReqEmail(event.target.value)}
+              />
+              <input
+                className="suma-input"
+                placeholder="Processor you use (e.g. Authorize.Net)"
+                value={reqProcessor}
+                onChange={(event) => setReqProcessor(event.target.value)}
+              />
+              <textarea
+                className="suma-input suma-textarea"
+                placeholder="Anything else we should know (optional)"
+                rows={2}
+                value={reqNotes}
+                onChange={(event) => setReqNotes(event.target.value)}
+              />
+              {reqMessage && <div className="suma-alert">{reqMessage}</div>}
+              {reqStatus === 'sent' && (
+                <div className="suma-notice">
+                  Request sent — we&apos;ll reply at your contact email.
+                </div>
+              )}
+              {reqStatus === 'manual' && (
+                <div className="suma-notice">
+                  No email account is connected on this PC yet, so we
+                  couldn&apos;t send the request. Email your processor details
+                  to support@sumasystems.com once you&apos;re set up.
+                </div>
+              )}
+              {reqStatus !== 'sent' && (
+                <button
+                  className="suma-button suma-button--ghost"
+                  type="submit"
+                  disabled={
+                    reqBusy ||
+                    !reqName.trim() ||
+                    !reqEmail.trim() ||
+                    !reqProcessor.trim()
+                  }
+                >
+                  {reqBusy ? 'Sending…' : 'Send request'}
+                </button>
+              )}
+            </form>
+          )}
+          {message && <div className="suma-alert">{message}</div>}
+          <button
+            className="suma-button"
+            type="button"
+            disabled={busy}
+            onClick={(event) => void save(event)}
+          >
+            {busy ? 'Saving…' : 'Finish'}
+          </button>
+          <button
+            type="button"
+            className="suma-button suma-button--link"
+            disabled={busy}
+            onClick={() => setStep('emails')}
+          >
+            Back
+          </button>
+          {skipLink}
         </>
       )}
     </BrandPanels>

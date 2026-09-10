@@ -153,6 +153,8 @@ const api: StoreApi = {
     getProfile: () => ipcRenderer.invoke('onboarding:getProfile'),
     saveProfile: (input) => ipcRenderer.invoke('onboarding:saveProfile', input),
     skipProfile: () => ipcRenderer.invoke('onboarding:skipProfile'),
+    requestIntegration: (request) =>
+      ipcRenderer.invoke('onboarding:requestIntegration', request),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),

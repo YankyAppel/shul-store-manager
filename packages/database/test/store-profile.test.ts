@@ -169,6 +169,35 @@ describe('store profile settings', () => {
     ]);
     expect(store.getSettings().logoDataUrl).toBeNull();
   });
+
+  it('applies the card processor choice from a newer payload', () => {
+    store.replayValidatedEvents([
+      settingsEvent({
+        cardProcessingEnabled: true,
+        cardProcessorId: 'cardknox-bbpos',
+      }),
+    ]);
+    const settings = store.getSettings();
+    expect(settings.cardProcessingEnabled).toBe(true);
+    expect(settings.cardProcessorId).toBe('cardknox-bbpos');
+  });
+
+  it('keeps the local processor when a legacy payload omits it', () => {
+    store.updateSettings({
+      ...store.getSettings(),
+      cardProcessingEnabled: true,
+      cardProcessorId: 'usaepay-payment-engine',
+    });
+    store.replayValidatedEvents([
+      settingsEvent({ storeName: 'Old Synced Store' }, [
+        'cardProcessingEnabled',
+        'cardProcessorId',
+      ]),
+    ]);
+    const settings = store.getSettings();
+    expect(settings.cardProcessingEnabled).toBe(true);
+    expect(settings.cardProcessorId).toBe('usaepay-payment-engine');
+  });
 });
 
 describe('outbound email attachments', () => {

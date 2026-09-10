@@ -448,3 +448,75 @@
   border: 1px solid rgba(143, 200, 160, 0.4);
   color: #d8f0e0;
 }
+
+.suma-notice {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  text-align: left;
+  background: rgba(232, 233, 228, 0.08);
+  border: 1px solid rgba(232, 233, 228, 0.18);
+  color: var(--suma-cream);
+}
+
+/* Onboarding processor choice cards. */
+.suma-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 420px;
+  margin: 4px 0;
+}
+
+.suma-option {
+  height: auto;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(232, 233, 228, 0.18);
+  background: rgba(5, 11, 8, 0.55);
+  color: var(--suma-cream);
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms,
+    background 160ms;
+}
+
+.suma-option strong,
+.suma-option span,
+.suma-option small {
+  display: block;
+}
+
+.suma-option strong {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.suma-option span {
+  margin-top: 3px;
+  color: var(--suma-mute);
+  font-size: 12.5px;
+}
+
+.suma-option small {
+  margin-top: 8px;
+  color: var(--suma-mute);
+  font-size: 11.5px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.suma-option:hover {
+  border-color: rgba(232, 233, 228, 0.4);
+}
+
+.suma-option--selected {
+  border-color: var(--suma-copper);
+  background: rgba(184, 115, 51, 0.14);
+}
