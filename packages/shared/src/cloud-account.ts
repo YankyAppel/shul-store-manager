@@ -13,6 +13,8 @@ export type CloudEntitlement = z.infer<typeof cloudEntitlementSchema>;
 export interface CloudAccountState {
   email: string | null;
   signedIn: boolean;
+  /** Email + password sign-in works (false for Google-only accounts). */
+  hasPassword: boolean;
   entitlement: CloudEntitlement | null;
 }
 
@@ -31,5 +33,6 @@ export interface BarcodeSuggestion {
 export const emptyCloudAccountState = (): CloudAccountState => ({
   email: null,
   signedIn: false,
+  hasPassword: false,
   entitlement: null,
 });

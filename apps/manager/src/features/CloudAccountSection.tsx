@@ -22,6 +22,9 @@ export function CloudAccountSection() {
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [editingPassword, setEditingPassword] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -61,6 +64,29 @@ export function CloudAccountSection() {
           : mode === 'signUp'
             ? 'Account created.'
             : 'Signed in.',
+      );
+    } catch (error) {
+      setMessage(messageFrom(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePassword(event: FormEvent) {
+    event.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setMessage('The passwords do not match.');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      setState(await window.storeApi.cloudAccount.setPassword(newPassword));
+      setNewPassword('');
+      setConfirmPassword('');
+      setEditingPassword(false);
+      setMessage(
+        'Password saved. You can now sign in with email and password.',
       );
     } catch (error) {
       setMessage(messageFrom(error));
@@ -163,6 +189,55 @@ export function CloudAccountSection() {
               Sign out
             </button>
           </div>
+          <h4 style={{ margin: '18px 0 4px' }}>Password</h4>
+          {editingPassword ? (
+            <form onSubmit={(event) => void savePassword(event)}>
+              <div className="form-grid">
+                <label>
+                  New password
+                  <input
+                    type="password"
+                    required
+                    minLength={8}
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(event) => setNewPassword(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Confirm password
+                  <input
+                    type="password"
+                    required
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                  />
+                </label>
+              </div>
+              <button className="primary" disabled={busy}>
+                {busy ? 'Saving…' : 'Save password'}
+              </button>{' '}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setEditingPassword(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <>
+              <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: 13 }}>
+                {state.hasPassword
+                  ? 'You can sign in with your email and password, or with Google using the same email.'
+                  : 'You signed up with Google. Set a password to also sign in with email and password.'}
+              </p>
+              <button disabled={busy} onClick={() => setEditingPassword(true)}>
+                {state.hasPassword ? 'Change password' : 'Set a password'}
+              </button>
+            </>
+          )}
         </>
       )}
       {message && <p>{message}</p>}

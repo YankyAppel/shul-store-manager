@@ -107,7 +107,17 @@ import { restoreInputSchema, syncConfigInputSchema } from '@shul-store/shared';
 import { ManagerSession, type IpcRequirement } from './session.js';
 import { CloudAccountManager } from './cloud-account.js';
 import { MailWorker, testConfig as testEmailConfig } from './mail.js';
-import { connectGmail, type GoogleOAuthClient } from './google-oauth.js';
+import {
+  authorizeGoogle,
+  createNonce,
+  GMAIL_SEND_SCOPE,
+  IDENTITY_SCOPES,
+} from '@shul-store/google-auth';
+import {
+  connectGmail,
+  gmailGrantFrom,
+  type GoogleOAuthClient,
+} from './google-oauth.js';
 
 /**
  * electron-updater is CommonJS, so its bindings are only reachable through the
@@ -281,7 +291,10 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'auth:createFirstOwner': 'public',
   'cloudAccount:getState': 'public',
   'cloudAccount:shouldShowOnboarding': 'public',
-  'cloudAccount:dismissOnboarding': 'public',
+  'cloudAccount:lookupEmail': 'public',
+  'cloudAccount:googleSignInAvailable': 'public',
+  'cloudAccount:signInWithGoogle': 'public',
+  'cloudAccount:setPassword': 'owner',
   'cloudAccount:signIn': 'public',
   'cloudAccount:signUp': 'public',
   'cloudAccount:signOut': 'public',
@@ -718,8 +731,53 @@ function registerIpc(): void {
   ipcMain.handle('cloudAccount:shouldShowOnboarding', () =>
     cloudAccount.shouldShowOnboarding(),
   );
-  ipcMain.handle('cloudAccount:dismissOnboarding', () =>
-    cloudAccount.dismissOnboarding(),
+  ipcMain.handle('cloudAccount:lookupEmail', (_event, email) =>
+    cloudAccount.lookupEmail(z.string().trim().email().parse(email)),
+  );
+  ipcMain.handle('cloudAccount:googleSignInAvailable', () => gmailAvailable);
+  ipcMain.handle('cloudAccount:signInWithGoogle', async (_event, email) => {
+    if (!gmailAvailable)
+      throw new Error('Google sign-in is not available in this build.');
+    const loginHint = z.string().trim().email().parse(email);
+    const nonce = createNonce();
+    const grant = await authorizeGoogle(
+      googleOAuthClient,
+      (url) => shell.openExternal(url),
+      {
+        scopes: [...IDENTITY_SCOPES, GMAIL_SEND_SCOPE],
+        offline: true,
+        nonce: nonce.hashed,
+        loginHint,
+        successTitle: 'Signed in to SUMA',
+        successBody: 'You can close this tab and return to SUMA Manager.',
+      },
+    );
+    if (!grant.idToken)
+      throw new Error('Google did not return an identity token.');
+    const state = await cloudAccount.signInWithGoogle(grant.idToken, nonce.raw);
+    const gmail = gmailGrantFrom(grant);
+    if (gmail && database.purchaseOrders.getEmailConfig() === null) {
+      database.purchaseOrders.setEmailConfig(
+        {
+          host: 'smtp.gmail.com',
+          port: 465,
+          secure: true,
+          username: gmail.email,
+          password: '',
+          authType: 'gmail',
+          oauth: gmail.oauth,
+          fromName: database.getSettings().storeName || 'Store',
+          fromAddress: gmail.email,
+          ccSelf: false,
+        },
+        gmailAvailable,
+      );
+      void mailWorker?.kick();
+    }
+    return state;
+  });
+  ipcMain.handle('cloudAccount:setPassword', (_event, password) =>
+    cloudAccount.setPassword(z.string().min(8).max(500).parse(password)),
   );
   ipcMain.handle('cloudAccount:signIn', (_event, email, password) =>
     cloudAccount.signIn(
@@ -1906,13 +1964,6 @@ app.whenReady().then(async () => {
     globalThis.fetch,
     async (url) => {
       await shell.openExternal(url);
-    },
-    () => {
-      if (!database) return false;
-      const config = database.getSyncConfigRecord();
-      return Boolean(
-        config.enabled && config.supabaseUrl && config.apiKeySecret,
-      );
     },
     {
       getLocalStoreIdentity: () => {

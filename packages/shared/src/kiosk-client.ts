@@ -70,6 +70,12 @@ export interface KioskCloudSignInInput {
   adminPin: string;
 }
 
+/** Google sign-in runs in the main process; the renderer only supplies these. */
+export interface KioskCloudGoogleSignInInput {
+  email: string;
+  adminPin: string;
+}
+
 export interface KioskReaderConfig {
   processorId?: 'cardknox-bbpos' | 'usaepay-payment-engine';
   apiKey: string;
@@ -216,6 +222,7 @@ export interface KioskPublicState {
   adminLockedUntil: number | null;
   discoveredManagers: KioskDiscoveredManager[];
   readerStatus: KioskReaderStatus;
+  googleSignInAvailable: boolean;
 }
 
 export type KioskAdminResult = { ok: true } | { ok: false; message: string };
@@ -232,7 +239,9 @@ export interface KioskMainHandlers {
   startDiscovery(): Promise<void>;
   stopDiscovery(): Promise<void>;
   cloudSignIn(input: KioskCloudSignInInput): Promise<KioskPublicState>;
-  cloudSignUp(input: KioskCloudSignInInput): Promise<KioskPublicState>;
+  cloudSignInWithGoogle(
+    input: KioskCloudGoogleSignInInput,
+  ): Promise<KioskPublicState>;
   getReaderStatus(): Promise<KioskReaderStatus>;
   saveReaderConfig(input: KioskReaderConfig): Promise<KioskReaderStatus>;
   pairUsaepayDevice(input: {

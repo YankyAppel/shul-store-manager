@@ -79,6 +79,7 @@ describe('CloudAccountManager', () => {
     expect(state).toEqual({
       email: 'owner@example.com',
       signedIn: true,
+      hasPassword: true,
       entitlement: {
         tier: 'standalone',
         active: false,
@@ -132,6 +133,7 @@ describe('CloudAccountManager', () => {
     await expect(manager.getState()).resolves.toMatchObject({
       email: null,
       signedIn: false,
+      hasPassword: false,
       entitlement: null,
     });
   });
@@ -203,6 +205,7 @@ describe('CloudAccountManager', () => {
     ).resolves.toEqual({
       email: 'new@example.com',
       signedIn: false,
+      hasPassword: true,
       entitlement: null,
     });
     expect(calls.some((url) => url.endsWith('/api/store/account'))).toBe(false);
@@ -239,6 +242,7 @@ describe('CloudAccountManager', () => {
     await expect(manager.getState()).resolves.toMatchObject({
       email: 'owner@example.com',
       signedIn: true,
+      hasPassword: true,
       entitlement: { tier: 'standalone', active: true },
     });
     await expect(manager.refresh()).resolves.toMatchObject({
@@ -350,5 +354,97 @@ describe('CloudAccountManager', () => {
     expect(result.pushed).toBe(1);
     expect(database.pendingSyncEventCount()).toBe(0);
     database.close();
+  });
+  it('requires onboarding until a cloud account is signed in', async () => {
+    const file = accountFile();
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = String(input);
+      if (url.endsWith('/api/store/account-lookup'))
+        return jsonResponse({ exists: true });
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    const manager = new CloudAccountManager(file, secretStore, fetchImpl);
+
+    await expect(manager.shouldShowOnboarding()).resolves.toBe(true);
+    await expect(manager.lookupEmail('owner@example.com')).resolves.toBe(true);
+  });
+
+  it('answers null when the email lookup is unavailable', async () => {
+    const manager = new CloudAccountManager(
+      accountFile(),
+      secretStore,
+      async () => jsonResponse({ error: 'down' }, 503),
+    );
+    await expect(manager.lookupEmail('owner@example.com')).resolves.toBeNull();
+  });
+
+  it('signs in with a Google ID token and can add a password afterwards', async () => {
+    const file = accountFile();
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/api/store/config'))
+        return jsonResponse({
+          supabase_url: 'https://supabase.example',
+          supabase_anon_key: 'anon-key',
+        });
+      if (url.includes('/auth/v1/token?grant_type=id_token')) {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return jsonResponse({
+          access_token: 'access',
+          refresh_token: 'refresh',
+          expires_in: 3600,
+          user: {
+            email: 'owner@example.com',
+            app_metadata: { providers: ['google'] },
+          },
+        });
+      }
+      if (url.endsWith('/auth/v1/user') && init?.method === 'PUT') {
+        bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        expect(init.headers).toMatchObject({ Authorization: 'Bearer access' });
+        return jsonResponse({ id: 'user' });
+      }
+      if (url.endsWith('/api/store/account'))
+        return jsonResponse({
+          account: { store_id: '11111111-1111-4111-8111-111111111111' },
+        });
+      if (url.endsWith('/api/store/entitlement'))
+        return jsonResponse({
+          tier: 'standalone',
+          active: true,
+          price: 10,
+          status: 'active',
+          current_period_end: null,
+        });
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? ''}`);
+    };
+    const manager = new CloudAccountManager(file, secretStore, fetchImpl);
+
+    const signedIn = await manager.signInWithGoogle('google-id-token', 'nonce');
+    expect(signedIn).toMatchObject({
+      email: 'owner@example.com',
+      signedIn: true,
+      hasPassword: false,
+    });
+    expect(bodies[0]).toEqual({
+      provider: 'google',
+      id_token: 'google-id-token',
+      nonce: 'nonce',
+    });
+    await expect(manager.shouldShowOnboarding()).resolves.toBe(false);
+
+    const withPassword = await manager.setPassword('long-enough');
+    expect(withPassword.hasPassword).toBe(true);
+    expect(bodies[1]).toEqual({ password: 'long-enough' });
+    const stored = JSON.parse(await readFile(file, 'utf8')) as {
+      hasPassword: boolean;
+      accessToken: string;
+    };
+    expect(stored.hasPassword).toBe(true);
+    expect(stored.accessToken).not.toContain('access');
+
+    await manager.signOut();
+    await expect(manager.shouldShowOnboarding()).resolves.toBe(true);
   });
 });
