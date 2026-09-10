@@ -243,8 +243,14 @@ const api: StoreApi = {
     getState: () => ipcRenderer.invoke('cloudAccount:getState'),
     shouldShowOnboarding: () =>
       ipcRenderer.invoke('cloudAccount:shouldShowOnboarding'),
-    dismissOnboarding: () =>
-      ipcRenderer.invoke('cloudAccount:dismissOnboarding'),
+    lookupEmail: (email) =>
+      ipcRenderer.invoke('cloudAccount:lookupEmail', email),
+    googleSignInAvailable: () =>
+      ipcRenderer.invoke('cloudAccount:googleSignInAvailable'),
+    signInWithGoogle: (email) =>
+      ipcRenderer.invoke('cloudAccount:signInWithGoogle', email),
+    setPassword: (password) =>
+      ipcRenderer.invoke('cloudAccount:setPassword', password),
     signIn: (email, password) =>
       ipcRenderer.invoke('cloudAccount:signIn', email, password),
     signUp: (email, password) =>

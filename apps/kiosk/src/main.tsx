@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { ArrowIcon, BrandPanels, BrandShell } from '@shul-store/brand';
+import {
+  ArrowIcon,
+  BrandPanels,
+  BrandShell,
+  GoogleIcon,
+} from '@shul-store/brand';
 import {
   type KioskCartLine,
   type KioskPriceQuote,
@@ -113,15 +118,22 @@ function PairingScreen({
       setBusy(false);
     }
   }
-  async function cloudSignIn() {
+  async function cloudSignIn(withGoogle: boolean) {
     setBusy(true);
-    setMessage('');
+    setMessage(
+      withGoogle ? 'Finish signing in with Google in your browser…' : '',
+    );
     try {
-      const next = await window.kioskApi.cloudSignIn({
-        email: email.trim(),
-        password,
-        adminPin: pin,
-      });
+      const next = withGoogle
+        ? await window.kioskApi.cloudSignInWithGoogle({
+            email: email.trim(),
+            adminPin: pin,
+          })
+        : await window.kioskApi.cloudSignIn({
+            email: email.trim(),
+            password,
+            adminPin: pin,
+          });
       onPaired(next);
     } catch (error) {
       setMessage(
@@ -186,18 +198,9 @@ function PairingScreen({
               className="suma-form"
               onSubmit={(event) => {
                 event.preventDefault();
-                void cloudSignIn();
+                void cloudSignIn(false);
               }}
             >
-              <input
-                autoFocus
-                className="suma-input"
-                type="password"
-                placeholder="Password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-              />
               <label className="suma-field">
                 Admin PIN for this kiosk
                 <output className="pin-display">
@@ -208,6 +211,28 @@ function PairingScreen({
                 value={pin}
                 onChange={setPin}
                 maxLength={ADMIN_PIN_LENGTH}
+              />
+              {state.googleSignInAvailable && (
+                <>
+                  <button
+                    type="button"
+                    className="suma-button suma-button--google"
+                    disabled={busy || pin.length < 4}
+                    onClick={() => void cloudSignIn(true)}
+                  >
+                    <GoogleIcon />
+                    Sign in with Google
+                  </button>
+                  <div className="suma-divider">or</div>
+                </>
+              )}
+              <input
+                className="suma-input"
+                type="password"
+                placeholder="Password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
               />
               {message && <div className="suma-alert">{message}</div>}
               <button

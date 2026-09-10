@@ -9,9 +9,16 @@ import {
   ipcMain,
   powerMonitor,
   safeStorage,
+  shell,
 } from 'electron';
 import electronUpdater from 'electron-updater';
 import { z } from 'zod';
+import {
+  authorizeGoogle,
+  createNonce,
+  IDENTITY_SCOPES,
+  type GoogleOAuthClient,
+} from '@shul-store/google-auth';
 import { StoreDatabase } from '@shul-store/database';
 import {
   AccountSupabaseTransport,
@@ -36,6 +43,7 @@ import {
   SCRYPT_R,
   type KioskAdminResult,
   type KioskCartLine,
+  type KioskCloudGoogleSignInInput,
   type KioskCloudSignInInput,
   type KioskChargeResult,
   type KioskConnection,
@@ -66,6 +74,10 @@ const require = createRequire(import.meta.url);
 const { githubUpdateRepository } = require('../update-config.cjs') as {
   githubUpdateRepository: { owner: string; repo: string };
 };
+const { googleOAuthClient } = require('../google-oauth.cjs') as {
+  googleOAuthClient: GoogleOAuthClient;
+};
+const googleSignInAvailable = googleOAuthClient.clientId.length > 0;
 
 const DEFAULT_PORT = 3939;
 const CATALOG_REFRESH_MS = 600000;
@@ -348,6 +360,7 @@ function publicState(): KioskPublicState {
       a.storeName.localeCompare(b.storeName),
     ),
     readerStatus: readerStatus(),
+    googleSignInAvailable,
   };
 }
 
@@ -633,8 +646,6 @@ async function cloudSignIn(
     })
     .parse(input);
   const config = await cloudConfig();
-  state.cloudSupabaseUrl = config.supabaseUrl;
-  state.cloudSupabaseAnonKey = config.anonKey;
   const response = await fetch(
     `${config.supabaseUrl}/auth/v1/token?grant_type=password`,
     {
@@ -645,11 +656,94 @@ async function cloudSignIn(
   );
   if (!response.ok)
     throw new Error('Sign-in failed. Check your email and password.');
-  const value = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-  };
+  return finishCloudSignIn(
+    config,
+    (await response.json()) as CloudTokenResponse,
+    parsed.email,
+    parsed.adminPin,
+  );
+}
+
+/**
+ * Sign in with the Google account that owns the SUMA account. Accounts are
+ * created in SUMA Manager only, so unknown emails are refused before Google
+ * is even opened (Supabase would otherwise create one from the ID token).
+ */
+async function cloudSignInWithGoogle(
+  input: KioskCloudGoogleSignInInput,
+): Promise<KioskPublicState> {
+  if (!googleSignInAvailable)
+    throw new Error('Google sign-in is not available in this build.');
+  const parsed = z
+    .object({
+      email: z.string().trim().email(),
+      adminPin: z.string().regex(/^\d{4,12}$/),
+    })
+    .parse(input);
+  const config = await cloudConfig();
+  const lookup = await fetch(`${CLOUD_SITE_URL}/api/store/account-lookup`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: parsed.email }),
+  });
+  const lookupValue = lookup.ok
+    ? ((await lookup.json()) as { exists?: unknown })
+    : null;
+  if (lookupValue?.exists === false)
+    throw new Error(
+      'No SUMA account uses this email. Create the account in SUMA Manager first.',
+    );
+  const nonce = createNonce();
+  const grant = await authorizeGoogle(
+    googleOAuthClient,
+    (url) => shell.openExternal(url),
+    {
+      scopes: IDENTITY_SCOPES,
+      nonce: nonce.hashed,
+      loginHint: parsed.email,
+      successTitle: 'Signed in to SUMA',
+      successBody: 'You can close this tab and return to SUMA Kiosk.',
+    },
+  );
+  if (!grant.idToken)
+    throw new Error('Google did not return an identity token.');
+  if (grant.email.toLowerCase() !== parsed.email.toLowerCase())
+    throw new Error(
+      `You signed in to Google as ${grant.email}. Use the Google account for ${parsed.email}.`,
+    );
+  const response = await fetch(
+    `${config.supabaseUrl}/auth/v1/token?grant_type=id_token`,
+    {
+      method: 'POST',
+      headers: { apikey: config.anonKey, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'google',
+        id_token: grant.idToken,
+        nonce: nonce.raw,
+      }),
+    },
+  );
+  if (!response.ok) throw new Error('Google sign-in failed. Please try again.');
+  return finishCloudSignIn(
+    config,
+    (await response.json()) as CloudTokenResponse,
+    grant.email,
+    parsed.adminPin,
+  );
+}
+
+interface CloudTokenResponse {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+}
+
+async function finishCloudSignIn(
+  config: { supabaseUrl: string; anonKey: string },
+  value: CloudTokenResponse,
+  email: string,
+  adminPin: string,
+): Promise<KioskPublicState> {
   if (!value.access_token || !value.refresh_token)
     throw new Error('Please confirm your email, then sign in again.');
   cloudAccessToken = value.access_token;
@@ -688,9 +782,9 @@ async function cloudSignIn(
     apiKeySecret: config.anonKey,
     apiKeyEncrypted: false,
   });
-  state.cloudEmail = parsed.email;
+  state.cloudEmail = email;
   state.cloudStoreId = storeId;
-  state.localAdminPinHash = localPinHash(parsed.adminPin);
+  state.localAdminPinHash = localPinHash(adminPin);
   state.storeName = localDatabase.getSettings().storeName;
   state.catalog = localCatalog();
   token = null;
@@ -701,35 +795,6 @@ async function cloudSignIn(
   await persist();
   publish();
   return publicState();
-}
-
-async function cloudSignUp(
-  input: KioskCloudSignInInput,
-): Promise<KioskPublicState> {
-  const parsed = z
-    .object({
-      email: z.string().trim().email(),
-      password: z.string().min(6),
-      adminPin: z.string().regex(/^\d{4,12}$/),
-    })
-    .parse(input);
-  const config = await cloudConfig();
-  const response = await fetch(`${config.supabaseUrl}/auth/v1/signup`, {
-    method: 'POST',
-    headers: { apikey: config.anonKey, 'content-type': 'application/json' },
-    body: JSON.stringify({ email: parsed.email, password: parsed.password }),
-  });
-  if (!response.ok)
-    throw new Error('Account creation failed. Please check your details.');
-  const value = (await response.json()) as {
-    access_token?: string;
-    refresh_token?: string;
-  };
-  if (!value.access_token || !value.refresh_token)
-    throw new Error(
-      'Account created — confirm the link in your email, then sign in.',
-    );
-  return cloudSignIn(input);
 }
 
 async function responseError(response: Response): Promise<string> {
@@ -1299,7 +1364,7 @@ function registerIpc(): void {
     startDiscovery,
     stopDiscovery: async () => stopDiscovery(),
     cloudSignIn,
-    cloudSignUp,
+    cloudSignInWithGoogle,
     getReaderStatus: async () => readerStatus(),
     saveReaderConfig: async (input) => saveReaderConfig(input),
     pairUsaepayDevice,
@@ -1314,8 +1379,10 @@ function registerIpc(): void {
   ipcMain.handle('kiosk:cloudSignIn', (_event, input: KioskCloudSignInInput) =>
     handlers.cloudSignIn(input),
   );
-  ipcMain.handle('kiosk:cloudSignUp', (_event, input: KioskCloudSignInInput) =>
-    handlers.cloudSignUp(input),
+  ipcMain.handle(
+    'kiosk:cloudSignInWithGoogle',
+    (_event, input: KioskCloudGoogleSignInInput) =>
+      handlers.cloudSignInWithGoogle(input),
   );
   ipcMain.handle('kiosk:getReaderStatus', () => handlers.getReaderStatus());
   ipcMain.handle('kiosk:saveReaderConfig', (_event, input) =>

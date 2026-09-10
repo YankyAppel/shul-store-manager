@@ -22,9 +22,8 @@ const REFRESH_THROTTLE_MS = 5 * 60 * 1000;
 type FetchImpl = typeof globalThis.fetch;
 interface Stored {
   accountStarted: boolean;
-  onboardingDismissed: boolean;
-  /** Set by an explicit sign-out; brings the welcome screen back next launch. */
-  signedOut: boolean;
+  /** The account can sign in with email + password (not only Google). */
+  hasPassword: boolean;
   siteUrl: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
@@ -38,6 +37,19 @@ interface Stored {
   entitlementOffline: boolean;
 }
 
+interface AuthResponse {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  user?: { email?: string; app_metadata?: { providers?: unknown } };
+}
+
+/** Supabase lists `email` among the providers once a password is set. */
+function hasPasswordProvider(user: AuthResponse['user']): boolean {
+  const providers = user?.app_metadata?.providers;
+  return Array.isArray(providers) && providers.includes('email');
+}
+
 export interface CloudAccountHooks {
   getLocalStoreIdentity?: () => {
     storeId: string | null;
@@ -49,8 +61,7 @@ export interface CloudAccountHooks {
 function initial(): Stored {
   return {
     accountStarted: false,
-    onboardingDismissed: false,
-    signedOut: false,
+    hasPassword: false,
     siteUrl: SITE_URL,
     supabaseUrl: '',
     supabaseAnonKey: '',
@@ -76,7 +87,6 @@ export class CloudAccountManager {
     private readonly secretStore: SecretStore,
     private readonly fetchImpl: FetchImpl = globalThis.fetch,
     private readonly openExternal?: (url: string) => Promise<void>,
-    private readonly hasLegacySync?: () => boolean,
     private readonly hooks: CloudAccountHooks = {},
   ) {}
 
@@ -86,13 +96,16 @@ export class CloudAccountManager {
       const raw = JSON.parse(
         await readFile(this.filename, 'utf8'),
       ) as Partial<Stored>;
-      this.stored = { ...initial(), ...raw };
+      this.stored = {
+        ...initial(),
+        ...raw,
+        // Accounts signed in before Google sign-in existed used a password.
+        hasPassword: raw.hasPassword ?? Boolean(raw.accessToken),
+      };
       if (LEGACY_SITE_URLS.has(this.stored.siteUrl)) {
         this.stored = {
           ...initial(),
           accountStarted: this.stored.accountStarted,
-          onboardingDismissed: this.stored.onboardingDismissed,
-          signedOut: this.stored.signedOut,
           storeId: this.stored.storeId,
         };
         this.loaded = true;
@@ -139,6 +152,7 @@ export class CloudAccountManager {
     return {
       email: this.stored.email,
       signedIn: Boolean(this.stored.accessToken && this.stored.refreshToken),
+      hasPassword: this.stored.hasPassword,
       entitlement: this.stored.entitlement
         ? {
             ...this.stored.entitlement,
@@ -175,24 +189,30 @@ export class CloudAccountManager {
     return this.state();
   }
 
+  /** Every PC must be signed in to a SUMA account before the platform opens. */
   async shouldShowOnboarding(): Promise<boolean> {
     await this.load();
-    if (this.stored.signedOut) return true;
-    if (this.stored.accountStarted || this.stored.onboardingDismissed)
-      return false;
-    if (this.hasLegacySync?.()) {
-      this.stored.onboardingDismissed = true;
-      await this.save();
-      return false;
-    }
-    return true;
+    return !this.state().signedIn;
   }
 
-  async dismissOnboarding(): Promise<void> {
+  /** Whether an account already exists for this email (`null` when unknown). */
+  async lookupEmail(email: string): Promise<boolean | null> {
     await this.load();
-    this.stored.onboardingDismissed = true;
-    this.stored.signedOut = false;
-    await this.save();
+    try {
+      const response = await this.fetchImpl(
+        `${this.stored.siteUrl}/api/store/account-lookup`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        },
+      );
+      if (!response.ok) return null;
+      const value = (await response.json()) as { exists?: unknown };
+      return typeof value.exists === 'boolean' ? value.exists : null;
+    } catch {
+      return null;
+    }
   }
 
   async getSupabaseConfig(): Promise<CloudAccountConfig> {
@@ -253,6 +273,7 @@ export class CloudAccountManager {
     pathname: string,
     body: Record<string, string>,
     isSignUp = false,
+    fallbackMessage = 'Sign-in failed. Check your email and password.',
   ): Promise<boolean> {
     const config = await this.getSupabaseConfig();
     const response = await this.fetchImpl(
@@ -267,7 +288,7 @@ export class CloudAccountManager {
       },
     );
     if (!response.ok) {
-      if (isSignUp) {
+      if (isSignUp || pathname.includes('id_token')) {
         const error = (await response.json().catch(() => null)) as {
           msg?: unknown;
           error_description?: unknown;
@@ -277,35 +298,31 @@ export class CloudAccountManager {
             ? error.msg
             : typeof error?.error_description === 'string'
               ? error.error_description
-              : 'Sign-up failed. Please check your details and try again.';
+              : fallbackMessage;
         throw new Error(detail);
       }
-      throw new Error('Sign-in failed. Check your email and password.');
+      throw new Error(fallbackMessage);
     }
-    const value = (await response.json()) as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-      user?: { email?: string };
-    };
+    const value = (await response.json()) as AuthResponse;
     if (isSignUp && (!value.access_token || !value.refresh_token)) {
       this.stored.accessToken = null;
       this.stored.refreshToken = null;
       this.stored.expiresAt = null;
       this.stored.email = value.user?.email ?? body.email ?? null;
+      this.stored.hasPassword = true;
       this.stored.accountStarted = true;
-      this.stored.signedOut = false;
       await this.save();
       return false;
     }
     if (!value.access_token || !value.refresh_token)
-      throw new Error('Sign-in failed. Check your email and password.');
+      throw new Error(fallbackMessage);
     this.stored.accessToken = value.access_token;
     this.stored.refreshToken = value.refresh_token;
     this.stored.expiresAt = Date.now() + (value.expires_in ?? 3600) * 1000;
     this.stored.email = value.user?.email ?? this.stored.email;
+    this.stored.hasPassword =
+      'password' in body || hasPasswordProvider(value.user);
     this.stored.accountStarted = true;
-    this.stored.signedOut = false;
     await this.save();
     return true;
   }
@@ -316,8 +333,61 @@ export class CloudAccountManager {
     return this.publish();
   }
   async signUp(email: string, password: string): Promise<CloudAccountState> {
-    const signedIn = await this.auth('signup', { email, password }, true);
+    const signedIn = await this.auth(
+      'signup',
+      { email, password },
+      true,
+      'Sign-up failed. Please check your details and try again.',
+    );
     if (signedIn) await this.afterSignIn();
+    return this.publish();
+  }
+  /**
+   * Sign in (or create the account) with a Google ID token obtained through
+   * the desktop PKCE flow; `nonce` is the raw value whose hash Google embedded
+   * in the token.
+   */
+  async signInWithGoogle(
+    idToken: string,
+    nonce: string,
+  ): Promise<CloudAccountState> {
+    await this.auth(
+      'token?grant_type=id_token',
+      { provider: 'google', id_token: idToken, nonce },
+      false,
+      'Google sign-in failed. Please try again.',
+    );
+    await this.afterSignIn();
+    return this.publish();
+  }
+  /** Set (or change) the password used for email + password sign-in. */
+  async setPassword(password: string): Promise<CloudAccountState> {
+    const config = await this.getSupabaseConfig();
+    const token = await this.getAccessToken();
+    const response = await this.fetchImpl(
+      `${config.supabaseUrl}/auth/v1/user`,
+      {
+        method: 'PUT',
+        headers: {
+          apikey: config.supabaseAnonKey,
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ password }),
+      },
+    );
+    if (!response.ok) {
+      const error = (await response.json().catch(() => null)) as {
+        msg?: unknown;
+      } | null;
+      throw new Error(
+        typeof error?.msg === 'string'
+          ? error.msg
+          : 'The password could not be saved. Please try again.',
+      );
+    }
+    this.stored.hasPassword = true;
+    await this.save();
     return this.publish();
   }
   private async afterSignIn(): Promise<void> {
@@ -446,7 +516,7 @@ export class CloudAccountManager {
     this.stored.expiresAt = null;
     this.stored.email = null;
     this.stored.accountStarted = true;
-    this.stored.signedOut = true;
+    this.stored.hasPassword = false;
     await this.save();
     return this.publish();
   }
