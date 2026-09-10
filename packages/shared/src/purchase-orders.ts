@@ -104,6 +104,14 @@ export type ReceivePurchaseOrderInput = z.infer<
 export const outboundEmailStatusSchema = z.enum(['pending', 'sent', 'failed']);
 export type OutboundEmailStatus = z.infer<typeof outboundEmailStatusSchema>;
 
+export interface EmailAttachment {
+  filename: string;
+  contentType: string;
+  contentBase64: string;
+  /** Content-ID used to embed inline images (e.g. `<img src="cid:...">`). */
+  cid: string | null;
+}
+
 export interface OutboundEmail {
   id: string;
   purchaseOrderId: string | null;
@@ -111,6 +119,7 @@ export interface OutboundEmail {
   subject: string;
   textBody: string;
   htmlBody: string;
+  attachments: EmailAttachment[];
   status: OutboundEmailStatus;
   attempts: number;
   lastError: string | null;

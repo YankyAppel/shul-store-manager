@@ -1,6 +1,6 @@
 import { cartSnapshotSchema } from './checkout.js';
 import { z } from 'zod';
-import { storeSettingsSchema } from './checkout.js';
+import { storeLogoSchema, storeSettingsSchema } from './checkout.js';
 import { ledgerEntryTypeSchema } from './customers.js';
 
 /**
@@ -54,8 +54,16 @@ const movementReasonPayloadSchema = z.enum([
   'sale',
 ]);
 
+/**
+ * `logoDataUrl` and `profileCompleted` are optional (not defaulted) so the
+ * replay side can tell "event written before the onboarding wizard existed"
+ * (field absent → treat profile as completed, keep the local logo) from an
+ * explicit value written by a newer app.
+ */
 export const settingsPayloadSchema = storeSettingsSchema.extend({
   updatedAt: isoString.optional(),
+  logoDataUrl: storeLogoSchema.nullable().optional(),
+  profileCompleted: z.boolean().optional(),
 });
 export type SettingsPayload = z.infer<typeof settingsPayloadSchema>;
 

@@ -245,6 +245,12 @@ export interface RefundIntentAttention {
   updatedAt: string;
 }
 
+/** Current store profile + order-email status shown by the onboarding wizard. */
+export interface OnboardingProfile {
+  settings: StoreSettings;
+  orderEmail: EmailConfigStatus;
+}
+
 export interface StoreApi {
   auth: {
     getState(): Promise<import('./staff.js').AuthState>;
@@ -502,6 +508,15 @@ export interface StoreApi {
     print(refundId: string): Promise<PrintResult>;
     listAttention(): Promise<RefundIntentAttention[]>;
     resolveAttention(operationId: string): Promise<Refund | null>;
+  };
+
+  /** Store-profile wizard that runs right after cloud sign-in. */
+  onboarding: {
+    getProfile(): Promise<OnboardingProfile>;
+    saveProfile(
+      input: import('./checkout.js').StoreProfileInput,
+    ): Promise<StoreSettings>;
+    skipProfile(): Promise<StoreSettings>;
   };
 
   settings: {

@@ -156,6 +156,23 @@ function applySettings(
   connection: SqliteDatabase,
   payload: SettingsPayload,
 ): void {
+  // `logoDataUrl`/`profileCompleted` are absent on settings events written
+  // before the store-profile wizard existed. An absent logo keeps the local
+  // one; an absent flag means the account predates the wizard, so the profile
+  // counts as completed.
+  const current = connection
+    .prepare('SELECT logo_data_url FROM store_settings WHERE singleton_id = 1')
+    .get() as { logo_data_url: string | null } | undefined;
+  const logoDataUrl =
+    payload.logoDataUrl === undefined
+      ? (current?.logo_data_url ?? null)
+      : payload.logoDataUrl;
+  const profileCompleted =
+    payload.profileCompleted === undefined
+      ? 1
+      : payload.profileCompleted
+        ? 1
+        : 0;
   connection
     .prepare(
       `UPDATE store_settings SET
@@ -164,6 +181,7 @@ function applySettings(
         default_credit_limit_cents = ?, allow_customer_credit = ?, statement_footer = ?,
         overdue_days = ?, receipt_printer_name = ?, receipt_paper_width_mm = ?,
         label_printer_name = ?, default_label_template = ?,
+        logo_data_url = ?, profile_completed = ?,
         updated_at = ?
        WHERE singleton_id = 1`,
     )
@@ -183,6 +201,8 @@ function applySettings(
       payload.receiptPaperWidthMm,
       payload.labelPrinterName,
       payload.defaultLabelTemplate,
+      logoDataUrl,
+      profileCompleted,
       payload.updatedAt ?? now(),
     );
 }

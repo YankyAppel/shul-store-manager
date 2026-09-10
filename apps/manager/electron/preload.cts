@@ -149,6 +149,11 @@ const api: StoreApi = {
     test: (config, sendTo) => ipcRenderer.invoke('email:test', config, sendTo),
     connectGmail: (input) => ipcRenderer.invoke('email:connectGmail', input),
   },
+  onboarding: {
+    getProfile: () => ipcRenderer.invoke('onboarding:getProfile'),
+    saveProfile: (input) => ipcRenderer.invoke('onboarding:saveProfile', input),
+    skipProfile: () => ipcRenderer.invoke('onboarding:skipProfile'),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (input) => ipcRenderer.invoke('settings:update', input),

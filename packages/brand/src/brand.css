@@ -267,6 +267,57 @@
   border-color: var(--suma-copper);
 }
 
+/* Multi-line variant of .suma-input (the input rule forces height: 52px). */
+.suma-textarea {
+  height: auto;
+  min-height: 84px;
+  padding: 14px 18px;
+  resize: vertical;
+}
+
+/* Store-profile wizard: logo chooser + checkbox rows. */
+.suma-logo-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.suma-logo-preview,
+.suma-logo-placeholder {
+  width: 96px;
+  height: 96px;
+  border-radius: 18px;
+  border: 1px solid rgba(232, 233, 228, 0.22);
+  background: rgba(5, 11, 8, 0.55);
+  object-fit: contain;
+}
+
+.suma-logo-placeholder {
+  display: grid;
+  place-items: center;
+  color: rgba(232, 233, 228, 0.4);
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.suma-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--suma-mute);
+  text-align: left;
+}
+
+.suma-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--suma-copper);
+}
+
 .suma-button {
   padding: 0 22px;
   border: 1px solid var(--suma-copper);

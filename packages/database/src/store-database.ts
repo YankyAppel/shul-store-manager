@@ -593,6 +593,14 @@ export class StoreDatabase {
       cardProcessorId: row.card_processor_id
         ? String(row.card_processor_id)
         : null,
+      logoDataUrl:
+        row.logo_data_url === undefined || row.logo_data_url === null
+          ? null
+          : String(row.logo_data_url),
+      profileCompleted:
+        row.profile_completed === undefined
+          ? false
+          : Boolean(row.profile_completed),
     };
   }
 
@@ -619,6 +627,8 @@ export class StoreDatabase {
             default_label_template=?,
             card_processing_enabled=?,
             card_processor_id=?,
+            logo_data_url=?,
+            profile_completed=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -640,6 +650,8 @@ export class StoreDatabase {
           value.defaultLabelTemplate,
           value.cardProcessingEnabled ? 1 : 0,
           value.cardProcessorId,
+          value.logoDataUrl,
+          value.profileCompleted ? 1 : 0,
           now(),
         );
       this.enqueueEntity('settings', 'settings');

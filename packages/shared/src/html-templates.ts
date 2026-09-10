@@ -53,6 +53,12 @@ function receiptBarcodeMarkup(
   return `<div class="receipt-barcode">${renderCode128Svg(value)}<div class="receipt-barcode-value">${escapeHtml(value)}</div></div>`;
 }
 
+/** Centered store logo for printed receipts; `src` is a `data:` URL. */
+function receiptLogoImg(src: string | null | undefined): string {
+  if (!src) return '';
+  return `<div style="text-align:center;margin-bottom:6px"><img src="${escapeHtml(src)}" alt="" style="max-width:80%;max-height:16mm"></div>`;
+}
+
 export function receiptHtml({ sale, settings }: ReceiptData): string {
   const rows = sale.items
     .map(
@@ -95,6 +101,7 @@ export function receiptHtml({ sale, settings }: ReceiptData): string {
   </style>
 </head>
 <body data-paper-width="${receiptPaperWidthMm(settings)}">
+  ${receiptLogoImg(settings.logoDataUrl)}
   <h1>${escapeHtml(settings.storeName)}</h1>
   ${settings.contactLines.map((line) => `<div style="text-align:center;font-size:12px">${escapeHtml(line)}</div>`).join('')}
   <p style="margin:10px 0 6px;font-size:12px">Receipt #${sale.receiptNumber}<br>${escapeHtml(new Date(sale.completedAt ?? sale.createdAt).toLocaleString())}</p>
@@ -136,6 +143,7 @@ export function accountPaymentReceiptHtml({
   </style>
 </head>
 <body data-paper-width="${receiptPaperWidthMm(settings)}">
+  ${receiptLogoImg(settings.logoDataUrl)}
   <h1>${escapeHtml(settings.storeName)}</h1>
   ${settings.contactLines.map((line) => `<div style="text-align:center;font-size:12px">${escapeHtml(line)}</div>`).join('')}
   <div style="text-align:center;margin:10px 0;font-size:15px"><b>Account Payment Receipt #${payment.receiptNumber}</b></div>
@@ -221,6 +229,7 @@ export function statementHtml(data: CustomerStatementData): string {
 <body>
   <div class="header">
     <div>
+      ${settings.logoDataUrl ? `<img src="${escapeHtml(settings.logoDataUrl)}" alt="" style="max-width:220px;max-height:64px;display:block;margin-bottom:8px">` : ''}
       <h2 style="margin:0 0 4px 0">${escapeHtml(settings.storeName)}</h2>
       ${settings.contactLines.map((line) => `<div style="font-size:12px;color:#555">${escapeHtml(line)}</div>`).join('')}
     </div>
@@ -276,6 +285,7 @@ export function dailyReportHtml(data: {
   businessDate: string;
   report: DailyReport;
   storeName: string;
+  logoUrl?: string | null;
 }): string {
   const report = data.report;
   const money = (cents: number) => formatCents(cents);
@@ -299,7 +309,7 @@ export function dailyReportHtml(data: {
 </head>
 <body>
   <div class="header">
-    <div><h1>${escapeHtml(data.storeName)}</h1><div>Daily Report</div></div>
+    <div>${data.logoUrl ? `<img src="${escapeHtml(data.logoUrl)}" alt="" style="max-width:220px;max-height:64px;display:block;margin-bottom:8px">` : ''}<h1>${escapeHtml(data.storeName)}</h1><div>Daily Report</div></div>
     <div><b>Business date:</b> ${escapeHtml(data.businessDate)}<br><small>Generated ${escapeHtml(new Date().toLocaleString())}</small></div>
   </div>
   <div class="section">
@@ -347,7 +357,7 @@ export function dailyReportHtml(data: {
 export function refundReceiptHtml(data: {
   refund: Refund;
   storeName: string;
-  settings?: Pick<StoreSettings, 'receiptPaperWidthMm'>;
+  settings?: Pick<StoreSettings, 'receiptPaperWidthMm' | 'logoDataUrl'>;
 }): string {
   const refund = data.refund;
   const lines = refund.items
@@ -364,7 +374,7 @@ export function refundReceiptHtml(data: {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>Refund #${refund.receiptNumber}</title>
 <style>${receiptBodyCss(data.settings ?? { receiptPaperWidthMm: 80 })}h1{text-align:center;margin:0 0 6px;font-size:18px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{padding:5px 2px;border-bottom:1px solid #eee;text-align:left}th:last-child,td:last-child{text-align:right}.total{font-weight:700;border-top:2px solid #333}</style></head>
-<body><h1>${escapeHtml(data.storeName)}</h1>
+<body>${receiptLogoImg(data.settings?.logoDataUrl)}<h1>${escapeHtml(data.storeName)}</h1>
 <div style="text-align:center">Refund #${refund.receiptNumber}<br>Original sale: ${escapeHtml(refund.saleId)}<br>${escapeHtml(refund.createdAt)}</div>
 <table><thead><tr><th>Returned item</th><th>Restock</th><th>Amount</th></tr></thead><tbody>${lines}</tbody>
 <tfoot><tr><td colspan="2">Subtotal</td><td>${formatCents(refund.subtotalCents)}</td></tr><tr><td colspan="2">Tax</td><td>${formatCents(refund.taxCents)}</td></tr><tr class="total"><td colspan="2">Total</td><td>${formatCents(refund.amountCents)}</td></tr></tfoot></table>
@@ -377,6 +387,8 @@ export interface PurchaseOrderEmailData {
   storeName: string;
   storeEmail: string | null;
   storePhone?: string | null;
+  /** Store logo image source: a `cid:` reference for sending, `data:` URL for previews. */
+  logoUrl?: string | null;
   number: string;
   vendorName: string;
   message: string;
@@ -441,7 +453,7 @@ export function purchaseOrderEmailHtml(data: PurchaseOrderEmailData): string {
 <html><head><meta charset="utf-8"><title>Purchase order ${escapeHtml(data.number)}</title></head>
 <body style="margin:0;padding:24px;background:#f4f2ee;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1c1b1a">
 <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #e6e2da">
-<div style="background:#1c1b1a;color:#f4efe4;padding:18px 24px"><div style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.75">Purchase order</div><div style="font-size:22px;font-weight:700">${escapeHtml(data.number)}</div><div style="font-size:14px;opacity:.85">from ${escapeHtml(data.storeName)}</div></div>
+<div style="background:#1c1b1a;color:#f4efe4;padding:18px 24px">${data.logoUrl ? `<img src="${escapeHtml(data.logoUrl)}" alt="${escapeHtml(data.storeName)}" style="max-height:44px;max-width:200px;margin-bottom:10px;display:block">` : ''}<div style="font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.75">Purchase order</div><div style="font-size:22px;font-weight:700">${escapeHtml(data.number)}</div><div style="font-size:14px;opacity:.85">from ${escapeHtml(data.storeName)}</div></div>
 <div style="padding:20px 24px;font-size:15px;line-height:1.5">${message}</div>
 <table style="width:100%;border-collapse:collapse;font-size:14px"><thead><tr style="background:#faf8f4;color:#666;font-size:12px;text-transform:uppercase;letter-spacing:.08em"><th style="padding:8px 10px;text-align:right">Qty</th><th style="padding:8px 10px;text-align:left">Item</th><th style="padding:8px 10px;text-align:left">Code</th>${priced ? '<th style="padding:8px 10px;text-align:right">Unit</th>' : ''}</tr></thead>
 <tbody>${rows}</tbody>
