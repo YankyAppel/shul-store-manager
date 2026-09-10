@@ -74,6 +74,8 @@ export function App() {
   const [showCloudOnboarding, setShowCloudOnboarding] = useState<
     boolean | undefined
   >();
+  const [onboardingExiting, setOnboardingExiting] = useState(false);
+  const [platformEntering, setPlatformEntering] = useState(false);
   const [approvalPermission, setApprovalPermission] = useState<string | null>(
     null,
   );
@@ -197,28 +199,44 @@ export function App() {
     );
   if (showCloudOnboarding)
     return (
-      <CloudAccountOnboarding
-        intro
-        onDone={() => setShowCloudOnboarding(false)}
-      />
+      <div className={onboardingExiting ? 'suma-onboarding-exit' : undefined}>
+        <CloudAccountOnboarding
+          intro
+          onDone={() => {
+            // Fade the whole onboarding shell out; the next screen slides in
+            // from the right via .suma-app-enter on whatever mounts next.
+            if (onboardingExiting) return;
+            setOnboardingExiting(true);
+            window.setTimeout(() => {
+              setShowCloudOnboarding(false);
+              setOnboardingExiting(false);
+              setPlatformEntering(true);
+            }, 700);
+          }}
+        />
+      </div>
     );
   if (needsOwner)
     return (
-      <FirstOwnerSetup
-        onComplete={() => {
-          setNeedsOwner(false);
-          void window.storeApi.auth.getState().then(setAuthState);
-        }}
-        onSkip={() => setNeedsOwner(false)}
-      />
+      <div className={platformEntering ? 'suma-app-enter' : undefined}>
+        <FirstOwnerSetup
+          onComplete={() => {
+            setNeedsOwner(false);
+            void window.storeApi.auth.getState().then(setAuthState);
+          }}
+          onSkip={() => setNeedsOwner(false)}
+        />
+      </div>
     );
   if (authState.staffModeEnabled && !authState.signedInStaff)
     return (
-      <LockScreen
-        onSignedIn={() =>
-          void window.storeApi.auth.getState().then(setAuthState)
-        }
-      />
+      <div className={platformEntering ? 'suma-app-enter' : undefined}>
+        <LockScreen
+          onSignedIn={() =>
+            void window.storeApi.auth.getState().then(setAuthState)
+          }
+        />
+      </div>
     );
   async function toggleProduct(product: Product) {
     try {
@@ -244,7 +262,7 @@ export function App() {
   }
 
   return (
-    <div className="shell">
+    <div className={`shell${platformEntering ? ' suma-app-enter' : ''}`}>
       <aside>
         <div className="brand">
           <div className="brand-mark">S</div>

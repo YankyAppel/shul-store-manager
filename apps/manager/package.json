@@ -17,10 +17,11 @@
   "dependencies": {
     "@shul-store/brand": "0.1.0",
     "@shul-store/database": "0.1.0",
-    "@shul-store/payments": "^1.0.0",
     "@shul-store/google-auth": "0.1.0",
+    "@shul-store/payments": "^1.0.0",
     "@shul-store/shared": "0.1.0",
     "@shul-store/sync": "0.1.0",
+    "@stripe/stripe-js": "9.9.0",
     "electron-updater": "6.8.9",
     "nodemailer": "^9.1.0",
     "react": "^19.0.0",

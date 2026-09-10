@@ -11,6 +11,8 @@ import {
   type CatalogVendor,
   type CatalogVendorMerge,
   type CatalogVendorProduct,
+  type EmbeddedCheckoutPayload,
+  type StorePlansResult,
   type Vendor,
   type PurchaseOrder,
 } from '@shul-store/shared';
@@ -531,6 +533,26 @@ export class CloudAccountManager {
     const body = (await value.json()) as { url?: string };
     if (body.url && this.openExternal) await this.openExternal(body.url);
     await this.refresh(true);
+  }
+
+  /** Plan catalog + subscription state shown by the onboarding billing step. */
+  async listPlans(): Promise<StorePlansResult> {
+    const response = await this.request('/api/store/plans', 'GET');
+    return (await response.json()) as StorePlansResult;
+  }
+
+  /** Stripe embedded-checkout session for the chosen plan. */
+  async embeddedCheckout(planId: string): Promise<EmbeddedCheckoutPayload> {
+    const response = await this.request(
+      '/api/store/checkout-embedded',
+      'POST',
+      { planId },
+    );
+    const body = (await response.json()) as
+      EmbeddedCheckoutPayload | { error?: string };
+    if (!('clientSecret' in body))
+      throw new Error(body.error ?? 'Could not start checkout');
+    return body;
   }
 
   async lookupBarcodeSuggestion(

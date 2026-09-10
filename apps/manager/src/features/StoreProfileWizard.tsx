@@ -6,13 +6,15 @@ import type {
 } from '@shul-store/shared';
 import { messageFrom } from '../utils/formatters';
 import { fileToLogoDataUrl } from '../utils/logo';
+import { OnboardingBilling } from './OnboardingBilling';
 
-type WizardStep = 'store' | 'receipt' | 'emails' | 'processor';
+type WizardStep = 'store' | 'receipt' | 'emails' | 'processor' | 'billing';
 const STEP_INDEX: Record<WizardStep, number> = {
   store: 1,
   receipt: 2,
   emails: 3,
   processor: 4,
+  billing: 5,
 };
 
 const PROCESSOR_OPTIONS: {
@@ -132,8 +134,7 @@ export function StoreProfileWizard({
     }
   }
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
+  async function save() {
     setBusy(true);
     setMessage('');
     try {
@@ -178,7 +179,7 @@ export function StoreProfileWizard({
   }
 
   const stepLabel = (
-    <p className="suma-eyebrow">Store profile · step {STEP_INDEX[step]} of 4</p>
+    <p className="suma-eyebrow">Store profile · step {STEP_INDEX[step]} of 5</p>
   );
   const skipLink = (
     <button
@@ -473,9 +474,9 @@ export function StoreProfileWizard({
             className="suma-button"
             type="button"
             disabled={busy}
-            onClick={(event) => void save(event)}
+            onClick={() => setStep('billing')}
           >
-            {busy ? 'Saving…' : 'Finish'}
+            Continue
           </button>
           <button
             type="button"
@@ -486,6 +487,34 @@ export function StoreProfileWizard({
             Back
           </button>
           {skipLink}
+        </>
+      )}
+      {step === 'billing' && (
+        <>
+          {stepLabel}
+          <h1 className="suma-title">Your plan</h1>
+          <p className="suma-lede">
+            Pick a plan and add a card — it stays on file with Stripe for your
+            subscription. You can finish now and set this up later.
+          </p>
+          <OnboardingBilling />
+          {message && <div className="suma-alert">{message}</div>}
+          <button
+            className="suma-button"
+            type="button"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            {busy ? 'Saving…' : 'Finish'}
+          </button>
+          <button
+            type="button"
+            className="suma-button suma-button--link"
+            disabled={busy}
+            onClick={() => setStep('processor')}
+          >
+            Back
+          </button>
         </>
       )}
     </BrandPanels>
