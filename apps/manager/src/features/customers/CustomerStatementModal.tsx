@@ -230,7 +230,7 @@ export function CustomerStatementModal({
           ) : (
             <div
               style={{
-                border: '1px solid #e0e5e2',
+                border: '1px solid rgba(5,11,8,0.10)',
                 borderRadius: '8px',
                 padding: '16px',
                 background: '#fff',
@@ -307,7 +307,7 @@ export function CustomerStatementModal({
                         <td
                           style={{
                             textAlign: 'right',
-                            color: entry.paymentCents ? '#1e684a' : 'inherit',
+                            color: entry.paymentCents ? '#1f5e3f' : 'inherit',
                           }}
                         >
                           {entry.paymentCents
@@ -333,10 +333,10 @@ export function CustomerStatementModal({
                 <div
                   style={{
                     width: '280px',
-                    background: '#f8f9fa',
+                    background: '#f1f1ec',
                     padding: '12px',
                     borderRadius: '6px',
-                    border: '1px solid #e0e5e2',
+                    border: '1px solid rgba(5,11,8,0.10)',
                     lineHeight: '1.6',
                   }}
                 >
@@ -358,7 +358,7 @@ export function CustomerStatementModal({
                     style={{ display: 'flex', justifyContent: 'space-between' }}
                   >
                     <span>Total payments:</span>
-                    <span style={{ color: '#1e684a' }}>
+                    <span style={{ color: '#1f5e3f' }}>
                       -{formatMoney(statement.totalPaymentsCents)}
                     </span>
                   </div>

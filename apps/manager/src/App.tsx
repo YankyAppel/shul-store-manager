@@ -26,6 +26,7 @@ import {
 } from './features/vendors/ProductVendorsField';
 import { FirstOwnerSetup, LockScreen } from './features/AuthScreens';
 import { CloudAccountOnboarding } from './features/CloudAccountOnboarding';
+import { sumaCoinIconUrl } from '@shul-store/brand';
 
 type View =
   | 'checkout'
@@ -265,10 +266,12 @@ export function App() {
     <div className={`shell${platformEntering ? ' suma-app-enter' : ''}`}>
       <aside>
         <div className="brand">
-          <div className="brand-mark">S</div>
+          <div className="brand-mark">
+            <img src={sumaCoinIconUrl} alt="" />
+          </div>
           <div>
-            <strong>Shul Store</strong>
-            <small>Manager</small>
+            <strong>SUMA</strong>
+            <small>Store POS</small>
           </div>
         </div>
         <nav>

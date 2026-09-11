@@ -120,7 +120,7 @@ export function CloudAccountSection() {
       </Explain>
       {!state.signedIn ? (
         <form onSubmit={(event) => void submit(event)}>
-          <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: '13px' }}>
+          <p style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: '13px' }}>
             Sign in or create a Suma Store account. Creating an account starts
             the $10/month cloud subscription; local checkout continues to work
             offline and does not require one.
@@ -228,7 +228,7 @@ export function CloudAccountSection() {
             </form>
           ) : (
             <>
-              <p style={{ margin: '0 0 10px', color: '#66766d', fontSize: 13 }}>
+              <p style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: 13 }}>
                 {state.hasPassword
                   ? 'You can sign in with your email and password, or with Google using the same email.'
                   : 'You signed up with Google. Set a password to also sign in with email and password.'}

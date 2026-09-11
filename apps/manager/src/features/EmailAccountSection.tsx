@@ -196,10 +196,14 @@ export function EmailAccountSection() {
   return (
     <section
       className="settings-form"
-      style={{ borderTop: '1px solid #e0e5e2', marginTop: 16, paddingTop: 16 }}
+      style={{
+        borderTop: '1px solid rgba(5,11,8,0.10)',
+        marginTop: 16,
+        paddingTop: 16,
+      }}
     >
       <h3 style={{ margin: '0 0 4px 0' }}>Order emails</h3>
-      <p style={{ margin: '0 0 12px', color: '#66776d', fontSize: '13px' }}>
+      <p style={{ margin: '0 0 12px', color: '#5f6d65', fontSize: '13px' }}>
         Purchase orders are emailed to vendors from <strong>your own</strong>{' '}
         mailbox, so replies come straight back to you.{' '}
         {status?.gmailAvailable

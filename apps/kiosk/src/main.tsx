@@ -5,6 +5,7 @@ import {
   BrandPanels,
   BrandShell,
   GoogleIcon,
+  sumaCoinImageUrl,
 } from '@shul-store/brand';
 import {
   type KioskCartLine,
@@ -1199,15 +1200,28 @@ function App() {
             onClose={() => setAdminOpen(false)}
           />
         )}
-        <button type="button" className="store-name" onClick={tapStoreName}>
-          {state.storeName || 'Self-checkout'}
-        </button>
+        <div className="attract-identity">
+          {state.catalog?.storeLogoDataUrl && (
+            <img
+              src={state.catalog.storeLogoDataUrl}
+              className="attract-logo"
+              alt=""
+            />
+          )}
+          <button
+            type="button"
+            className="attract-store-name"
+            onClick={tapStoreName}
+          >
+            {state.storeName || 'Self-checkout'}
+          </button>
+        </div>
         <button
           type="button"
           className="shames-button"
           onClick={() => setAdminOpen(true)}
         >
-          Shames
+          Admin
         </button>
         {state.tokenPersistenceWarning && (
           <p className="warning-message">
@@ -1223,6 +1237,12 @@ function App() {
         >
           Start shopping
         </button>
+        <div className="powered-by">
+          <img src={sumaCoinImageUrl} alt="" />
+          <span>
+            Powered by <strong>SUMA Systems</strong>
+          </span>
+        </div>
       </main>
     );
   return (
@@ -1249,7 +1269,7 @@ function App() {
           className="shames-button"
           onClick={() => setAdminOpen(true)}
         >
-          Shames
+          Admin
         </button>
       </header>
       <div className="shopping-layout">

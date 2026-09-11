@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { storeLogoSchema } from './checkout.js';
 
 const line = z
   .object({
@@ -44,6 +45,7 @@ export const kioskAdminVerifyRequestSchema = z
   .strict();
 export const kioskCatalogResponseSchema = z.object({
   storeName: z.string(),
+  storeLogoDataUrl: storeLogoSchema.nullable().default(null),
   categories: z.array(
     z.object({
       id: z.string().uuid(),
