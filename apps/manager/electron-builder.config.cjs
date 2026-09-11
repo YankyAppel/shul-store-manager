@@ -4,6 +4,7 @@ const { githubUpdateRepository } = require('./update-config.cjs');
 module.exports = {
   appId: 'org.shulstore.manager',
   productName: 'SUMA Manager',
+  artifactName: 'SUMA-Manager-POS-Setup-${version}.${ext}',
   asar: true,
   npmRebuild: false,
   directories: {
