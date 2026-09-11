@@ -4,6 +4,7 @@ const { githubUpdateRepository } = require('./update-config.cjs');
 module.exports = {
   appId: 'org.shulstore.kiosk',
   productName: 'SUMA Kiosk',
+  artifactName: 'SUMA-Kiosk-POS-Setup-${version}.${ext}',
   asar: true,
   npmRebuild: false,
   directories: {
