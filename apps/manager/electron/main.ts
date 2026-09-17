@@ -8,6 +8,7 @@ import {
   rename,
   stat,
   unlink,
+  writeFile,
 } from 'node:fs/promises';
 import { networkInterfaces } from 'node:os';
 import path from 'node:path';
@@ -269,6 +270,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'accountPayments:receipt': 'account_payments',
   'accountPayments:print': 'account_payments',
   'images:choose': 'products.edit',
+  'images:fetchRemote': 'products.edit',
   'images:discard': 'products.edit',
   'sync:getConfig': 'owner',
   'sync:getStatus': 'owner',
@@ -1614,6 +1616,9 @@ function registerIpc(): void {
 
   // Images
   ipcMain.handle('images:choose', chooseImage);
+  ipcMain.handle('images:fetchRemote', (_event, rawUrl) =>
+    fetchRemoteImage(z.string().url().parse(rawUrl)),
+  );
   ipcMain.handle('images:discard', async (_event, rawId) => {
     const id = idSchema.parse(rawId);
     const relativePath = database.removeImageIfUnreferenced(id);
@@ -2039,6 +2044,63 @@ async function printLabels(request: LabelPrintRequest): Promise<PrintResult> {
     buildLabelsHtml(request),
     database.getSettings().labelPrinterName,
   );
+}
+
+const remoteImageExtensions: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+};
+
+/** Download a manufacturer-hosted product image into the local image store. */
+async function fetchRemoteImage(rawUrl: string) {
+  const url = new URL(rawUrl);
+  if (url.protocol !== 'https:') return null;
+  let response: Response;
+  try {
+    response = await net.fetch(url.toString(), {
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  const mimeType = (
+    (response.headers.get('content-type') ?? '').split(';')[0] ?? ''
+  )
+    .trim()
+    .toLowerCase();
+  const extension = remoteImageExtensions[mimeType];
+  if (!extension) return null;
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength === 0 || bytes.byteLength > 10 * 1024 * 1024)
+    return null;
+
+  const id = randomUUID();
+  const relativePath = `${id}${extension}`;
+  const destination = path.join(imageDirectory, relativePath);
+  await mkdir(imageDirectory, { recursive: true });
+  await writeFile(destination, bytes);
+  try {
+    database.registerImage({
+      id,
+      relativePath,
+      originalName: path.basename(url.pathname),
+      mimeType,
+      byteSize: bytes.byteLength,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    });
+  } catch (error) {
+    await unlink(destination).catch(() => undefined);
+    throw error;
+  }
+  return {
+    id,
+    url: `store-image://local/${id}`,
+    originalName: path.basename(url.pathname),
+    mimeType,
+  };
 }
 
 async function chooseImage() {

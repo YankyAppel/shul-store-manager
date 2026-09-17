@@ -234,6 +234,7 @@ const api: StoreApi = {
   },
   images: {
     choose: () => ipcRenderer.invoke('images:choose'),
+    fetchRemote: (url) => ipcRenderer.invoke('images:fetchRemote', url),
     discard: (id) => ipcRenderer.invoke('images:discard', id),
   },
   sync: {

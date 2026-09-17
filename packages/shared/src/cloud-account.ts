@@ -28,6 +28,8 @@ export interface BarcodeSuggestion {
   barcode: string;
   name: string;
   confirmations: number;
+  /** Remote product image hosted by the manufacturer, when known. */
+  image_url?: string | null;
 }
 
 export const emptyCloudAccountState = (): CloudAccountState => ({

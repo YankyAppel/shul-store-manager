@@ -440,6 +440,8 @@ export interface StoreApi {
   };
   images: {
     choose(): Promise<StoredImage | null>;
+    /** Download a remote image into the local image store. */
+    fetchRemote(url: string): Promise<StoredImage | null>;
     discard(id: string): Promise<boolean>;
   };
   sync: {

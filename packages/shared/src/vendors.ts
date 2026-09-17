@@ -105,6 +105,7 @@ export const catalogVendorProductSchema = z.object({
   case_size: z.number().int().positive().nullable(),
   min_order_qty: z.number().int().positive().nullable(),
   price_cents: z.number().int().min(0).nullable(),
+  image_url: z.string().nullable().default(null),
   updated_at: z.string(),
 });
 export type CatalogVendorProduct = z.infer<typeof catalogVendorProductSchema>;
