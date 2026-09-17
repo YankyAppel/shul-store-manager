@@ -10,6 +10,7 @@ import {
   type Sale,
   type StoreSettings,
   type PaymentTransactionPayload,
+  type StoredImage,
 } from '@shul-store/shared';
 import { CustomerEditorModal } from './customers/CustomerEditorModal';
 import { formatMoney } from '../utils/formatters';
@@ -968,6 +969,8 @@ function InlineProductModal({
   const [saving, setSaving] = useState(false);
   const [shareName, setShareName] = useState(false);
   const nameRef = useRef('');
+  const [catalogImage, setCatalogImage] = useState<StoredImage | null>(null);
+  const [pickedImage, setPickedImage] = useState<StoredImage | null>(null);
 
   useEffect(() => {
     if (barcode.startsWith('SSM-')) return;
@@ -975,16 +978,55 @@ function InlineProductModal({
     void window.storeApi.cloudAccount
       .lookupBarcodeSuggestion(barcode)
       .then((suggestion) => {
-        if (active && suggestion && !nameRef.current.trim()) {
+        if (!active || !suggestion) return;
+        if (!nameRef.current.trim()) {
           setName(suggestion.name);
           setSuggestedName(true);
         }
+        if (suggestion.image_url)
+          void window.storeApi.images
+            .fetchRemote(suggestion.image_url)
+            .then((image) => {
+              if (active && image) setCatalogImage(image);
+            })
+            .catch(() => undefined);
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
   }, [barcode]);
+
+  const image = pickedImage ?? catalogImage;
+
+  async function chooseImage() {
+    const next = await window.storeApi.images.choose();
+    if (!next) return;
+    if (pickedImage) void window.storeApi.images.discard(pickedImage.id);
+    setPickedImage(next);
+  }
+
+  function removeImage() {
+    if (pickedImage) {
+      void window.storeApi.images.discard(pickedImage.id);
+      setPickedImage(null);
+    } else if (catalogImage) {
+      void window.storeApi.images.discard(catalogImage.id);
+      setCatalogImage(null);
+    }
+  }
+
+  /** Discard every fetched/picked image except the one saved onto the product. */
+  function discardUnusedImages(usedId: string | null) {
+    for (const candidate of [catalogImage, pickedImage])
+      if (candidate && candidate.id !== usedId)
+        void window.storeApi.images.discard(candidate.id);
+  }
+
+  function close() {
+    discardUnusedImages(null);
+    onClose();
+  }
 
   async function save() {
     if (!categoryId || !name.trim() || saving) return;
@@ -999,7 +1041,7 @@ function InlineProductModal({
         categoryId,
         name,
         secondaryName: secondaryName || null,
-        imageId: null,
+        imageId: image?.id ?? null,
         purchaseCostCents,
         sellingPriceCents,
         taxable,
@@ -1015,6 +1057,7 @@ function InlineProductModal({
         void window.storeApi.cloudAccount
           .shareBarcodeSuggestion(barcode, name.trim())
           .catch(() => undefined);
+      discardUnusedImages(image?.id ?? null);
       onSaved(product, parsedAmount);
     } catch (reason) {
       const message =
@@ -1032,7 +1075,7 @@ function InlineProductModal({
       <div className="modal">
         <div className="modal-title">
           <h2>Not in the system — Add product</h2>
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={close}>
             ×
           </button>
         </div>
@@ -1040,6 +1083,30 @@ function InlineProductModal({
           Barcode <code>{barcode}</code> was scanned. Add the product without
           leaving checkout.
         </p>
+        <div className="image-controls">
+          <button
+            type="button"
+            className="image-picker"
+            onClick={() => void chooseImage()}
+          >
+            {image ? <img src={image.url} /> : <span>＋</span>}
+            <div>
+              <b>{image ? 'Change image' : 'Add image'}</b>
+              <small>
+                {pickedImage
+                  ? 'Custom image'
+                  : image
+                    ? 'Catalog image — will be saved with the product'
+                    : 'JPG, PNG, WebP or GIF · max 10 MB'}
+              </small>
+            </div>
+          </button>
+          {image && (
+            <button type="button" onClick={removeImage}>
+              Remove image
+            </button>
+          )}
+        </div>
         <label>
           Product name
           <input
@@ -1141,7 +1208,7 @@ function InlineProductModal({
           </label>
         )}
         <footer>
-          <button type="button" onClick={onClose}>
+          <button type="button" onClick={close}>
             Cancel
           </button>
           <button
