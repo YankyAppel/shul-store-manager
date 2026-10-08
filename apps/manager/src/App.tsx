@@ -984,15 +984,11 @@ function ProductModal({
   const [soldBy, setSoldBy] = useState<'each' | 'weight'>(
     product?.soldBy ?? 'each',
   );
-  const [unit, setUnit] = useState<'lb' | 'oz' | 'kg'>(
-    product?.unit ?? 'lb',
-  );
+  const [unit, setUnit] = useState<'lb' | 'oz' | 'kg'>(product?.unit ?? 'lb');
   const [snapEligible, setSnapEligible] = useState(
     product?.snapEligible ?? false,
   );
-  const [wicEligible, setWicEligible] = useState(
-    product?.wicEligible ?? false,
-  );
+  const [wicEligible, setWicEligible] = useState(product?.wicEligible ?? false);
   const images = useImageLifecycle(product?.imageId ?? null);
   const [barcodes, setBarcodes] = useState(
     product?.barcodes.map((b) => b.value) ?? [],
@@ -1375,11 +1371,7 @@ function InventoryModal({
           <div>
             <small>Current calculated stock</small>
             <b>
-              {formatStock(
-                product.stockQuantity,
-                product.soldBy,
-                product.unit,
-              )}
+              {formatStock(product.stockQuantity, product.soldBy, product.unit)}
             </b>
           </div>
         </div>

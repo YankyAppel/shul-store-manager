@@ -369,7 +369,10 @@ function roundRatioBig(numerator: bigint, denominator: bigint): bigint {
 export function roundRatio(numerator: bigint, denominator: bigint): number {
   if (numerator < 0n || denominator <= 0n)
     throw new Error('Invalid financial ratio');
-  return safeNumber(roundRatioBig(numerator, denominator), 'Rounded financial value');
+  return safeNumber(
+    roundRatioBig(numerator, denominator),
+    'Rounded financial value',
+  );
 }
 
 export function calculateCart(
@@ -491,7 +494,8 @@ export function benefitEligibility(
   let waivedTax = 0n;
   for (const [index, line] of cart.lines.entries()) {
     const product = lines[index]!.product;
-    const eligible = method === 'snap_ebt' ? product.snapEligible : product.wicEligible;
+    const eligible =
+      method === 'snap_ebt' ? product.snapEligible : product.wicEligible;
     if (!eligible) continue;
     eligibleSubtotal += BigInt(line.subtotalCents);
     waivedTax += BigInt(line.taxCents);

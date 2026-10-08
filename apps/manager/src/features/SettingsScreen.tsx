@@ -98,9 +98,8 @@ export function SettingsScreen() {
     void window.storeApi.updates.getState().then(setUpdateResult);
     const unsubscribe = window.storeApi.updates.subscribe(setUpdateResult);
     void window.storeApi.scale.getStatus().then(setScaleStatus);
-    const unsubscribeScale = window.storeApi.scale.subscribeStatus(
-      setScaleStatus,
-    );
+    const unsubscribeScale =
+      window.storeApi.scale.subscribeStatus(setScaleStatus);
     void window.storeApi.settings
       .listPrinters()
       .then(setPrinters)
@@ -817,7 +816,8 @@ export function SettingsScreen() {
                     onChange={(e) =>
                       setDeviceSettings({
                         ...deviceSettings,
-                        scaleUnit: e.target.value as DeviceSettings['scaleUnit'],
+                        scaleUnit: e.target
+                          .value as DeviceSettings['scaleUnit'],
                       })
                     }
                   >

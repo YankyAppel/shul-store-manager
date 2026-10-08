@@ -72,10 +72,8 @@ const api: KioskApi = {
     return () => ipcRenderer.removeListener('scale:reading', handler);
   },
   subscribeScaleStatus: (listener) => {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      status: ScaleStatus,
-    ) => listener(status);
+    const handler = (_event: Electron.IpcRendererEvent, status: ScaleStatus) =>
+      listener(status);
     ipcRenderer.on('scale:status', handler);
     return () => ipcRenderer.removeListener('scale:status', handler);
   },

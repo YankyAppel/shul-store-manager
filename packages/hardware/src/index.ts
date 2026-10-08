@@ -31,7 +31,10 @@ export function parseWeightLine(
 ): { weight: number; stable: boolean } | null {
   const line = raw.trim();
   if (!line) return null;
-  if (/^(?:US|UF|UN|OL|EL|ERR|M|W\b)/i.test(line) && !/^[+-\d\s.,]/.test(line)) {
+  if (
+    /^(?:US|UF|UN|OL|EL|ERR|M|W\b)/i.test(line) &&
+    !/^[+-\d\s.,]/.test(line)
+  ) {
     // US = unstable, OL/EL/ERR = out of range — still try to read a number
     // below since unstable lines often carry the live weight.
     if (/^(?:OL|EL|ERR)/i.test(line)) return null;
@@ -59,9 +62,17 @@ export function convertWeight(
 ): number {
   if (from === to) return round3(weight);
   const grams =
-    from === 'kg' ? weight * 1000 : from === 'lb' ? weight * 453.59237 : weight * 28.349523125;
+    from === 'kg'
+      ? weight * 1000
+      : from === 'lb'
+        ? weight * 453.59237
+        : weight * 28.349523125;
   return round3(
-    to === 'kg' ? grams / 1000 : to === 'lb' ? grams / 453.59237 : grams / 28.349523125,
+    to === 'kg'
+      ? grams / 1000
+      : to === 'lb'
+        ? grams / 453.59237
+        : grams / 28.349523125,
   );
 }
 
@@ -115,8 +126,9 @@ class SimulatedScaleReader implements ScaleReader {
 }
 
 class SerialScaleReader implements ScaleReader {
-  private portInstance: { close(cb?: (err?: Error | null) => void): void } | null =
-    null;
+  private portInstance: {
+    close(cb?: (err?: Error | null) => void): void;
+  } | null = null;
   private last: ScaleReading | null = null;
   private currentStatus: ScaleStatus;
 
@@ -143,7 +155,10 @@ class SerialScaleReader implements ScaleReader {
         parity: string;
         autoOpen: boolean;
       }) => {
-        on(event: 'open' | 'error' | 'close' | 'data', cb: (arg?: unknown) => void): void;
+        on(
+          event: 'open' | 'error' | 'close' | 'data',
+          cb: (arg?: unknown) => void,
+        ): void;
         open(cb?: (err?: Error | null) => void): void;
         close(cb?: (err?: Error | null) => void): void;
       };
@@ -187,7 +202,8 @@ class SerialScaleReader implements ScaleReader {
     });
     await new Promise<void>((resolve, reject) => {
       port.open((error?: Error | null) => {
-        if (error) reject(new Error(`Could not open scale port: ${error.message}`));
+        if (error)
+          reject(new Error(`Could not open scale port: ${error.message}`));
         else resolve();
       });
     });

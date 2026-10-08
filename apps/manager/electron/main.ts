@@ -723,10 +723,7 @@ async function createWindow(): Promise<void> {
 }
 
 import { initiateChargeInputSchema } from '@shul-store/shared';
-import {
-  createScaleReader,
-  type ScaleReader,
-} from '@shul-store/hardware';
+import { createScaleReader, type ScaleReader } from '@shul-store/hardware';
 import type { ScaleReading, ScaleStatus } from '@shul-store/shared';
 
 let scaleReader: ScaleReader | null = null;
@@ -736,7 +733,10 @@ let scaleStatus: ScaleStatus = {
   error: null,
 };
 
-function broadcastScale(channel: 'scale:reading' | 'scale:status', payload: unknown): void {
+function broadcastScale(
+  channel: 'scale:reading' | 'scale:status',
+  payload: unknown,
+): void {
   for (const window of BrowserWindow.getAllWindows()) {
     if (window.isDestroyed()) continue;
     try {

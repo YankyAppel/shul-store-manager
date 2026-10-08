@@ -907,10 +907,12 @@ function App() {
   >(null);
   const [weighBarcode, setWeighBarcode] = useState<string | null>(null);
   const [manualWeight, setManualWeight] = useState('');
-  const [scaleReading, setScaleReading] =
-    useState<import('@shul-store/shared').ScaleReading | null>(null);
-  const [scaleStatus, setScaleStatus] =
-    useState<import('@shul-store/shared').ScaleStatus | null>(null);
+  const [scaleReading, setScaleReading] = useState<
+    import('@shul-store/shared').ScaleReading | null
+  >(null);
+  const [scaleStatus, setScaleStatus] = useState<
+    import('@shul-store/shared').ScaleStatus | null
+  >(null);
   const scannerBuffer = useRef('');
   const scannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -1041,9 +1043,7 @@ function App() {
     const barcode = weighBarcode;
     setCart((current) => [
       ...current,
-      barcode
-        ? { productId, barcode, quantity }
-        : { productId, quantity },
+      barcode ? { productId, barcode, quantity } : { productId, quantity },
     ]);
     setWeighProduct(null);
     setWeighBarcode(null);
@@ -1058,9 +1058,7 @@ function App() {
     }
     const productId = result.quote.lines[0]?.productId;
     if (!productId) return;
-    const product = products.find(
-      (candidate) => candidate.id === productId,
-    );
+    const product = products.find((candidate) => candidate.id === productId);
     if (product?.soldBy === 'weight') {
       openWeigh(product, barcode);
       return;

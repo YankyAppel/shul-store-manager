@@ -71,10 +71,12 @@ export function CheckoutScreen({
     product: Product;
     barcodeUsed: string | null;
   } | null>(null);
-  const [scaleReading, setScaleReading] =
-    useState<import('@shul-store/shared').ScaleReading | null>(null);
-  const [scaleStatus, setScaleStatus] =
-    useState<import('@shul-store/shared').ScaleStatus | null>(null);
+  const [scaleReading, setScaleReading] = useState<
+    import('@shul-store/shared').ScaleReading | null
+  >(null);
+  const [scaleStatus, setScaleStatus] = useState<
+    import('@shul-store/shared').ScaleStatus | null
+  >(null);
   const [manualWeight, setManualWeight] = useState('');
   const [remainderMethod, setRemainderMethod] = useState<
     'cash' | 'external_terminal'
@@ -177,10 +179,7 @@ export function CheckoutScreen({
   function addWeighted(quantity: number) {
     if (!weighTarget || !(quantity > 0) || quantity > 10000) return;
     const { product, barcodeUsed } = weighTarget;
-    setCart((lines) => [
-      ...lines,
-      { product, quantity, barcodeUsed },
-    ]);
+    setCart((lines) => [...lines, { product, quantity, barcodeUsed }]);
     setWeighTarget(null);
     setManualWeight('');
   }
@@ -314,8 +313,7 @@ export function CheckoutScreen({
           return;
         }
         let remainder:
-          | import('@shul-store/shared').RemainderPayment
-          | undefined;
+          import('@shul-store/shared').RemainderPayment | undefined;
         if (remainderCents > 0) {
           if (remainderMethod === 'cash') {
             remainder = {
@@ -682,10 +680,7 @@ export function CheckoutScreen({
             <p style={{ fontSize: '13px' }}>
               Eligible subtotal: <b>{money(benefitCoversCents)}</b>
               {benefitWaivedTaxCents > 0 && (
-                <>
-                  {' '}
-                  (tax waived: {money(benefitWaivedTaxCents)})
-                </>
+                <> (tax waived: {money(benefitWaivedTaxCents)})</>
               )}
               <br />
               {remainderCents > 0 ? (
@@ -720,7 +715,9 @@ export function CheckoutScreen({
                     value={remainderMethod}
                     onChange={(e) =>
                       setRemainderMethod(
-                        e.target.value === 'cash' ? 'cash' : 'external_terminal',
+                        e.target.value === 'cash'
+                          ? 'cash'
+                          : 'external_terminal',
                       )
                     }
                   >
@@ -1215,9 +1212,7 @@ export function CheckoutScreen({
                 autoFocus
               />
             </label>
-            <div
-              style={{ display: 'flex', gap: '8px', marginTop: '12px' }}
-            >
+            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
               <button
                 className="primary"
                 disabled={

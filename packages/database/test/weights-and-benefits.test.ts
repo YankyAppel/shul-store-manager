@@ -26,7 +26,9 @@ beforeEach(() => {
 });
 afterEach(() => store.close());
 
-function weightProduct(overrides: Partial<Parameters<StoreDatabase['createProduct']>[0]> = {}) {
+function weightProduct(
+  overrides: Partial<Parameters<StoreDatabase['createProduct']>[0]> = {},
+) {
   const productId = store.createProduct({
     categoryId,
     name: 'Deli turkey',
@@ -180,7 +182,11 @@ describe('SNAP/EBT tender', () => {
       store.completeSale({
         completionKey: randomUUID(),
         lines: [{ productId, quantity: 1, barcodeUsed: null }],
-        payment: { method: 'snap_ebt', approved: true, terminalReference: null },
+        payment: {
+          method: 'snap_ebt',
+          approved: true,
+          terminalReference: null,
+        },
       }),
     ).toThrow(/eligible/);
   });
@@ -209,7 +215,11 @@ describe('SNAP/EBT tender', () => {
           { productId: snap, quantity: 1, barcodeUsed: null },
           { productId: other, quantity: 1, barcodeUsed: null },
         ],
-        payment: { method: 'snap_ebt', approved: true, terminalReference: null },
+        payment: {
+          method: 'snap_ebt',
+          approved: true,
+          terminalReference: null,
+        },
       }),
     ).toThrow(/remainder/i);
   });
@@ -230,7 +240,11 @@ describe('SNAP/EBT tender', () => {
       store.completeSale({
         completionKey: randomUUID(),
         lines: [{ productId, quantity: 1, barcodeUsed: null }],
-        payment: { method: 'snap_ebt', approved: true, terminalReference: null },
+        payment: {
+          method: 'snap_ebt',
+          approved: true,
+          terminalReference: null,
+        },
       }),
     ).toThrow(/not enabled/i);
   });

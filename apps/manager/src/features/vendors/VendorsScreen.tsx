@@ -6,11 +6,7 @@ import type {
   Vendor,
   VendorSummary,
 } from '@shul-store/shared';
-import {
-  formatMoney,
-  formatStock,
-  messageFrom,
-} from '../../utils/formatters';
+import { formatMoney, formatStock, messageFrom } from '../../utils/formatters';
 import { VendorBadge, VendorEditorModal } from './VendorEditorModal';
 import {
   OrderModal,

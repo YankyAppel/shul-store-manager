@@ -63,10 +63,7 @@ import {
   type ScaleReading,
   type ScaleStatus,
 } from '@shul-store/shared';
-import {
-  createScaleReader,
-  type ScaleReader,
-} from '@shul-store/hardware';
+import { createScaleReader, type ScaleReader } from '@shul-store/hardware';
 import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
@@ -1246,8 +1243,7 @@ async function benefitCharge(
     });
     return { ok: true, outcome };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Sale failed.';
+    const message = error instanceof Error ? error.message : 'Sale failed.';
     return {
       ok: false,
       code: 'error',

@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  quantitySchema,
-  quantityToMilli,
-  roundRatio,
-} from './checkout.js';
+import { quantitySchema, quantityToMilli, roundRatio } from './checkout.js';
 
 export const refundMethodSchema = z.enum([
   'cash',
@@ -126,17 +122,14 @@ function qtyMilli(value: number, label: string): bigint {
 }
 
 function sameQuantity(a: number, b: number): boolean {
-  return (
-    BigInt(Math.round(a * 1000)) - BigInt(Math.round(b * 1000)) === 0n
-  );
+  return BigInt(Math.round(a * 1000)) - BigInt(Math.round(b * 1000)) === 0n;
 }
 
 export function refundableQuantity(
   soldQuantity: number,
   refundedQuantity: number,
 ): number {
-  if (!(soldQuantity > 0))
-    throw new Error('Sold quantity must be positive');
+  if (!(soldQuantity > 0)) throw new Error('Sold quantity must be positive');
   if (!(refundedQuantity >= 0))
     throw new Error('Refunded quantity must be non-negative');
   if (
@@ -144,8 +137,9 @@ export function refundableQuantity(
     qtyMilli(soldQuantity, 'Sold quantity')
   )
     throw new Error('Refunded quantity cannot exceed sold quantity');
-  return (qtyMilli(soldQuantity, 'Sold quantity') -
-    qtyMilli(refundedQuantity, 'Refunded quantity')) === 0n
+  return qtyMilli(soldQuantity, 'Sold quantity') -
+    qtyMilli(refundedQuantity, 'Refunded quantity') ===
+    0n
     ? 0
     : Math.round((soldQuantity - refundedQuantity) * 1000) / 1000;
 }
@@ -159,7 +153,10 @@ export function validateRefundQuantity(
   if (!(requestedQuantity > 0))
     throw new Error('Requested quantity must be positive');
   const remaining = refundableQuantity(soldQuantity, refundedQuantity);
-  if (qtyMilli(requestedQuantity, 'Requested quantity') > qtyMilli(remaining, 'Remaining quantity')) {
+  if (
+    qtyMilli(requestedQuantity, 'Requested quantity') >
+    qtyMilli(remaining, 'Remaining quantity')
+  ) {
     throw new Error(
       `Cannot refund ${requestedQuantity} of ${productName}; only ${remaining} unit(s) remain refundable.`,
     );
@@ -269,8 +266,7 @@ export function calculateRefund(
           qtySoldMilli,
         );
     const cumulativeQuantity =
-      qtyMilli(line.refundedQuantity, 'Refunded quantity') +
-      qtyRequestedMilli;
+      qtyMilli(line.refundedQuantity, 'Refunded quantity') + qtyRequestedMilli;
     const cumulativeSubtotal =
       BigInt(line.subtotalAlreadyRefundedCents) + BigInt(lineSubtotal);
     const cumulativeTax =

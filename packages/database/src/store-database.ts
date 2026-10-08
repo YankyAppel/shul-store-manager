@@ -2859,7 +2859,8 @@ export class StoreDatabase {
             .run(saleId);
         } else if (benefit) {
           const cleanRef =
-            value.payment.method === 'snap_ebt' || value.payment.method === 'wic'
+            value.payment.method === 'snap_ebt' ||
+            value.payment.method === 'wic'
               ? value.payment.terminalReference?.trim() || null
               : null;
           this.connection
@@ -5206,7 +5207,8 @@ export class StoreDatabase {
         'lowStockThreshold',
       ),
       active: Boolean(row.active),
-      soldBy: row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
+      soldBy:
+        row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
       unit:
         row.unit === 'oz' || row.unit === 'kg' || row.unit === 'lb'
           ? (row.unit as 'lb' | 'oz' | 'kg')

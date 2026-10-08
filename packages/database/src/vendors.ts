@@ -643,7 +643,8 @@ export class VendorStore {
         vendorSku: text(row.vendor_sku) ?? text(row.catalog_sku),
         stockQuantity: Number(row.stock),
         lowStockThreshold: Number(row.low_stock_threshold),
-        soldBy: row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
+        soldBy:
+          row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
         unit:
           row.unit === 'lb' || row.unit === 'oz' || row.unit === 'kg'
             ? row.unit

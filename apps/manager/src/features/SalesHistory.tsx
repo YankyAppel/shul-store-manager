@@ -9,11 +9,7 @@ import {
   type RefundableSale,
   type Sale,
 } from '@shul-store/shared';
-import {
-  formatMoney,
-  formatQuantity,
-  messageFrom,
-} from '../utils/formatters';
+import { formatMoney, formatQuantity, messageFrom } from '../utils/formatters';
 
 export function SalesHistory({
   onViewCustomer,
