@@ -32,7 +32,7 @@ module.exports = {
   icon: 'build/icon.ico',
   win: {
     icon: 'build/icon.ico',
-    target: [{ target: 'nsis', arch: ['x64'] }],
+    target: [{ target: 'nsis', arch: ['x64', 'arm64'] }],
   },
   nsis: {
     oneClick: false,
