@@ -101,7 +101,9 @@ import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
   checkUsaepayDevice,
+  createProcessors,
   processorConnectionConfigSchema,
+  processors,
   registerUsaepayDevice,
   testProcessorConnection,
   usaepayPaymentEngineConfigSchema,
@@ -145,7 +147,29 @@ const { googleOAuthClient } = require('../google-oauth.cjs') as {
   googleOAuthClient: GoogleOAuthClient;
 };
 const gmailAvailable = googleOAuthClient.clientId.length > 0;
-const mailOptions = gmailAvailable ? { googleClient: googleOAuthClient } : {};
+
+/**
+ * Cloud HTTPS rides Chromium's network stack so Windows proxy settings and
+ * OS-trusted CAs (filtered/managed networks) behave like they do in a browser;
+ * plain Node fetch bypasses both and fails on such machines.
+ */
+const appFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  net.fetch(
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url,
+    init,
+  )) as unknown as typeof globalThis.fetch;
+
+// Real processors ride the same Chromium stack; custom entries pushed by
+// tests or callers still resolve from the shared registry.
+processors.splice(0, processors.length, ...createProcessors(appFetch));
+
+const mailOptions = gmailAvailable
+  ? { googleClient: googleOAuthClient, fetchImpl: appFetch }
+  : {};
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -596,6 +620,7 @@ function recreateSyncEngine(): void {
         anonKey: accountConfig.supabaseAnonKey,
         deviceId: config.deviceId ?? '',
         getAccessToken: (force) => cloudAccount.getAccessToken(force),
+        fetchImpl: appFetch,
       });
     } else {
       return;
@@ -612,6 +637,7 @@ function recreateSyncEngine(): void {
     transport = new SupabaseTransport({
       supabaseUrl: config.supabaseUrl,
       apiKey,
+      fetchImpl: appFetch,
     });
   }
   engine = new SyncEngine(database, transport, {
@@ -639,6 +665,7 @@ async function configureAccountStore(storeId: string): Promise<void> {
     anonKey: config.supabaseAnonKey,
     deviceId: database.ensureDeviceId(),
     getAccessToken: (force) => cloudAccount.getAccessToken(force),
+    fetchImpl: appFetch,
   });
   const prefixAlreadyAssigned =
     local.storeId === storeId &&
@@ -875,6 +902,7 @@ function registerIpc(): void {
         successTitle: 'Signed in to SUMA',
         successBody: 'You can close this tab and return to SUMA Manager.',
       },
+      appFetch,
     );
     if (!grant.idToken)
       throw new Error('Google did not return an identity token.');
@@ -1393,8 +1421,10 @@ function registerIpc(): void {
         ccSelf: z.boolean(),
       })
       .parse(input);
-    const grant = await connectGmail(googleOAuthClient, (url) =>
-      shell.openExternal(url),
+    const grant = await connectGmail(
+      googleOAuthClient,
+      (url) => shell.openExternal(url),
+      appFetch,
     );
     const status = database.purchaseOrders.setEmailConfig(
       {
@@ -1576,7 +1606,7 @@ function registerIpc(): void {
   );
   ipcMain.handle('settings:testProcessorConnection', async (_event, input) => {
     const config = processorConnectionConfigSchema.parse(input);
-    return testProcessorConnection(config);
+    return testProcessorConnection(config, appFetch);
   });
   ipcMain.handle('settings:pairUsaepayDevice', async (_event, input) => {
     const config = z
@@ -1588,7 +1618,7 @@ function registerIpc(): void {
         endpointKey: z.string().trim().min(1).default('v2'),
       })
       .parse(input);
-    return registerUsaepayDevice(config, config.name);
+    return registerUsaepayDevice(config, config.name, appFetch);
   });
   ipcMain.handle('settings:checkReader', async () => {
     const raw = database.getCardProcessorConfigJson();
@@ -1604,8 +1634,12 @@ function registerIpc(): void {
       )
         return checkUsaepayDevice(
           usaepayPaymentEngineConfigSchema.parse(parsed),
+          appFetch,
         );
-      return checkCardknoxBbposReader(cardknoxBbposConfigSchema.parse(parsed));
+      return checkCardknoxBbposReader(
+        cardknoxBbposConfigSchema.parse(parsed),
+        appFetch,
+      );
     } catch {
       return { ok: false, message: 'Save valid terminal settings first.' };
     }
@@ -2426,7 +2460,7 @@ app.whenReady().then(async () => {
   cloudAccount = new CloudAccountManager(
     path.join(dataDirectory, 'cloud-account.json'),
     secretStore,
-    globalThis.fetch,
+    appFetch,
     async (url) => {
       await shell.openExternal(url);
     },

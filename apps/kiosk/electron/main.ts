@@ -7,6 +7,7 @@ import {
   app,
   BrowserWindow,
   ipcMain,
+  net,
   powerMonitor,
   safeStorage,
   shell,
@@ -68,6 +69,8 @@ import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
   checkUsaepayDevice,
+  createProcessors,
+  processors,
   registerUsaepayDevice,
   usaepayPaymentEngineConfigSchema,
 } from '@shul-store/payments';
@@ -81,6 +84,23 @@ const { googleOAuthClient } = require('../google-oauth.cjs') as {
   googleOAuthClient: GoogleOAuthClient;
 };
 const googleSignInAvailable = googleOAuthClient.clientId.length > 0;
+
+/**
+ * Cloud HTTPS rides Chromium's network stack so Windows proxy settings and
+ * OS-trusted CAs (filtered/managed networks) behave like they do in a browser;
+ * plain Node fetch bypasses both and fails on such machines.
+ */
+const appFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+  net.fetch(
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url,
+    init,
+  )) as unknown as typeof globalThis.fetch;
+
+processors.splice(0, processors.length, ...createProcessors(appFetch));
 
 const DEFAULT_PORT = 3939;
 const CATALOG_REFRESH_MS = 600000;
@@ -413,7 +433,7 @@ async function pairUsaepayDevice(input: unknown) {
       endpointKey: z.string().trim().min(1).default('v2'),
     })
     .parse(input);
-  return registerUsaepayDevice(config, 'Shul Store Kiosk');
+  return registerUsaepayDevice(config, 'Shul Store Kiosk', appFetch);
 }
 
 async function checkReader(): Promise<{ ok: boolean; message: string }> {
@@ -429,8 +449,14 @@ async function checkReader(): Promise<{ ok: boolean; message: string }> {
       'processorId' in parsed &&
       parsed.processorId === 'usaepay-payment-engine'
     )
-      return checkUsaepayDevice(usaepayPaymentEngineConfigSchema.parse(parsed));
-    return checkCardknoxBbposReader(cardknoxBbposConfigSchema.parse(parsed));
+      return checkUsaepayDevice(
+        usaepayPaymentEngineConfigSchema.parse(parsed),
+        appFetch,
+      );
+    return checkCardknoxBbposReader(
+      cardknoxBbposConfigSchema.parse(parsed),
+      appFetch,
+    );
   } catch {
     return { ok: false, message: 'Save valid terminal settings first.' };
   }
@@ -607,7 +633,7 @@ async function cloudConfig(): Promise<{
       supabaseUrl: state.cloudSupabaseUrl,
       anonKey: state.cloudSupabaseAnonKey,
     };
-  const response = await fetch(`${CLOUD_SITE_URL}/api/store/config`);
+  const response = await appFetch(`${CLOUD_SITE_URL}/api/store/config`);
   if (!response.ok) throw new Error('Cloud setup is unavailable right now.');
   const value = (await response.json()) as {
     supabase_url?: unknown;
@@ -635,7 +661,7 @@ async function cloudToken(forceRefresh = false): Promise<string> {
   const config = await cloudConfig();
   state.cloudSupabaseUrl = config.supabaseUrl;
   state.cloudSupabaseAnonKey = config.anonKey;
-  const response = await fetch(
+  const response = await appFetch(
     `${config.supabaseUrl}/auth/v1/token?grant_type=refresh_token`,
     {
       method: 'POST',
@@ -661,7 +687,7 @@ async function cloudToken(forceRefresh = false): Promise<string> {
 }
 
 async function cloudAccountRequest(accessToken: string): Promise<Response> {
-  return fetch(`${CLOUD_SITE_URL}/api/store/account`, {
+  return appFetch(`${CLOUD_SITE_URL}/api/store/account`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${accessToken}`,
@@ -710,7 +736,7 @@ async function cloudSignIn(
     })
     .parse(input);
   const config = await cloudConfig();
-  const response = await fetch(
+  const response = await appFetch(
     `${config.supabaseUrl}/auth/v1/token?grant_type=password`,
     {
       method: 'POST',
@@ -745,7 +771,7 @@ async function cloudSignInWithGoogle(
     })
     .parse(input);
   const config = await cloudConfig();
-  const lookup = await fetch(`${CLOUD_SITE_URL}/api/store/account-lookup`, {
+  const lookup = await appFetch(`${CLOUD_SITE_URL}/api/store/account-lookup`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: parsed.email }),
@@ -768,6 +794,7 @@ async function cloudSignInWithGoogle(
       successTitle: 'Signed in to SUMA',
       successBody: 'You can close this tab and return to SUMA Kiosk.',
     },
+    appFetch,
   );
   if (!grant.idToken)
     throw new Error('Google did not return an identity token.');
@@ -775,7 +802,7 @@ async function cloudSignInWithGoogle(
     throw new Error(
       `You signed in to Google as ${grant.email}. Use the Google account for ${parsed.email}.`,
     );
-  const response = await fetch(
+  const response = await appFetch(
     `${config.supabaseUrl}/auth/v1/token?grant_type=id_token`,
     {
       method: 'POST',
@@ -830,6 +857,7 @@ async function finishCloudSignIn(
     anonKey: config.anonKey,
     deviceId,
     getAccessToken: cloudToken,
+    fetchImpl: appFetch,
   });
   const restored = await restoreFromCloud(
     localDatabase,
@@ -1639,6 +1667,7 @@ app.whenReady().then(async () => {
       anonKey: state.cloudSupabaseAnonKey,
       deviceId,
       getAccessToken: cloudToken,
+      fetchImpl: appFetch,
     });
     localDatabase.applySyncCredentials({
       enabled: true,
