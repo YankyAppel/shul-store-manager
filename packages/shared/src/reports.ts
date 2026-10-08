@@ -112,8 +112,10 @@ const dailyReportSchema = z.object({
     z.object({
       productId: z.string(),
       productName: z.string(),
-      quantity: z.number().int().safe(),
+      quantity: z.number().safe().nonnegative(),
       totalCents: z.number().int().safe(),
+      soldBy: z.enum(['each', 'weight']).optional(),
+      unit: z.enum(['lb', 'oz', 'kg']).nullable().optional(),
     }),
   ),
   inventoryMovements: z.array(
@@ -172,6 +174,8 @@ export interface DailyTopItem {
   productName: string;
   quantity: number;
   totalCents: number;
+  soldBy?: import('./checkout.js').SoldBy | undefined;
+  unit?: import('./checkout.js').WeightUnit | null | undefined;
 }
 
 export interface DailyInventoryMovementTotal {

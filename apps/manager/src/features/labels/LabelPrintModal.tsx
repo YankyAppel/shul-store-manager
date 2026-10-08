@@ -150,6 +150,10 @@ export function LabelPrintModal({
         sellingPriceCents: product.sellingPriceCents,
         taxable: product.taxable,
         lowStockThreshold: product.lowStockThreshold,
+        soldBy: product.soldBy,
+        unit: product.unit,
+        snapEligible: product.snapEligible,
+        wicEligible: product.wicEligible,
         barcodes: [...product.barcodes.map((barcode) => barcode.value), value],
         vendors: product.vendors.map((link) => ({
           vendorId: link.vendorId,

@@ -7,6 +7,30 @@ export function formatMoney(cents: number): string {
   return isNegative ? `-${formatted}` : formatted;
 }
 
+/** Quantity display: weight lines print with their unit (e.g. "2.350 lb"). */
+export function formatQuantity(
+  quantity: number,
+  soldBy?: string | null,
+  unit?: string | null,
+): string {
+  if (soldBy === 'weight') {
+    const rounded = Math.round(quantity * 1000) / 1000;
+    return `${rounded} ${unit ?? 'units'}`;
+  }
+  return String(Math.round(quantity * 1000) / 1000);
+}
+
+/** Stock levels for weight products are tracked in milli-units. */
+export function formatStock(
+  stockQuantity: number,
+  soldBy?: string | null,
+  unit?: string | null,
+): string {
+  if (soldBy === 'weight')
+    return formatQuantity(stockQuantity / 1000, soldBy, unit);
+  return String(Math.round(stockQuantity));
+}
+
 export function formatBalanceStatus(cents: number): {
   label: string;
   formatted: string;

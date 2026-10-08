@@ -1,11 +1,11 @@
 import { z } from 'zod';
-import { storeLogoSchema } from './checkout.js';
+import { quantitySchema, storeLogoSchema } from './checkout.js';
 
 const line = z
   .object({
     productId: z.string().uuid().optional(),
     barcode: z.string().trim().min(1).max(100).optional(),
-    quantity: z.number().int().positive().max(10000),
+    quantity: quantitySchema,
   })
   .strict()
   .refine(
@@ -31,7 +31,7 @@ export const kioskChargeRequestSchema = z
         z
           .object({
             productId: z.string().uuid(),
-            quantity: z.number().int().positive().max(10000),
+            quantity: quantitySchema,
             barcodeUsed: z.string().trim().min(1).max(100).nullable(),
           })
           .strict(),
@@ -46,6 +46,8 @@ export const kioskAdminVerifyRequestSchema = z
 export const kioskCatalogResponseSchema = z.object({
   storeName: z.string(),
   storeLogoDataUrl: storeLogoSchema.nullable().default(null),
+  snapAccepted: z.boolean().default(false),
+  wicAccepted: z.boolean().default(false),
   categories: z.array(
     z.object({
       id: z.string().uuid(),
@@ -61,6 +63,10 @@ export const kioskCatalogResponseSchema = z.object({
       secondaryName: z.string().nullable(),
       priceCents: z.number().int().nonnegative(),
       barcodes: z.array(z.string()),
+      soldBy: z.enum(['each', 'weight']).default('each'),
+      unit: z.enum(['lb', 'oz', 'kg']).nullable().default(null),
+      snapEligible: z.boolean().default(false),
+      wicEligible: z.boolean().default(false),
     }),
   ),
 });

@@ -131,6 +131,9 @@ describe('migration upgrades and regressions', () => {
           idleLockMinutes: 5,
           staffModeEnabled: false,
           explainDismissals: [],
+          scaleMode: 'none',
+          scalePort: null,
+          scaleUnit: 'lb',
         });
         expect(upgraded.getCardProcessorConfigJson()).toBe(
           '{"apiKey":"legacy"}',

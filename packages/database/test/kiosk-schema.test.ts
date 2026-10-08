@@ -17,7 +17,8 @@ describe('kiosk API schemas', () => {
       { productId: id, quantity: 1, priceCents: 1 },
       { productId: id, quantity: 1, name: 'forged' },
       { productId: id, quantity: 0 },
-      { productId: id, quantity: 1.5 },
+      { productId: id, quantity: -2 },
+      { productId: id, quantity: 1.2345 },
     ])
       expect(() => kioskPriceRequestSchema.parse({ lines: [line] })).toThrow();
     expect(() =>

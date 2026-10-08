@@ -84,6 +84,8 @@ interface TopItemRow {
   product_name: string;
   quantity: number;
   total_cents: number;
+  sold_by: string | null;
+  unit: string | null;
 }
 
 interface InventoryMovementRow {
@@ -164,12 +166,13 @@ export function dailyReport(
   );
   const tenders = allRows<TenderRow>(
     connection,
-    `SELECT COALESCE(NULLIF(s.tender_type, 'immediate_payment'), p.method, 'unknown')
+    `SELECT COALESCE(bp.method, NULLIF(s.tender_type, 'immediate_payment'), p.method, 'unknown')
               AS tender,
             COUNT(*) AS sale_count,
             COALESCE(SUM(s.total_cents), 0) AS total_cents
      FROM sales s
      LEFT JOIN payments p ON p.sale_id = s.id
+     LEFT JOIN benefit_payments bp ON bp.sale_id = s.id
      WHERE s.status IN ('completed', 'refunded')
        AND s.completed_at >= ? AND s.completed_at < ?
      GROUP BY tender;`,
@@ -249,7 +252,7 @@ export function dailyReport(
   const profit = row<ProfitRow>(
     connection
       .prepare(
-        `SELECT COALESCE(SUM(i.quantity * i.unit_purchase_cost_cents), 0) AS cost_cents,
+        `SELECT COALESCE(SUM(ROUND(i.quantity * i.unit_purchase_cost_cents)), 0) AS cost_cents,
                 COALESCE(SUM(i.line_subtotal_cents), 0) AS net_sales_cents
          FROM sale_items i
          JOIN sales s ON s.id = i.sale_id
@@ -263,7 +266,9 @@ export function dailyReport(
     `SELECT i.product_id,
             i.product_name,
             SUM(i.quantity) AS quantity,
-            SUM(i.line_total_cents) AS total_cents
+            SUM(i.line_total_cents) AS total_cents,
+            MAX(i.sold_by) AS sold_by,
+            MAX(i.unit) AS unit
      FROM sale_items i
      JOIN sales s ON s.id = i.sale_id
      WHERE s.status IN ('completed', 'refunded')
@@ -333,8 +338,13 @@ export function dailyReport(
   const topItemTotals: DailyTopItem[] = topItems.map((item) => ({
     productId: item.product_id,
     productName: item.product_name,
-    quantity: integer(item.quantity, 'Top item quantity'),
+    quantity: Math.round(item.quantity * 1000) / 1000,
     totalCents: integer(item.total_cents, 'Top item total'),
+    soldBy: item.sold_by === 'weight' ? 'weight' : 'each',
+    unit:
+      item.unit === 'lb' || item.unit === 'oz' || item.unit === 'kg'
+        ? item.unit
+        : null,
   }));
   const movementTotals: DailyInventoryMovementTotal[] = inventoryMovements.map(
     (item) => ({

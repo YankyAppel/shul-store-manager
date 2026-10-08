@@ -33,6 +33,9 @@ describe('device settings', () => {
       idleLockMinutes: 5,
       staffModeEnabled: false,
       explainDismissals: [],
+      scaleMode: 'none',
+      scalePort: null,
+      scaleUnit: 'lb',
     });
     expect(
       processorConfigInputSchema.safeParse('{"token":"value"}').success,

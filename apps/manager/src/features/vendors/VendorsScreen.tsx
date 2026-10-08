@@ -6,7 +6,7 @@ import type {
   Vendor,
   VendorSummary,
 } from '@shul-store/shared';
-import { formatMoney, messageFrom } from '../../utils/formatters';
+import { formatMoney, formatStock, messageFrom } from '../../utils/formatters';
 import { VendorBadge, VendorEditorModal } from './VendorEditorModal';
 import {
   OrderModal,
@@ -419,7 +419,7 @@ function VendorDetail({
                     <code>{line.vendorSku ?? line.barcode ?? '—'}</code>
                   </td>
                   <td style={{ textAlign: 'right' }}>
-                    {line.stockQuantity}
+                    {formatStock(line.stockQuantity, line.soldBy, line.unit)}
                     <small>alert at {line.lowStockThreshold}</small>
                   </td>
                   <td style={{ textAlign: 'right' }}>

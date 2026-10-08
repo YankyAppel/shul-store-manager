@@ -99,6 +99,9 @@ describe('restore validation', () => {
       idleLockMinutes: 5,
       staffModeEnabled: false,
       explainDismissals: [],
+      scaleMode: 'none',
+      scalePort: null,
+      scaleUnit: 'lb',
     });
     expect(db.getCardProcessorConfigStatus().configured).toBe(false);
     disposeDb(db, file);

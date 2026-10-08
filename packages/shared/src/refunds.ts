@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { roundRatio } from './checkout.js';
+import { quantitySchema, quantityToMilli, roundRatio } from './checkout.js';
 
 export const refundMethodSchema = z.enum([
   'cash',
@@ -11,7 +11,7 @@ export type RefundMethod = z.infer<typeof refundMethodSchema>;
 
 export const refundItemInputSchema = z.object({
   saleItemId: z.string().uuid(),
-  quantity: z.number().int().safe().positive().max(10000),
+  quantity: quantitySchema,
   restocked: z.boolean(),
 });
 export type RefundItemInput = z.infer<typeof refundItemInputSchema>;
@@ -69,6 +69,8 @@ export interface RefundableSaleItem {
   taxCents: number;
   subtotalRefundedCents: number;
   taxRefundedCents: number;
+  soldBy?: import('./checkout.js').SoldBy | undefined;
+  unit?: import('./checkout.js').WeightUnit | null | undefined;
 }
 
 export interface RefundableSale {
@@ -112,21 +114,34 @@ function safeCents(value: bigint, label: string): number {
   return Number(value);
 }
 
-function positiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value < 1)
-    throw new Error(`${label} must be a positive integer`);
+/** Quantities may carry up to 3 decimals (weight items); compare in milli. */
+function qtyMilli(value: number, label: string): bigint {
+  if (!Number.isSafeInteger(Math.round(value * 1000)))
+    throw new Error(`${label} exceeds the supported quantity range`);
+  return quantityToMilli(value);
+}
+
+function sameQuantity(a: number, b: number): boolean {
+  return BigInt(Math.round(a * 1000)) - BigInt(Math.round(b * 1000)) === 0n;
 }
 
 export function refundableQuantity(
   soldQuantity: number,
   refundedQuantity: number,
 ): number {
-  positiveInteger(soldQuantity, 'Sold quantity');
-  if (!Number.isSafeInteger(refundedQuantity) || refundedQuantity < 0)
-    throw new Error('Refunded quantity must be a non-negative safe integer');
-  if (refundedQuantity > soldQuantity)
+  if (!(soldQuantity > 0)) throw new Error('Sold quantity must be positive');
+  if (!(refundedQuantity >= 0))
+    throw new Error('Refunded quantity must be non-negative');
+  if (
+    qtyMilli(refundedQuantity, 'Refunded quantity') >
+    qtyMilli(soldQuantity, 'Sold quantity')
+  )
     throw new Error('Refunded quantity cannot exceed sold quantity');
-  return soldQuantity - refundedQuantity;
+  return qtyMilli(soldQuantity, 'Sold quantity') -
+    qtyMilli(refundedQuantity, 'Refunded quantity') ===
+    0n
+    ? 0
+    : Math.round((soldQuantity - refundedQuantity) * 1000) / 1000;
 }
 
 export function validateRefundQuantity(
@@ -135,42 +150,46 @@ export function validateRefundQuantity(
   refundedQuantity: number,
   requestedQuantity: number,
 ): number {
-  positiveInteger(requestedQuantity, 'Requested quantity');
+  if (!(requestedQuantity > 0))
+    throw new Error('Requested quantity must be positive');
   const remaining = refundableQuantity(soldQuantity, refundedQuantity);
-  if (requestedQuantity > remaining) {
+  if (
+    qtyMilli(requestedQuantity, 'Requested quantity') >
+    qtyMilli(remaining, 'Remaining quantity')
+  ) {
     throw new Error(
       `Cannot refund ${requestedQuantity} of ${productName}; only ${remaining} unit(s) remain refundable.`,
     );
   }
-  return remaining - requestedQuantity;
+  return Math.round((remaining - requestedQuantity) * 1000) / 1000;
 }
 
 export function calculateRefundTax(input: RefundTaxInput): number {
-  positiveInteger(input.soldQuantity, 'Sold quantity');
-  positiveInteger(input.requestedQuantity, 'Requested quantity');
-  if (
-    !Number.isSafeInteger(input.refundedQuantity) ||
-    input.refundedQuantity < 0
-  )
-    throw new Error('Refunded quantity must be a non-negative safe integer');
+  if (!(input.soldQuantity > 0))
+    throw new Error('Sold quantity must be positive');
+  if (!(input.requestedQuantity > 0))
+    throw new Error('Requested quantity must be positive');
+  if (!(input.refundedQuantity >= 0))
+    throw new Error('Refunded quantity must be non-negative');
   if (
     !Number.isSafeInteger(input.taxAlreadyRefundedCents) ||
     input.taxAlreadyRefundedCents < 0
   )
     throw new Error('Already-refunded tax must be a non-negative safe integer');
-  const finalRefund =
-    input.refundedQuantity + input.requestedQuantity === input.soldQuantity;
+  const finalRefund = sameQuantity(
+    input.refundedQuantity + input.requestedQuantity,
+    input.soldQuantity,
+  );
   if (finalRefund) {
     if (input.taxAlreadyRefundedCents > input.saleItemTaxCents)
       throw new Error('Already-refunded tax exceeds the sale line tax');
     return input.saleItemTaxCents - input.taxAlreadyRefundedCents;
   }
+  const soldMilli = qtyMilli(input.soldQuantity, 'Sold quantity');
   const numerator =
-    BigInt(input.saleItemTaxCents) * BigInt(input.requestedQuantity);
-  return safeCents(
-    (numerator + BigInt(input.soldQuantity) / 2n) / BigInt(input.soldQuantity),
-    'Refund tax',
-  );
+    BigInt(input.saleItemTaxCents) *
+    qtyMilli(input.requestedQuantity, 'Requested quantity');
+  return safeCents((numerator + soldMilli / 2n) / soldMilli, 'Refund tax');
 }
 
 export interface RefundCalculationInput {
@@ -205,6 +224,10 @@ export function calculateRefund(
       line.refundedQuantity,
       line.quantity,
     );
+    const fullyRefunded = sameQuantity(
+      line.refundedQuantity + line.quantity,
+      line.soldQuantity,
+    );
     const nonNegativeFields = [
       ['Sale line subtotal', line.saleLineSubtotalCents],
       ['Sale line tax', line.saleLineTaxCents],
@@ -221,36 +244,36 @@ export function calculateRefund(
       BigInt(line.saleLineTotalCents)
     )
       throw new Error('Sale line subtotal and tax exceed the line total');
-    if (line.refundedQuantity + line.quantity === line.soldQuantity) {
+    if (fullyRefunded) {
       if (
         line.subtotalAlreadyRefundedCents > line.saleLineSubtotalCents ||
         line.taxAlreadyRefundedCents > line.saleLineTaxCents
       )
         throw new Error('Cumulative refund exceeds the sale line allocation');
     }
-    const finalRefund =
-      line.refundedQuantity + line.quantity === line.soldQuantity;
-    const lineSubtotal = finalRefund
+    const qtyRequestedMilli = qtyMilli(line.quantity, 'Refund quantity');
+    const qtySoldMilli = qtyMilli(line.soldQuantity, 'Sold quantity');
+    const lineSubtotal = fullyRefunded
       ? line.saleLineSubtotalCents - line.subtotalAlreadyRefundedCents
       : roundRatio(
-          BigInt(line.saleLineSubtotalCents) * BigInt(line.quantity),
-          BigInt(line.soldQuantity),
+          BigInt(line.saleLineSubtotalCents) * qtyRequestedMilli,
+          qtySoldMilli,
         );
-    const lineTax = finalRefund
+    const lineTax = fullyRefunded
       ? line.saleLineTaxCents - line.taxAlreadyRefundedCents
       : roundRatio(
-          BigInt(line.saleLineTaxCents) * BigInt(line.quantity),
-          BigInt(line.soldQuantity),
+          BigInt(line.saleLineTaxCents) * qtyRequestedMilli,
+          qtySoldMilli,
         );
     const cumulativeQuantity =
-      BigInt(line.refundedQuantity) + BigInt(line.quantity);
+      qtyMilli(line.refundedQuantity, 'Refunded quantity') + qtyRequestedMilli;
     const cumulativeSubtotal =
       BigInt(line.subtotalAlreadyRefundedCents) + BigInt(lineSubtotal);
     const cumulativeTax =
       BigInt(line.taxAlreadyRefundedCents) + BigInt(lineTax);
     const lineAmount = BigInt(lineSubtotal) + BigInt(lineTax);
     const cumulativeAmount = cumulativeSubtotal + cumulativeTax;
-    if (cumulativeQuantity > BigInt(line.soldQuantity))
+    if (cumulativeQuantity > qtySoldMilli)
       throw new Error('Cumulative refund quantity exceeds the sale line');
     if (cumulativeSubtotal > BigInt(line.saleLineSubtotalCents))
       throw new Error('Cumulative refund subtotal exceeds the sale line');

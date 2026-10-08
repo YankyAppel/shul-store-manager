@@ -106,6 +106,12 @@ export const productInputSchema = z.object({
   sellingPriceCents: z.number().int().min(0).max(100_000_000),
   taxable: z.boolean(),
   lowStockThreshold: z.number().int().min(0).max(1_000_000),
+  /** 'each' prices per unit; 'weight' prices per `unit` and takes a decimal
+   * quantity from a scale. */
+  soldBy: z.enum(['each', 'weight']).default('each'),
+  unit: z.enum(['lb', 'oz', 'kg']).nullable().default(null),
+  snapEligible: z.boolean().default(false),
+  wicEligible: z.boolean().default(false),
   barcodes: z.array(z.string().trim().min(1).max(100)).max(50).default([]),
   vendors: productVendorLinksSchema.default([]),
 });
@@ -179,7 +185,13 @@ export interface Product {
   taxable: boolean;
   lowStockThreshold: number;
   active: boolean;
+  /** For weight items this is measured in thousandths of `unit` (e.g. 2350 =
+   * 2.35 lb) so it stays an integer. */
   stockQuantity: number;
+  soldBy: 'each' | 'weight';
+  unit: 'lb' | 'oz' | 'kg' | null;
+  snapEligible: boolean;
+  wicEligible: boolean;
   barcodes: Barcode[];
   vendors: ProductVendorLink[];
   createdAt: string;
@@ -571,6 +583,15 @@ export interface StoreApi {
     lookupBarcode(value: string): Promise<Product | null>;
     complete(input: CompleteSaleInput): Promise<Sale>;
   };
+  scale: {
+    getStatus(): Promise<ScaleStatus>;
+    /** A single stable reading; resolves quickly for simulated scales. */
+    readWeight(): Promise<ScaleReading>;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    subscribe(listener: (reading: ScaleReading) => void): () => void;
+    subscribeStatus(listener: (status: ScaleStatus) => void): () => void;
+  };
   sales: {
     list(): Promise<Sale[]>;
     get(id: string): Promise<Sale>;
@@ -616,6 +637,19 @@ export interface StoreApi {
     receipt(id: string): Promise<AccountPaymentReceiptData>;
     print(id: string): Promise<PrintResult>;
   };
+}
+
+export interface ScaleReading {
+  /** Weight in the device's configured unit, rounded to 3 decimals. */
+  weight: number;
+  unit: 'lb' | 'oz' | 'kg';
+  stable: boolean;
+}
+
+export interface ScaleStatus {
+  mode: 'none' | 'simulated' | 'serial';
+  connected: boolean;
+  error: string | null;
 }
 
 export interface UpdateCheckResult {

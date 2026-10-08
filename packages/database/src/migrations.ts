@@ -1407,6 +1407,49 @@ export const migrations: Migration[] = [
       ALTER TABLE outbound_emails ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
     `,
   },
+  {
+    version: 32,
+    name: 'weighted_products_and_benefit_tenders',
+    sql: `
+      -- Weighted products: sold_by=weight with a unit (lb/oz/kg); quantity on
+      -- sale items and cart lines is decimal (milli-units) for those.
+      ALTER TABLE products ADD COLUMN sold_by TEXT NOT NULL DEFAULT 'each' CHECK (sold_by IN ('each','weight'));
+      ALTER TABLE products ADD COLUMN unit TEXT CHECK (unit IS NULL OR unit IN ('lb','oz','kg'));
+      ALTER TABLE products ADD COLUMN snap_eligible INTEGER NOT NULL DEFAULT 0 CHECK (snap_eligible IN (0, 1));
+      ALTER TABLE products ADD COLUMN wic_eligible INTEGER NOT NULL DEFAULT 0 CHECK (wic_eligible IN (0, 1));
+
+      -- Snapshots on the sale line so receipts/voids stay correct after the
+      -- product itself is edited.
+      ALTER TABLE sale_items ADD COLUMN sold_by TEXT NOT NULL DEFAULT 'each';
+      ALTER TABLE sale_items ADD COLUMN unit TEXT;
+      ALTER TABLE sale_items ADD COLUMN snap_eligible INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sale_items ADD COLUMN wic_eligible INTEGER NOT NULL DEFAULT 0;
+
+      -- Store-level acceptance switches (a store must be USDA FNS-authorized
+      -- to really take SNAP; these just enable the tender buttons).
+      ALTER TABLE store_settings ADD COLUMN snap_accepted INTEGER NOT NULL DEFAULT 0 CHECK (snap_accepted IN (0, 1));
+      ALTER TABLE store_settings ADD COLUMN wic_accepted INTEGER NOT NULL DEFAULT 0 CHECK (wic_accepted IN (0, 1));
+
+      -- Per-device checkout scale configuration.
+      ALTER TABLE device_settings ADD COLUMN scale_mode TEXT NOT NULL DEFAULT 'none' CHECK (scale_mode IN ('none','simulated','serial'));
+      ALTER TABLE device_settings ADD COLUMN scale_port TEXT;
+      ALTER TABLE device_settings ADD COLUMN scale_unit TEXT NOT NULL DEFAULT 'lb' CHECK (scale_unit IN ('lb','oz','kg'));
+
+      -- Benefit tenders live in their own table so a sale may carry an EBT/WIC
+      -- row alongside the conventional payments row covering the remainder
+      -- (payments.sale_id stays UNIQUE).
+      CREATE TABLE benefit_payments (
+        id TEXT PRIMARY KEY,
+        sale_id TEXT NOT NULL REFERENCES sales(id) ON DELETE RESTRICT,
+        method TEXT NOT NULL CHECK (method IN ('snap_ebt','wic')),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+        terminal_reference TEXT,
+        external_approved INTEGER NOT NULL DEFAULT 1 CHECK (external_approved IN (0, 1)),
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX benefit_payments_sale_idx ON benefit_payments(sale_id);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

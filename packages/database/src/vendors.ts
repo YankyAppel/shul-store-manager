@@ -299,7 +299,7 @@ export class VendorStore {
   marginReport(): MarginReport {
     const rows = this.connection
       .prepare(
-        `SELECT p.id, p.name, p.selling_price_cents, p.purchase_cost_cents, c.name AS category_name,
+        `SELECT p.id, p.name, p.selling_price_cents, p.purchase_cost_cents, p.sold_by, p.unit, c.name AS category_name,
                 COALESCE((SELECT SUM(m.quantity_change) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS stock,
                 (SELECT b.value FROM product_barcodes b WHERE b.product_id = p.id ORDER BY b.kind = 'EXTERNAL' DESC, b.position LIMIT 1) AS barcode,
                 v.id AS vendor_id, v.name AS vendor_name, v.hide_list_price,
@@ -337,10 +337,12 @@ export class VendorStore {
         costCents = productCost;
       }
       const stockQuantity = Number(row.stock);
+      const byWeight = row.sold_by === 'weight';
+      const stockUnits = byWeight ? stockQuantity / 1000 : stockQuantity;
       if (costCents === null) missingCostCount += 1;
-      else if (stockQuantity > 0) {
-        retailValueCents += sellingPriceCents * stockQuantity;
-        costValueCents += costCents * stockQuantity;
+      else if (stockUnits > 0) {
+        retailValueCents += sellingPriceCents * stockUnits;
+        costValueCents += costCents * stockUnits;
       }
       const marginCents =
         costCents === null ? null : sellingPriceCents - costCents;
@@ -360,6 +362,11 @@ export class VendorStore {
             ? null
             : marginCents / sellingPriceCents,
         stockQuantity,
+        soldBy: byWeight ? ('weight' as const) : ('each' as const),
+        unit:
+          row.unit === 'lb' || row.unit === 'oz' || row.unit === 'kg'
+            ? (row.unit as 'lb' | 'oz' | 'kg')
+            : null,
       };
     });
     return { lines, retailValueCents, costValueCents, missingCostCount };
@@ -592,6 +599,7 @@ export class VendorStore {
       .prepare(
         `SELECT r.id, r.product_id, r.vendor_id, r.quantity_override, r.status, r.created_at, r.updated_at,
                 p.name AS product_name, p.low_stock_threshold, p.purchase_cost_cents,
+                p.sold_by, p.unit,
                 COALESCE((SELECT SUM(m.quantity_change) FROM inventory_movements m WHERE m.product_id = p.id), 0) AS stock,
                 pv.cost_cents AS negotiated_cents, pv.reorder_qty AS override_qty, pv.vendor_sku,
                 v.default_reorder_qty, v.hide_list_price,
@@ -635,6 +643,12 @@ export class VendorStore {
         vendorSku: text(row.vendor_sku) ?? text(row.catalog_sku),
         stockQuantity: Number(row.stock),
         lowStockThreshold: Number(row.low_stock_threshold),
+        soldBy:
+          row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
+        unit:
+          row.unit === 'lb' || row.unit === 'oz' || row.unit === 'kg'
+            ? row.unit
+            : null,
         quantity,
         quantityOverride: override,
         unitCostCents: unitCost,

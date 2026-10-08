@@ -9,7 +9,7 @@ import {
   type RefundableSale,
   type Sale,
 } from '@shul-store/shared';
-import { formatMoney, messageFrom } from '../utils/formatters';
+import { formatMoney, formatQuantity, messageFrom } from '../utils/formatters';
 
 export function SalesHistory({
   onViewCustomer,
@@ -588,7 +588,8 @@ export function SalesHistory({
             {selected.items.map((item) => (
               <p key={item.id} className="sale-detail-line">
                 <span>
-                  {item.productName} × {item.quantity}
+                  {item.productName} ×{' '}
+                  {formatQuantity(item.quantity, item.soldBy, item.unit)}
                 </span>
                 <b>{formatMoney(item.lineTotalCents)}</b>
               </p>
@@ -664,8 +665,20 @@ export function SalesHistory({
                   <div className="refund-line-description">
                     <strong>{item.productName}</strong>
                     <small>
-                      Sold {item.quantity} · Refunded {item.refundedQuantity} ·
-                      Remaining {item.remainingQuantity}
+                      Sold{' '}
+                      {formatQuantity(item.quantity, item.soldBy, item.unit)} ·
+                      Refunded{' '}
+                      {formatQuantity(
+                        item.refundedQuantity,
+                        item.soldBy,
+                        item.unit,
+                      )}{' '}
+                      · Remaining{' '}
+                      {formatQuantity(
+                        item.remainingQuantity,
+                        item.soldBy,
+                        item.unit,
+                      )}
                     </small>
                   </div>
                   <label>
@@ -673,6 +686,7 @@ export function SalesHistory({
                     <input
                       type="number"
                       min={0}
+                      step={item.soldBy === 'weight' ? '0.001' : '1'}
                       max={item.remainingQuantity}
                       value={refundQuantities[item.id] ?? 0}
                       onChange={(event) =>

@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AuthState,
+  ScaleReading,
+  ScaleStatus,
   StoreApi,
   UpdateCheckResult,
 } from '@shul-store/shared';
@@ -178,6 +180,28 @@ const api: StoreApi = {
     lookupBarcode: (value) =>
       ipcRenderer.invoke('checkout:lookupBarcode', value),
     complete: (input) => ipcRenderer.invoke('checkout:complete', input),
+  },
+  scale: {
+    getStatus: () => ipcRenderer.invoke('scale:getStatus'),
+    readWeight: () => ipcRenderer.invoke('scale:readWeight'),
+    start: () => ipcRenderer.invoke('scale:start'),
+    stop: () => ipcRenderer.invoke('scale:stop'),
+    subscribe: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        reading: ScaleReading,
+      ) => listener(reading);
+      ipcRenderer.on('scale:reading', handler);
+      return () => ipcRenderer.removeListener('scale:reading', handler);
+    },
+    subscribeStatus: (listener) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        status: ScaleStatus,
+      ) => listener(status);
+      ipcRenderer.on('scale:status', handler);
+      return () => ipcRenderer.removeListener('scale:status', handler);
+    },
   },
   sales: {
     list: () => ipcRenderer.invoke('sales:list'),

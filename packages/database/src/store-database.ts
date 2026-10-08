@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { SqliteDatabase } from './sqlite.js';
 import { PaymentService } from './payment-service.js';
 import {
+  benefitEligibility,
   calculateCart,
   calculateCashChange,
   cartSnapshotSchema,
@@ -12,6 +13,7 @@ import {
   inventoryMovementInputSchema,
   productInputSchema,
   PlaintextSecretStore,
+  formatMoneyCents,
   recordAccountPaymentInputSchema,
   calculateRefund,
   recordRefundInputSchema,
@@ -53,6 +55,7 @@ import {
   type Refund,
   type RefundItem,
   type RefundableSale,
+  type RemainderPayment,
   parseReceiptBarcode,
   type Sale,
   type SaleItemPayload,
@@ -601,6 +604,10 @@ export class StoreDatabase {
         row.profile_completed === undefined
           ? false
           : Boolean(row.profile_completed),
+      snapAccepted:
+        row.snap_accepted === undefined ? false : Boolean(row.snap_accepted),
+      wicAccepted:
+        row.wic_accepted === undefined ? false : Boolean(row.wic_accepted),
     };
   }
 
@@ -629,6 +636,8 @@ export class StoreDatabase {
             card_processor_id=?,
             logo_data_url=?,
             profile_completed=?,
+            snap_accepted=?,
+            wic_accepted=?,
             updated_at=?
           WHERE singleton_id=1`,
         )
@@ -652,6 +661,8 @@ export class StoreDatabase {
           value.cardProcessorId,
           value.logoDataUrl,
           value.profileCompleted ? 1 : 0,
+          value.snapAccepted ? 1 : 0,
+          value.wicAccepted ? 1 : 0,
           now(),
         );
       this.enqueueEntity('settings', 'settings');
@@ -663,7 +674,8 @@ export class StoreDatabase {
     const row = this.connection
       .prepare(
         `SELECT update_feed_url, automatic_updates_enabled,
-          idle_lock_minutes, staff_mode_enabled, explain_dismissals_json
+          idle_lock_minutes, staff_mode_enabled, explain_dismissals_json,
+          scale_mode, scale_port, scale_unit
          FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
@@ -693,6 +705,18 @@ export class StoreDatabase {
       ),
       staffModeEnabled: Number(row.staff_mode_enabled ?? 0) === 1,
       explainDismissals,
+      scaleMode:
+        row.scale_mode === 'simulated' || row.scale_mode === 'serial'
+          ? row.scale_mode
+          : 'none',
+      scalePort:
+        row.scale_port === undefined || row.scale_port === null
+          ? null
+          : String(row.scale_port),
+      scaleUnit:
+        row.scale_unit === 'oz' || row.scale_unit === 'kg'
+          ? row.scale_unit
+          : 'lb',
     };
   }
 
@@ -702,7 +726,8 @@ export class StoreDatabase {
       .prepare(
         `UPDATE device_settings
          SET update_feed_url = ?, automatic_updates_enabled = ?,
-             idle_lock_minutes = ?, explain_dismissals_json = ?, updated_at = ?
+             idle_lock_minutes = ?, explain_dismissals_json = ?,
+             scale_mode = ?, scale_port = ?, scale_unit = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
@@ -710,6 +735,9 @@ export class StoreDatabase {
         value.automaticUpdatesEnabled ? 1 : 0,
         value.idleLockMinutes,
         JSON.stringify(value.explainDismissals),
+        value.scaleMode,
+        value.scalePort,
+        value.scaleUnit,
         now(),
       );
     return this.getDeviceSettings();
@@ -1242,8 +1270,8 @@ export class StoreDatabase {
         this.connection
           .prepare(
             `INSERT INTO products
-            (id, category_id, name, secondary_name, image_id, purchase_cost_cents, selling_price_cents, taxable, low_stock_threshold, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, category_id, name, secondary_name, image_id, purchase_cost_cents, selling_price_cents, taxable, low_stock_threshold, sold_by, unit, snap_eligible, wic_eligible, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -1255,6 +1283,10 @@ export class StoreDatabase {
             value.sellingPriceCents,
             value.taxable ? 1 : 0,
             value.lowStockThreshold,
+            value.soldBy,
+            value.soldBy === 'weight' ? value.unit : null,
+            value.snapEligible ? 1 : 0,
+            value.wicEligible ? 1 : 0,
             timestamp,
             timestamp,
           );
@@ -1291,7 +1323,7 @@ export class StoreDatabase {
         this.assertCategoryExists(value.categoryId);
         const result = this.connection
           .prepare(
-            `UPDATE products SET category_id = ?, name = ?, secondary_name = ?, image_id = ?, purchase_cost_cents = ?, selling_price_cents = ?, taxable = ?, low_stock_threshold = ?, updated_at = ? WHERE id = ?`,
+            `UPDATE products SET category_id = ?, name = ?, secondary_name = ?, image_id = ?, purchase_cost_cents = ?, selling_price_cents = ?, taxable = ?, low_stock_threshold = ?, sold_by = ?, unit = ?, snap_eligible = ?, wic_eligible = ?, updated_at = ? WHERE id = ?`,
           )
           .run(
             value.categoryId,
@@ -1302,6 +1334,10 @@ export class StoreDatabase {
             value.sellingPriceCents,
             value.taxable ? 1 : 0,
             value.lowStockThreshold,
+            value.soldBy,
+            value.soldBy === 'weight' ? value.unit : null,
+            value.snapEligible ? 1 : 0,
+            value.wicEligible ? 1 : 0,
             now(),
             id,
           );
@@ -2453,12 +2489,17 @@ export class StoreDatabase {
         }
         const snapshots = [...merged.values()];
 
-        // Aggregate stock demand per product ID
+        // Aggregate stock demand per product ID. Weighted items track stock
+        // in milli-units (qty * 1000) so INTEGER movement columns stay exact.
         const productDemand = new Map<string, number>();
         for (const line of snapshots) {
+          const demandQty =
+            line.product.soldBy === 'weight'
+              ? Math.round(line.quantity * 1000)
+              : line.quantity;
           productDemand.set(
             line.product.id,
-            (productDemand.get(line.product.id) ?? 0) + line.quantity,
+            (productDemand.get(line.product.id) ?? 0) + demandQty,
           );
         }
 
@@ -2506,6 +2547,80 @@ export class StoreDatabase {
             })),
             settings,
           );
+
+        // Benefit tenders (SNAP/EBT, WIC): the benefit covers only eligible
+        // lines — their tax is waived — and the remainder is collected with a
+        // conventional cash/external payment.
+        const benefitMethod =
+          value.payment.method === 'snap_ebt' || value.payment.method === 'wic'
+            ? value.payment.method
+            : null;
+        let benefit: {
+          method: 'snap_ebt' | 'wic';
+          appliedCents: number;
+          remainderCents: number;
+          remainder: RemainderPayment | null;
+        } | null = null;
+        let saleTaxCents = totals.taxCents;
+        let saleTotalCents = totals.totalCents;
+        if (benefitMethod) {
+          const accepted =
+            benefitMethod === 'snap_ebt'
+              ? settings.snapAccepted
+              : settings.wicAccepted;
+          if (!accepted)
+            throw new Error(
+              `${benefitMethod === 'snap_ebt' ? 'SNAP/EBT' : 'WIC'} is not enabled in store settings.`,
+            );
+          const eligibility = benefitEligibility(
+            snapshots.map((line) => ({
+              product: line.product,
+              quantity: line.quantity,
+            })),
+            settings,
+            benefitMethod,
+          );
+          if (eligibility.eligibleSubtotalCents <= 0)
+            throw new Error(
+              'No items in this sale are eligible for that benefit.',
+            );
+          saleTaxCents = totals.taxCents - eligibility.waivedTaxCents;
+          saleTotalCents = totals.totalCents - eligibility.waivedTaxCents;
+          const remainderCents =
+            saleTotalCents - eligibility.eligibleSubtotalCents;
+          const remainder =
+            'remainder' in value.payment
+              ? (value.payment.remainder ?? null)
+              : null;
+          if (remainderCents > 0 && !remainder)
+            throw new Error(
+              `A remainder of ${formatMoneyCents(remainderCents)} still needs a cash or card payment.`,
+            );
+          if (remainderCents === 0 && remainder)
+            throw new Error(
+              'The benefit covers the whole sale — remove the remainder payment.',
+            );
+          if (
+            remainder?.method === 'cash' &&
+            remainder.cashReceivedCents < remainderCents
+          )
+            throw new Error('Cash received is less than the remainder due.');
+          benefit = {
+            method: benefitMethod,
+            appliedCents: eligibility.eligibleSubtotalCents,
+            remainderCents,
+            remainder,
+          };
+        }
+        const lineBenefitEligible = (
+          snapEligible: boolean,
+          wicEligible: boolean,
+        ): boolean =>
+          benefitMethod === 'snap_ebt'
+            ? snapEligible
+            : benefitMethod === 'wic'
+              ? wicEligible
+              : false;
 
         let customerSnapshot: {
           id: string;
@@ -2598,17 +2713,19 @@ export class StoreDatabase {
             receipt,
             value.completionKey,
             totals.subtotalCents,
-            totals.taxCents,
-            totals.totalCents,
+            saleTaxCents,
+            saleTotalCents,
             timestamp,
             customerSnapshot?.id ?? null,
             customerSnapshot?.name ?? null,
             customerSnapshot?.accountNumber ?? null,
             customerSnapshot?.balanceBeforeCents ?? null,
             customerSnapshot?.balanceAfterCents ?? null,
-            value.payment.method === 'integrated_card'
-              ? 'immediate_payment'
-              : value.payment.method,
+            benefit
+              ? 'external_terminal'
+              : value.payment.method === 'integrated_card'
+                ? 'immediate_payment'
+                : value.payment.method,
             kioskId ? 'kiosk' : 'manager',
             kioskId,
           );
@@ -2621,12 +2738,17 @@ export class StoreDatabase {
           `INSERT INTO sale_items (
             id, sale_id, product_id, product_name, secondary_name, barcode_used,
             quantity, unit_selling_price_cents, unit_purchase_cost_cents, taxable,
-            tax_cents, line_subtotal_cents, line_total_cents
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            tax_cents, line_subtotal_cents, line_total_cents,
+            sold_by, unit, snap_eligible, wic_eligible
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
 
         if (snapshot && snapshot.lines) {
           snapshot.lines.forEach((line) => {
+            const eligible = lineBenefitEligible(
+              line.snapEligible,
+              line.wicEligible,
+            );
             insertItem.run(
               randomUUID(),
               saleId,
@@ -2638,14 +2760,22 @@ export class StoreDatabase {
               line.unitSellingPriceCents,
               line.unitPurchaseCostCents,
               line.taxable ? 1 : 0,
-              line.taxCents,
+              eligible ? 0 : line.taxCents,
               line.subtotalCents,
-              line.totalCents,
+              eligible ? line.subtotalCents : line.totalCents,
+              line.soldBy ?? 'each',
+              line.soldBy === 'weight' ? (line.unit ?? 'lb') : null,
+              line.snapEligible ? 1 : 0,
+              line.wicEligible ? 1 : 0,
             );
           });
         } else {
           snapshots.forEach((line, index) => {
             const calculated = totals.lines[index]!;
+            const eligible = lineBenefitEligible(
+              line.product.snapEligible,
+              line.product.wicEligible,
+            );
             insertItem.run(
               randomUUID(),
               saleId,
@@ -2657,9 +2787,13 @@ export class StoreDatabase {
               line.product.sellingPriceCents,
               line.product.purchaseCostCents,
               line.product.taxable ? 1 : 0,
-              calculated.taxCents,
+              eligible ? 0 : calculated.taxCents,
               calculated.subtotalCents,
-              calculated.totalCents,
+              eligible ? calculated.subtotalCents : calculated.totalCents,
+              line.product.soldBy,
+              line.product.soldBy === 'weight' ? line.product.unit : null,
+              line.product.snapEligible ? 1 : 0,
+              line.product.wicEligible ? 1 : 0,
             );
           });
         }
@@ -2669,9 +2803,9 @@ export class StoreDatabase {
             'SELECT COALESCE(SUM(line_total_cents), 0) as s FROM sale_items WHERE sale_id = ?',
           )
           .get(saleId) as { s: number };
-        if (sumLineTotals.s !== totals.totalCents) {
+        if (sumLineTotals.s !== saleTotalCents) {
           throw new Error(
-            `Line totals sum ${sumLineTotals.s} does not match sale total ${totals.totalCents}`,
+            `Line totals sum ${sumLineTotals.s} does not match sale total ${saleTotalCents}`,
           );
         }
 
@@ -2720,6 +2854,58 @@ export class StoreDatabase {
               `INSERT INTO payments (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at) VALUES (?, ?, 'external_terminal', ?, ?, 1, ?)`,
             )
             .run(randomUUID(), saleId, totals.totalCents, cleanRef, timestamp);
+          this.connection
+            .prepare("UPDATE sales SET status='paid' WHERE id=?")
+            .run(saleId);
+        } else if (benefit) {
+          const cleanRef =
+            value.payment.method === 'snap_ebt' ||
+            value.payment.method === 'wic'
+              ? value.payment.terminalReference?.trim() || null
+              : null;
+          this.connection
+            .prepare(
+              `INSERT INTO benefit_payments (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+            )
+            .run(
+              randomUUID(),
+              saleId,
+              benefit.method,
+              benefit.appliedCents,
+              cleanRef,
+              timestamp,
+            );
+          if (benefit.remainderCents > 0 && benefit.remainder) {
+            if (benefit.remainder.method === 'cash') {
+              this.connection
+                .prepare(
+                  `INSERT INTO payments (id, sale_id, method, amount_cents, cash_received_cents, change_due_cents, created_at) VALUES (?, ?, 'cash', ?, ?, ?, ?)`,
+                )
+                .run(
+                  randomUUID(),
+                  saleId,
+                  benefit.remainderCents,
+                  benefit.remainder.cashReceivedCents,
+                  calculateCashChange(
+                    benefit.remainderCents,
+                    benefit.remainder.cashReceivedCents,
+                  ),
+                  timestamp,
+                );
+            } else {
+              this.connection
+                .prepare(
+                  `INSERT INTO payments (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at) VALUES (?, ?, 'external_terminal', ?, ?, 1, ?)`,
+                )
+                .run(
+                  randomUUID(),
+                  saleId,
+                  benefit.remainderCents,
+                  benefit.remainder.terminalReference?.trim() || null,
+                  timestamp,
+                );
+            }
+          }
           this.connection
             .prepare("UPDATE sales SET status='paid' WHERE id=?")
             .run(saleId);
@@ -3024,6 +3210,28 @@ export class StoreDatabase {
       .prepare('SELECT * FROM payments WHERE sale_id=?')
       .get(id) as Row | undefined;
 
+    const benefitRow = this.connection
+      .prepare(
+        'SELECT * FROM benefit_payments WHERE sale_id=? ORDER BY created_at LIMIT 1',
+      )
+      .get(id) as Row | undefined;
+    const benefitPayment: Sale['benefitPayment'] = benefitRow
+      ? {
+          method: String(benefitRow.method) as 'snap_ebt' | 'wic',
+          amountCents: readSafeCents(
+            benefitRow.amount_cents,
+            'benefit amount_cents',
+          ),
+          cashReceivedCents: null,
+          changeDueCents: null,
+          terminalReference:
+            benefitRow.terminal_reference === null
+              ? null
+              : String(benefitRow.terminal_reference),
+          externalApproved: true,
+        }
+      : null;
+
     const tenderType = String(sale.tender_type || 'cash');
 
     let salePayment: Sale['payment'];
@@ -3071,8 +3279,10 @@ export class StoreDatabase {
         };
       } else {
         if (!payment) {
-          console.error('Sale payment not found');
-          salePayment = {
+          if (!benefitPayment) {
+            console.error('Sale payment not found');
+          }
+          salePayment = benefitPayment ?? {
             method: 'cash',
             amountCents: 0,
             cashReceivedCents: null,
@@ -3108,8 +3318,10 @@ export class StoreDatabase {
       }
     } else {
       if (!payment) {
-        console.error('Sale payment not found');
-        salePayment = {
+        if (!benefitPayment) {
+          console.error('Sale payment not found');
+        }
+        salePayment = benefitPayment ?? {
           method: 'cash',
           amountCents: 0,
           cashReceivedCents: null,
@@ -3193,8 +3405,16 @@ export class StoreDatabase {
           'line_subtotal_cents',
         ),
         lineTotalCents: readSafeCents(row.line_total_cents, 'line_total_cents'),
+        soldBy: row.sold_by === 'weight' ? 'weight' : 'each',
+        unit:
+          row.unit === 'lb' || row.unit === 'oz' || row.unit === 'kg'
+            ? row.unit
+            : null,
+        snapEligible: Boolean(row.snap_eligible ?? 0),
+        wicEligible: Boolean(row.wic_eligible ?? 0),
       })),
       payment: salePayment,
+      benefitPayment,
       customer: customerSnapshot,
     };
   }
@@ -3203,7 +3423,12 @@ export class StoreDatabase {
     const sale = this.getSale(saleId);
     if (sale.status !== 'completed' && sale.status !== 'refunded')
       throw new Error('Only completed sales can be refunded.');
-    const method = sale.payment.method;
+    // Benefit tenders (SNAP/EBT, WIC) credit back on the external benefit
+    // terminal, so refunds record as external_terminal.
+    const method =
+      sale.payment.method === 'snap_ebt' || sale.payment.method === 'wic'
+        ? 'external_terminal'
+        : sale.payment.method;
     const refundRows = this.connection
       .prepare(
         `SELECT sale_item_id,
@@ -3248,6 +3473,8 @@ export class StoreDatabase {
         taxCents: item.taxCents,
         subtotalRefundedCents: prior.subtotalCents,
         taxRefundedCents: prior.taxCents,
+        soldBy: item.soldBy ?? 'each',
+        unit: item.unit ?? null,
       };
     });
     return {
@@ -3497,13 +3724,18 @@ export class StoreDatabase {
                 `INSERT INTO inventory_movements (
                   id, operation_id, product_id, quantity_change, reason,
                   occurred_at, device_id, related_sale_id, notes, sequence
-                ) SELECT ?, ?, product_id, ?, 'customer_return', ?, NULL, ?,
+                ) SELECT ?, ?, product_id,
+                         CASE WHEN COALESCE(sold_by, 'each') = 'weight'
+                              THEN CAST(ROUND(? * 1000) AS INTEGER)
+                              ELSE CAST(? AS INTEGER) END,
+                         'customer_return', ?, NULL, ?,
                          ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements)
                    FROM sale_items WHERE id = ?`,
               )
               .run(
                 movementId,
                 refundItemId,
+                line.quantity,
                 line.quantity,
                 timestamp,
                 value.saleId,
@@ -4700,6 +4932,15 @@ export class StoreDatabase {
       ),
       active: Boolean(row.active),
       stockQuantity: readSafeCents(row.stock_quantity, 'stockQuantity'),
+      soldBy: row.sold_by === 'weight' ? 'weight' : 'each',
+      unit:
+        row.unit === 'oz' || row.unit === 'kg'
+          ? row.unit
+          : row.unit === 'lb'
+            ? 'lb'
+            : null,
+      snapEligible: Boolean(row.snap_eligible ?? 0),
+      wicEligible: Boolean(row.wic_eligible ?? 0),
       barcodes: barcodes.map((barcode): Barcode => ({
         id: String(barcode.id),
         value: String(barcode.value),
@@ -4966,6 +5207,14 @@ export class StoreDatabase {
         'lowStockThreshold',
       ),
       active: Boolean(row.active),
+      soldBy:
+        row.sold_by === 'weight' ? ('weight' as const) : ('each' as const),
+      unit:
+        row.unit === 'oz' || row.unit === 'kg' || row.unit === 'lb'
+          ? (row.unit as 'lb' | 'oz' | 'kg')
+          : null,
+      snapEligible: Boolean(row.snap_eligible ?? 0),
+      wicEligible: Boolean(row.wic_eligible ?? 0),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
       barcodes: barcodes.map((barcode) => ({
@@ -5026,6 +5275,11 @@ export class StoreDatabase {
       .all(saleId) as Row[];
     const paymentRow = this.connection
       .prepare('SELECT * FROM payments WHERE sale_id = ?')
+      .get(saleId) as Row | undefined;
+    const benefitRow = this.connection
+      .prepare(
+        'SELECT * FROM benefit_payments WHERE sale_id = ? ORDER BY created_at LIMIT 1',
+      )
       .get(saleId) as Row | undefined;
     const movements = this.connection
       .prepare(
@@ -5121,8 +5375,31 @@ export class StoreDatabase {
           item.line_total_cents,
           'line_total_cents',
         ),
+        soldBy: item.sold_by === 'weight' ? 'weight' : 'each',
+        unit:
+          item.unit === 'lb' || item.unit === 'oz' || item.unit === 'kg'
+            ? item.unit
+            : null,
+        snapEligible: Boolean(item.snap_eligible ?? 0),
+        wicEligible: Boolean(item.wic_eligible ?? 0),
       })),
       payment,
+      benefitPayment: benefitRow
+        ? {
+            method: String(benefitRow.method) as 'snap_ebt' | 'wic',
+            amountCents: readSafeCents(
+              benefitRow.amount_cents,
+              'benefit amount_cents',
+            ),
+            cashReceivedCents: null,
+            changeDueCents: null,
+            terminalReference:
+              benefitRow.terminal_reference === null
+                ? null
+                : String(benefitRow.terminal_reference),
+            externalApproved: true,
+          }
+        : null,
       inventoryMovements: movements.map(mapMovementPayload),
       ledgerEntry: ledgerRow ? mapLedgerPayload(ledgerRow) : null,
     };

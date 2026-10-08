@@ -182,6 +182,10 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'kiosk:stopDiscovery': 'owner',
   'kiosk:revoke': 'owner',
   'kiosk:setServer': 'owner',
+  'scale:getStatus': 'checkout',
+  'scale:readWeight': 'checkout',
+  'scale:start': 'checkout',
+  'scale:stop': 'checkout',
   'payments:initiateCharge': 'checkout',
   'payments:getChargeStatus': 'checkout',
   'payments:getPendingTransactions': 'owner',
@@ -719,6 +723,59 @@ async function createWindow(): Promise<void> {
 }
 
 import { initiateChargeInputSchema } from '@shul-store/shared';
+import { createScaleReader, type ScaleReader } from '@shul-store/hardware';
+import type { ScaleReading, ScaleStatus } from '@shul-store/shared';
+
+let scaleReader: ScaleReader | null = null;
+let scaleStatus: ScaleStatus = {
+  mode: 'none',
+  connected: false,
+  error: null,
+};
+
+function broadcastScale(
+  channel: 'scale:reading' | 'scale:status',
+  payload: unknown,
+): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue;
+    try {
+      window.webContents.send(channel, payload);
+    } catch {
+      // A window can close mid-broadcast.
+    }
+  }
+}
+
+async function configureScaleFromSettings(): Promise<void> {
+  const settings = database.getDeviceSettings();
+  if (scaleReader) await scaleReader.stop().catch(() => undefined);
+  scaleReader = createScaleReader({
+    mode: settings.scaleMode,
+    port: settings.scalePort,
+    unit: settings.scaleUnit,
+    onWeight: (reading) => broadcastScale('scale:reading', reading),
+    onStatus: (status) => {
+      scaleStatus = status;
+      broadcastScale('scale:status', status);
+    },
+  });
+  if (settings.scaleMode === 'none') {
+    scaleStatus = { mode: 'none', connected: false, error: null };
+    broadcastScale('scale:status', scaleStatus);
+    return;
+  }
+  try {
+    await scaleReader.start();
+  } catch (error) {
+    scaleStatus = {
+      mode: settings.scaleMode,
+      connected: false,
+      error: error instanceof Error ? error.message : 'Scale unavailable',
+    };
+    broadcastScale('scale:status', scaleStatus);
+  }
+}
 
 function registerIpc(): void {
   ipcMain.handle('auth:getState', () => session.state);
@@ -1410,7 +1467,19 @@ function registerIpc(): void {
       deviceSettingsSchema.parse(input),
     );
     if (app.isPackaged) configureAutoUpdater(updated);
+    void configureScaleFromSettings();
     return updated;
+  });
+  ipcMain.handle('scale:getStatus', () => scaleStatus);
+  ipcMain.handle('scale:readWeight', (): ScaleReading | null => {
+    return scaleReader?.lastReading() ?? null;
+  });
+  ipcMain.handle('scale:start', async () => {
+    await configureScaleFromSettings();
+    return scaleStatus;
+  });
+  ipcMain.handle('scale:stop', async () => {
+    if (scaleReader) await scaleReader.stop();
   });
   ipcMain.handle('settings:dismissExplanation', (_event, id) => {
     const explanationId = z.string().trim().min(1).max(100).parse(id);
@@ -1490,6 +1559,42 @@ function registerIpc(): void {
         method: z.literal('account'),
         customerId: z.string().uuid(),
         confirmed: z.literal(true),
+      }),
+      z.object({
+        method: z.literal('snap_ebt'),
+        approved: z.literal(true),
+        terminalReference: z.string().trim().max(100).nullable(),
+        remainder: z
+          .discriminatedUnion('method', [
+            z.object({
+              method: z.literal('cash'),
+              cashReceivedCents: z.number().int().safe().nonnegative(),
+            }),
+            z.object({
+              method: z.literal('external_terminal'),
+              approved: z.literal(true),
+              terminalReference: z.string().trim().max(100).nullable(),
+            }),
+          ])
+          .optional(),
+      }),
+      z.object({
+        method: z.literal('wic'),
+        approved: z.literal(true),
+        terminalReference: z.string().trim().max(100).nullable(),
+        remainder: z
+          .discriminatedUnion('method', [
+            z.object({
+              method: z.literal('cash'),
+              cashReceivedCents: z.number().int().safe().nonnegative(),
+            }),
+            z.object({
+              method: z.literal('external_terminal'),
+              approved: z.literal(true),
+              terminalReference: z.string().trim().max(100).nullable(),
+            }),
+          ])
+          .optional(),
       }),
     ]),
   }) satisfies z.ZodType<
@@ -2243,6 +2348,7 @@ app.whenReady().then(async () => {
   }
   // Start the background sync loop immediately if cloud backup is enabled.
   recreateSyncEngine();
+  void configureScaleFromSettings();
   mailWorker = new MailWorker(
     database,
     () => cloudAccount,

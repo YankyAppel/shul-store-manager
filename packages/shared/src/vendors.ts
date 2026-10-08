@@ -174,6 +174,8 @@ export interface BuyingListLine {
   vendorSku: string | null;
   stockQuantity: number;
   lowStockThreshold: number;
+  soldBy?: import('./checkout.js').SoldBy | undefined;
+  unit?: import('./checkout.js').WeightUnit | null | undefined;
   /** Quantity resolved from the override chain (or the manual override). */
   quantity: number;
   quantityOverride: number | null;
@@ -232,6 +234,8 @@ export interface ProductMarginLine {
   /** Margin as a share of the selling price, 0–1; null without a cost. */
   marginRatio: number | null;
   stockQuantity: number;
+  soldBy?: import('./checkout.js').SoldBy | undefined;
+  unit?: import('./checkout.js').WeightUnit | null | undefined;
 }
 
 export interface MarginReport {

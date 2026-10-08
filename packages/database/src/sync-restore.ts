@@ -162,7 +162,8 @@ function applySettings(
   // counts as completed.
   const current = connection
     .prepare(
-      `SELECT logo_data_url, card_processing_enabled, card_processor_id
+      `SELECT logo_data_url, card_processing_enabled, card_processor_id,
+              snap_accepted, wic_accepted
        FROM store_settings WHERE singleton_id = 1`,
     )
     .get() as
@@ -170,6 +171,8 @@ function applySettings(
         logo_data_url: string | null;
         card_processing_enabled: number;
         card_processor_id: string | null;
+        snap_accepted: number;
+        wic_accepted: number;
       }
     | undefined;
   const logoDataUrl =
@@ -194,6 +197,20 @@ function applySettings(
     payload.cardProcessorId === undefined
       ? ((current?.card_processor_id as string | null | undefined) ?? null)
       : payload.cardProcessorId;
+  // Benefit-acceptance flags are absent on events written before they
+  // existed; absent keeps the local switches.
+  const snapAccepted =
+    payload.snapAccepted === undefined
+      ? ((current?.snap_accepted as number | undefined) ?? 0)
+      : payload.snapAccepted
+        ? 1
+        : 0;
+  const wicAccepted =
+    payload.wicAccepted === undefined
+      ? ((current?.wic_accepted as number | undefined) ?? 0)
+      : payload.wicAccepted
+        ? 1
+        : 0;
   connection
     .prepare(
       `UPDATE store_settings SET
@@ -204,6 +221,7 @@ function applySettings(
         label_printer_name = ?, default_label_template = ?,
         logo_data_url = ?, profile_completed = ?,
         card_processing_enabled = ?, card_processor_id = ?,
+        snap_accepted = ?, wic_accepted = ?,
         updated_at = ?
        WHERE singleton_id = 1`,
     )
@@ -227,6 +245,8 @@ function applySettings(
       profileCompleted,
       cardProcessingEnabled,
       cardProcessorId,
+      snapAccepted,
+      wicAccepted,
       payload.updatedAt ?? now(),
     );
 }
@@ -264,13 +284,15 @@ function applyProduct(
     .prepare(
       `INSERT INTO products
         (id, category_id, name, secondary_name, image_id, purchase_cost_cents, selling_price_cents,
-         taxable, low_stock_threshold, active, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         taxable, low_stock_threshold, active, sold_by, unit, snap_eligible, wic_eligible, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          category_id = excluded.category_id, name = excluded.name, secondary_name = excluded.secondary_name,
          image_id = excluded.image_id, purchase_cost_cents = excluded.purchase_cost_cents,
          selling_price_cents = excluded.selling_price_cents, taxable = excluded.taxable,
          low_stock_threshold = excluded.low_stock_threshold, active = excluded.active,
+         sold_by = excluded.sold_by, unit = excluded.unit,
+         snap_eligible = excluded.snap_eligible, wic_eligible = excluded.wic_eligible,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -284,6 +306,10 @@ function applyProduct(
       payload.taxable ? 1 : 0,
       payload.lowStockThreshold,
       payload.active ? 1 : 0,
+      payload.soldBy ?? 'each',
+      payload.soldBy === 'weight' ? payload.unit : null,
+      payload.snapEligible ? 1 : 0,
+      payload.wicEligible ? 1 : 0,
       payload.createdAt,
       payload.updatedAt,
     );
@@ -432,8 +458,8 @@ function applySale(connection: SqliteDatabase, payload: SalePayload): void {
     `INSERT INTO sale_items
       (id, sale_id, product_id, product_name, secondary_name, barcode_used, quantity,
        unit_selling_price_cents, unit_purchase_cost_cents, taxable, tax_cents, line_subtotal_cents,
-       line_total_cents)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       line_total_cents, sold_by, unit, snap_eligible, wic_eligible)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO NOTHING`,
   );
   for (const item of payload.items) {
@@ -451,34 +477,61 @@ function applySale(connection: SqliteDatabase, payload: SalePayload): void {
       item.taxCents,
       item.lineSubtotalCents,
       item.lineTotalCents,
+      item.soldBy ?? 'each',
+      item.unit ?? null,
+      item.snapEligible ? 1 : 0,
+      item.wicEligible ? 1 : 0,
     );
   }
 
   if (payload.payment) {
     const payment = payload.payment;
-    connection
-      .prepare(
-        `INSERT INTO payments
-          (id, sale_id, method, amount_cents, cash_received_cents, change_due_cents,
-           terminal_reference, external_approved, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO NOTHING`,
-      )
-      .run(
-        cryptoUuid(),
-        payload.id,
-        payment.method,
-        payment.amountCents,
-        payment.cashReceivedCents,
-        payment.changeDueCents,
-        payment.terminalReference,
-        payment.externalApproved === null
-          ? null
-          : payment.externalApproved
-            ? 1
-            : 0,
-        payload.createdAt,
-      );
+    if (payment.method === 'cash' || payment.method === 'external_terminal') {
+      connection
+        .prepare(
+          `INSERT INTO payments
+            (id, sale_id, method, amount_cents, cash_received_cents, change_due_cents,
+             terminal_reference, external_approved, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .run(
+          cryptoUuid(),
+          payload.id,
+          payment.method,
+          payment.amountCents,
+          payment.cashReceivedCents,
+          payment.changeDueCents,
+          payment.terminalReference,
+          payment.externalApproved === null
+            ? null
+            : payment.externalApproved
+              ? 1
+              : 0,
+          payload.createdAt,
+        );
+    }
+  }
+
+  if (payload.benefitPayment) {
+    const benefit = payload.benefitPayment;
+    if (benefit.method === 'snap_ebt' || benefit.method === 'wic') {
+      connection
+        .prepare(
+          `INSERT INTO benefit_payments
+            (id, sale_id, method, amount_cents, terminal_reference, external_approved, created_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .run(
+          cryptoUuid(),
+          payload.id,
+          benefit.method,
+          benefit.amountCents,
+          benefit.terminalReference,
+          payload.createdAt,
+        );
+    }
   }
 
   for (const movement of payload.inventoryMovements) {
