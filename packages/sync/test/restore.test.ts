@@ -103,6 +103,7 @@ describe('restore validation', () => {
       scalePort: null,
       scaleUnit: 'lb',
       eslMode: 'none',
+      weighBarcodeMode: 'price',
       eslBaseUrl: null,
     });
     expect(db.getCardProcessorConfigStatus().configured).toBe(false);

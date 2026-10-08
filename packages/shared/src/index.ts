@@ -32,6 +32,16 @@ import type {
 } from './sync.js';
 import type { KioskServerSettings } from './kiosk.js';
 import type {
+  BarcodeLookup,
+  CashMovement,
+  CashMovementInput,
+  QuickKey,
+  SuspendedSale,
+  SuspendSaleInput,
+} from './counter.js';
+import type { SalePrice, SalePriceInput } from './pricing.js';
+import type { ExpiringBatch, StockCount, StockCountLine } from './stocktake.js';
+import type {
   EslProbeResult,
   EslStatus,
   EslTag,
@@ -68,7 +78,11 @@ import type {
 export * from './barcode.js';
 export * from './backups.js';
 export * from './checkout.js';
+export * from './counter.js';
 export * from './esl.js';
+export * from './pricing.js';
+export * from './stocktake.js';
+export * from './weigh-barcode.js';
 export type { BarcodeSuggestion } from './cloud-account.js';
 export * from './customers.js';
 export * from './html-templates.js';
@@ -145,6 +159,12 @@ export const inventoryMovementInputSchema = z
       .refine((value) => value !== 0, 'Quantity cannot be zero'),
     reason: movementReasonSchema,
     notes: z.string().trim().min(1).max(1000),
+    /** Optional YYYY-MM-DD expiry for stock_received batches. */
+    expiresOn: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected a YYYY-MM-DD date')
+      .nullable()
+      .optional(),
     deviceId: z.string().uuid().nullable().optional(),
     relatedSaleId: z.string().uuid().nullable().optional(),
     operationId: z.string().uuid().optional(),
@@ -200,6 +220,11 @@ export interface Product {
   unit: 'lb' | 'oz' | 'kg' | null;
   snapEligible: boolean;
   wicEligible: boolean;
+  /** 1–5 digit item code embedded in weigh barcodes; null until ensured. */
+  plu: number | null;
+  /** Lowest currently-active scheduled sale price, else null. */
+  salePriceCents: number | null;
+  saleLabel: string | null;
   barcodes: Barcode[];
   vendors: ProductVendorLink[];
   createdAt: string;
@@ -219,6 +244,8 @@ export interface InventoryMovement {
   quantityChange: number;
   reason: MovementReason;
   notes: string;
+  /** Batch expiry for received stock; null for everything else. */
+  expiresOn: string | null;
   occurredAt: string;
   deviceId: string | null;
   relatedSaleId: string | null;
@@ -389,10 +416,47 @@ export interface StoreApi {
     update(id: string, input: ProductInput): Promise<Product>;
     setActive(id: string, active: boolean): Promise<void>;
     generateInternalBarcode(): Promise<string>;
+    /** Assigns and returns the product's PLU (used in weigh barcodes). */
+    ensurePlu(id: string): Promise<number>;
   };
   inventory: {
     addMovement(input: InventoryMovementInput): Promise<InventoryMovement>;
     list(productId: string): Promise<InventoryMovement[]>;
+  };
+  salePrices: {
+    list(productId?: string): Promise<SalePrice[]>;
+    create(input: SalePriceInput): Promise<SalePrice>;
+    remove(id: string): Promise<void>;
+  };
+  quickKeys: {
+    list(): Promise<QuickKey[]>;
+    pin(productId: string): Promise<void>;
+    unpin(productId: string): Promise<void>;
+  };
+  suspendedSales: {
+    park(input: SuspendSaleInput): Promise<SuspendedSale>;
+    list(): Promise<SuspendedSale[]>;
+    resume(id: string): Promise<SuspendedSale>;
+    discard(id: string): Promise<void>;
+  };
+  stockCounts: {
+    start(notes?: string): Promise<StockCount>;
+    list(): Promise<StockCount[]>;
+    get(id: string): Promise<{ count: StockCount; lines: StockCountLine[] }>;
+    recordLine(
+      countId: string,
+      productId: string,
+      countedUnits: number,
+    ): Promise<void>;
+    /** Snapshots expected stock per line; call once counting is done. */
+    finish(id: string): Promise<{ count: StockCount; lines: StockCountLine[] }>;
+    /** Writes stock_count_correction movements for every variance. */
+    apply(id: string): Promise<StockCount>;
+    cancel(id: string): Promise<void>;
+  };
+  cashDrawer: {
+    record(input: CashMovementInput): Promise<CashMovement>;
+    list(limit?: number): Promise<CashMovement[]>;
   };
   vendors: {
     list(): Promise<VendorSummary[]>;
@@ -535,6 +599,7 @@ export interface StoreApi {
     ): Promise<DailyClose>;
     listCloses(limit?: number): Promise<DailyClose[]>;
     margins(): Promise<MarginReport>;
+    expiringStock(withinDays: number): Promise<ExpiringBatch[]>;
     print(businessDate: string, report: DailyReport): Promise<PrintResult>;
   };
   refunds: {
@@ -588,7 +653,7 @@ export interface StoreApi {
     listPrinters(): Promise<PrinterInfo[]>;
   };
   checkout: {
-    lookupBarcode(value: string): Promise<Product | null>;
+    lookupBarcode(value: string): Promise<BarcodeLookup | null>;
     complete(input: CompleteSaleInput): Promise<Sale>;
   };
   scale: {

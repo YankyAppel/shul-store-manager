@@ -4,6 +4,7 @@ import {
   calculateCart,
   calculateCashChange,
   describePrintResult,
+  encodeWeighBarcode,
   parseUsdToCents,
   type Category,
   type Customer,
@@ -30,6 +31,9 @@ type CartLine = {
   product: Product;
   quantity: number;
   barcodeUsed: string | null;
+  /** Whole-line price override from a scale-printed '02' barcode that embeds
+   * the extended price rather than the weight. */
+  priceOverrideCents?: number | undefined;
 };
 
 export function CheckoutScreen({
@@ -105,6 +109,35 @@ export function CheckoutScreen({
 
   const [sale, setSale] = useState<Sale>();
   const [printError, setPrintError] = useState('');
+  const [quickKeys, setQuickKeys] = useState<
+    import('@shul-store/shared').QuickKey[]
+  >([]);
+  const [suspended, setSuspended] = useState<
+    import('@shul-store/shared').SuspendedSale[]
+  >([]);
+  const [showSuspended, setShowSuspended] = useState(false);
+  const [showQuickKeys, setShowQuickKeys] = useState(false);
+  const [parkLabel, setParkLabel] = useState('');
+  const [deviceSettings, setDeviceSettings] = useState<
+    import('@shul-store/shared').DeviceSettings | undefined
+  >();
+
+  const refreshQuickKeys = () =>
+    window.storeApi.quickKeys
+      .list()
+      .then(setQuickKeys)
+      .catch(() => {});
+  const refreshSuspended = () =>
+    window.storeApi.suspendedSales
+      .list()
+      .then(setSuspended)
+      .catch(() => {});
+
+  useEffect(() => {
+    void window.storeApi.settings.getDevice().then(setDeviceSettings);
+    refreshQuickKeys();
+    refreshSuspended();
+  }, []);
   const completionKey = useRef(crypto.randomUUID());
   const searchReqIdRef = useRef(0);
   const isCompletingRef = useRef(false);
@@ -136,14 +169,27 @@ export function CheckoutScreen({
       }
     }
 
-    const product = await window.storeApi.checkout.lookupBarcode(clean);
-    if (!product) {
+    const found = await window.storeApi.checkout.lookupBarcode(clean);
+    if (!found) {
       setError('');
       setUnknownBarcode(clean);
       setUnknownQuantity(1);
       return;
     }
-    add(product, clean);
+    const { product, weigh } = found;
+    if (weigh) {
+      if (weigh.mode === 'weight' && weigh.milliQty !== null) {
+        // Scale-printed label: weight embedded in milli-units of the unit.
+        add(product, clean, weigh.milliQty / 1000);
+      } else if (weigh.mode === 'price' && weigh.priceCents !== null) {
+        // Price-embedded label: line total is fixed by the label.
+        add(product, clean, 1, weigh.priceCents);
+      } else {
+        add(product, clean);
+      }
+    } else {
+      add(product, clean);
+    }
     setQuery('');
   }
 
@@ -151,12 +197,13 @@ export function CheckoutScreen({
     product: Product,
     barcodeUsed: string | null = null,
     amount = 1,
+    priceOverrideCents?: number,
   ) {
     if (!product.active) {
       setError('Inactive products cannot be sold.');
       return;
     }
-    if (product.soldBy === 'weight') {
+    if (product.soldBy === 'weight' && priceOverrideCents === undefined) {
       setWeighTarget({ product, barcodeUsed });
       setManualWeight('');
       return;
@@ -164,7 +211,9 @@ export function CheckoutScreen({
     setCart((lines) => {
       const current = lines.find(
         (line) =>
-          line.product.id === product.id && line.barcodeUsed === barcodeUsed,
+          line.product.id === product.id &&
+          line.barcodeUsed === barcodeUsed &&
+          line.priceOverrideCents === priceOverrideCents,
       );
       if (current)
         return lines.map((line) =>
@@ -172,8 +221,75 @@ export function CheckoutScreen({
             ? { ...line, quantity: line.quantity + amount }
             : line,
         );
-      return [...lines, { product, quantity: amount, barcodeUsed }];
+      return [
+        ...lines,
+        { product, quantity: amount, barcodeUsed, priceOverrideCents },
+      ];
     });
+  }
+
+  async function parkCurrentSale() {
+    if (!cart.length) return;
+    try {
+      await window.storeApi.suspendedSales.park({
+        label: parkLabel.trim() || null,
+        customerId: selectedCustomer?.id ?? null,
+        lines: cart.map((line) => ({
+          productId: line.product.id,
+          quantity: line.quantity,
+          barcodeUsed: line.barcodeUsed,
+          priceOverrideCents: line.priceOverrideCents ?? null,
+        })),
+      });
+      setCart([]);
+      setSelectedCustomer(null);
+      setParkLabel('');
+      setError('');
+      await refreshSuspended();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Park failed');
+    }
+  }
+
+  async function resumeParked(id: string) {
+    try {
+      const parked = await window.storeApi.suspendedSales.resume(id);
+      const lines: CartLine[] = [];
+      for (const line of parked.lines) {
+        const product = products.find((p) => p.id === line.productId);
+        if (!product) continue;
+        lines.push({
+          product,
+          quantity: line.quantity,
+          barcodeUsed: line.barcodeUsed,
+          priceOverrideCents: line.priceOverrideCents ?? undefined,
+        });
+      }
+      setCart(lines);
+      setShowSuspended(false);
+      await refreshSuspended();
+      if (parked.customerId) {
+        const customer = await window.storeApi.customers.get(parked.customerId);
+        setSelectedCustomer(customer);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Resume failed');
+    }
+  }
+
+  async function discardParked(id: string) {
+    await window.storeApi.suspendedSales.discard(id).catch(() => {});
+    await refreshSuspended();
+  }
+
+  function lineUnitCents(line: CartLine): number {
+    if (line.priceOverrideCents !== undefined && line.quantity === 1)
+      return line.priceOverrideCents;
+    return line.product.salePriceCents ?? line.product.sellingPriceCents;
+  }
+
+  function lineTotalCents(line: CartLine): number {
+    return Math.round(lineUnitCents(line) * line.quantity);
   }
 
   function addWeighted(quantity: number) {
@@ -182,6 +298,44 @@ export function CheckoutScreen({
     setCart((lines) => [...lines, { product, quantity, barcodeUsed }]);
     setWeighTarget(null);
     setManualWeight('');
+  }
+
+  async function printWeighLabel() {
+    if (!weighTarget) return;
+    const weight =
+      Number(manualWeight) > 0 ? Number(manualWeight) : scaleReading?.weight;
+    if (!weight || weight <= 0) return;
+    const { product } = weighTarget;
+    try {
+      const plu =
+        product.plu ?? (await window.storeApi.products.ensurePlu(product.id));
+      const unitPrice = product.salePriceCents ?? product.sellingPriceCents;
+      const milliQty = Math.round(weight * 1000);
+      const mode = deviceSettings?.weighBarcodeMode ?? 'price';
+      const barcode =
+        mode === 'weight'
+          ? encodeWeighBarcode(plu, { milliQty })
+          : encodeWeighBarcode(plu, {
+              priceCents: Math.round(unitPrice * weight),
+            });
+      await window.storeApi.labels.print({
+        items: [
+          {
+            productId: product.id,
+            name: `${product.name} — ${weight.toFixed(3)} ${product.unit ?? 'lb'}`,
+            sellingPriceCents: Math.round(unitPrice * weight),
+            barcode,
+            quantity: 1,
+          },
+        ],
+        template: 'thermal_40x30',
+      });
+      setError('');
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : 'Could not print label',
+      );
+    }
   }
 
   function quantity(index: number, change: number) {
@@ -206,7 +360,19 @@ export function CheckoutScreen({
 
   const cashReceivedCents = safeCash(cash);
   const totals = useMemo(
-    () => (settings ? calculateCart(cart, settings) : null),
+    () =>
+      settings
+        ? calculateCart(
+            cart.map((line) => ({
+              product:
+                line.priceOverrideCents !== undefined
+                  ? { ...line.product, salePriceCents: line.priceOverrideCents }
+                  : line.product,
+              quantity: line.quantity,
+            })),
+            settings,
+          )
+        : null,
     [cart, settings],
   );
 
@@ -344,6 +510,7 @@ export function CheckoutScreen({
           productId: line.product.id,
           quantity: line.quantity,
           barcodeUsed: line.barcodeUsed,
+          priceOverrideCents: line.priceOverrideCents ?? null,
         })),
         payment: paymentInput,
       };
@@ -379,6 +546,7 @@ export function CheckoutScreen({
           productId: c.product.id,
           quantity: c.quantity,
           barcodeUsed: c.barcodeUsed,
+          priceOverrideCents: c.priceOverrideCents ?? null,
         })),
         idempotencyKey: completionKey.current,
       };
@@ -540,11 +708,28 @@ export function CheckoutScreen({
                 key={`${line.product.id}-${line.barcodeUsed}`}
               >
                 <div>
-                  <b>{line.product.name}</b>
+                  <b>{line.product.name}</b>{' '}
+                  {line.product.salePriceCents !== null &&
+                    line.product.salePriceCents !== undefined && (
+                      <span
+                        style={{
+                          background: '#b45309',
+                          color: '#fff',
+                          borderRadius: 4,
+                          padding: '0 5px',
+                          fontSize: 11,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {line.product.saleLabel ?? 'SALE'}
+                      </span>
+                    )}
                   <small>
-                    {line.product.soldBy === 'weight'
-                      ? `${money(line.product.sellingPriceCents)}/${line.product.unit ?? 'lb'}`
-                      : `${money(line.product.sellingPriceCents)} each`}{' '}
+                    {line.priceOverrideCents !== undefined
+                      ? `${money(line.priceOverrideCents)} weigh label`
+                      : line.product.soldBy === 'weight'
+                        ? `${money(lineUnitCents(line))}/${line.product.unit ?? 'lb'}`
+                        : `${money(lineUnitCents(line))} each`}{' '}
                     ·{' '}
                     {line.product.soldBy === 'weight'
                       ? `${(line.product.stockQuantity / 1000).toFixed(3)} ${line.product.unit ?? 'lb'} available`
@@ -574,14 +759,7 @@ export function CheckoutScreen({
                     <button onClick={() => quantity(index, 1)}>+</button>
                   </div>
                 )}
-                <strong>
-                  {money(
-                    Math.round(
-                      (line.product.sellingPriceCents * line.quantity * 1000) /
-                        1000,
-                    ),
-                  )}
-                </strong>
+                <strong>{money(lineTotalCents(line))}</strong>
                 <button
                   onClick={() => setCart(cart.filter((_, i) => i !== index))}
                 >
@@ -593,6 +771,79 @@ export function CheckoutScreen({
         </div>
       </section>
       <section className="checkout-total">
+        {!payment && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              marginBottom: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <button
+              onClick={() => setShowQuickKeys((v) => !v)}
+              title="Favorite products"
+            >
+              {showQuickKeys ? 'Hide keys' : `Keys (${quickKeys.length})`}
+            </button>
+            <button
+              disabled={!cart.length}
+              onClick={() => void parkCurrentSale()}
+              title="Park this sale to resume later"
+            >
+              Park
+            </button>
+            <button
+              disabled={!suspended.length}
+              onClick={() => setShowSuspended(true)}
+              title="Resume a parked sale"
+            >
+              Resume ({suspended.length})
+            </button>
+          </div>
+        )}
+        {!payment && showQuickKeys && (
+          <div
+            className="panel"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+              gap: 8,
+              marginBottom: 10,
+              maxHeight: 220,
+              overflowY: 'auto',
+            }}
+          >
+            {quickKeys.length === 0 && (
+              <div className="empty">
+                Pin products to quick keys from the product edit screen.
+              </div>
+            )}
+            {quickKeys.map((key) => {
+              const product = products.find((p) => p.id === key.productId);
+              if (!product || !product.active) return null;
+              return (
+                <button
+                  key={key.productId}
+                  onClick={() => add(product)}
+                  style={{ padding: '10px 6px' }}
+                >
+                  <b>{product.name}</b>
+                  <br />
+                  <small>
+                    {money(
+                      lineUnitCents({
+                        product,
+                        quantity: 1,
+                        barcodeUsed: null,
+                      }),
+                    )}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
+        )}
         <h3>Totals</h3>
         {insufficient && (
           <div className="alert">
@@ -1163,6 +1414,53 @@ export function CheckoutScreen({
           setError={setError}
         />
       )}
+      {showSuspended && (
+        <div className="modal-backdrop" onClick={() => setShowSuspended(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Parked sales</h3>
+            {suspended.length === 0 && (
+              <div className="empty">No parked sales.</div>
+            )}
+            {suspended.map((parked) => (
+              <div
+                key={parked.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 0',
+                  borderBottom: '1px solid #eee',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <b>
+                    {parked.label ?? `Parked ${parked.createdAt.slice(11, 16)}`}
+                  </b>
+                  <br />
+                  <small>
+                    {parked.lines.length} line
+                    {parked.lines.length === 1 ? '' : 's'} ·{' '}
+                    {new Date(parked.createdAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </small>
+                </div>
+                <button
+                  className="primary"
+                  onClick={() => void resumeParked(parked.id)}
+                >
+                  Resume
+                </button>
+                <button onClick={() => void discardParked(parked.id)}>
+                  Discard
+                </button>
+              </div>
+            ))}
+            <button onClick={() => setShowSuspended(false)}>Close</button>
+          </div>
+        </div>
+      )}
       {weighTarget && (
         <div className="modal-backdrop">
           <div className="modal">
@@ -1230,6 +1528,18 @@ export function CheckoutScreen({
                 }
               >
                 Add to sale
+              </button>
+              <button
+                disabled={
+                  !(
+                    Number(manualWeight) > 0 ||
+                    (scaleReading?.stable && scaleReading.weight > 0)
+                  )
+                }
+                title="Print a barcode label for this weighed item"
+                onClick={() => void printWeighLabel()}
+              >
+                Print label
               </button>
               <button onClick={() => setWeighTarget(null)}>Cancel</button>
             </div>

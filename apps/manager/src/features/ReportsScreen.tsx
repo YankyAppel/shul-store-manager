@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
+  CashMovement,
   DailyClose,
   DailyReport,
+  ExpiringBatch,
   MarginReport,
   ProductMarginLine,
 } from '@shul-store/shared';
@@ -435,6 +437,8 @@ export function ReportsScreen() {
           <p>Debits: {formatMoney(displayReport.receivables.debitsCents)}</p>
           <p>Credits: {formatMoney(displayReport.receivables.creditsCents)}</p>
         </section>
+        <CashDrawerCard businessDate={businessDate} onChanged={refresh} />
+        <ExpiringStockCard />
         <section className="report-card">
           <h2>Card transactions</h2>
           {displayReport.cardTransactions.length === 0 ? (
@@ -502,5 +506,163 @@ export function ReportsScreen() {
 
       <MarginSection />
     </div>
+  );
+}
+
+function CashDrawerCard({
+  businessDate,
+  onChanged,
+}: {
+  businessDate: string;
+  onChanged(): Promise<void>;
+}) {
+  const [movements, setMovements] = useState<CashMovement[]>([]);
+  const [kind, setKind] = useState<'pay_in' | 'pay_out' | 'drop'>('pay_in');
+  const [amount, setAmount] = useState('');
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState('');
+
+  const refresh = useCallback(() => {
+    window.storeApi.cashDrawer
+      .list()
+      .then((all) =>
+        setMovements(
+          all.filter((m) => m.createdAt.slice(0, 10) === businessDate),
+        ),
+      )
+      .catch(() => {});
+  }, [businessDate]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const totals = useMemo(() => {
+    const sum = (k: string) =>
+      movements
+        .filter((m) => m.kind === k)
+        .reduce((total, m) => total + m.amountCents, 0);
+    return { in: sum('pay_in'), out: sum('pay_out') + sum('drop') };
+  }, [movements]);
+
+  async function record(e: React.FormEvent) {
+    e.preventDefault();
+    const cents = centsFromInput(amount);
+    if (cents <= 0) {
+      setError('Enter an amount above $0.');
+      return;
+    }
+    try {
+      await window.storeApi.cashDrawer.record({
+        kind,
+        amountCents: cents,
+        reason: reason.trim() || kind.replace('_', ' '),
+      });
+      setAmount('');
+      setReason('');
+      setError('');
+      refresh();
+      await onChanged();
+    } catch (cause) {
+      setError(messageFrom(cause));
+    }
+  }
+
+  return (
+    <section className="report-card">
+      <h2>Cash drawer movements</h2>
+      <p>
+        In: {formatMoney(totals.in)} · Out (incl. drops):{' '}
+        {formatMoney(totals.out)} — feeds expected cash for {businessDate}
+      </p>
+      {movements.map((movement) => (
+        <p key={movement.id} style={{ fontSize: 13 }}>
+          {new Date(movement.createdAt).toLocaleTimeString([], {
+            hour: 'numeric',
+            minute: '2-digit',
+          })}{' '}
+          {movement.kind === 'pay_in'
+            ? 'Pay-in'
+            : movement.kind === 'pay_out'
+              ? 'Pay-out'
+              : 'Drop'}
+          : {formatMoney(movement.amountCents)}
+          {movement.reason ? ` — ${movement.reason}` : ''}
+        </p>
+      ))}
+      <form
+        onSubmit={(e) => void record(e)}
+        style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}
+      >
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value as typeof kind)}
+        >
+          <option value="pay_in">Pay-in</option>
+          <option value="pay_out">Pay-out</option>
+          <option value="drop">Drop (to safe)</option>
+        </select>
+        <input
+          inputMode="decimal"
+          placeholder="$0.00"
+          style={{ width: 90 }}
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+        <input
+          placeholder="Reason (optional)"
+          style={{ flex: 1, minWidth: 120 }}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+        <button type="submit">Record</button>
+      </form>
+      {error && <div className="alert">{error}</div>}
+    </section>
+  );
+}
+
+function ExpiringStockCard() {
+  const [withinDays, setWithinDays] = useState(14);
+  const [batches, setBatches] = useState<ExpiringBatch[]>([]);
+
+  useEffect(() => {
+    window.storeApi.reports
+      .expiringStock(withinDays)
+      .then(setBatches)
+      .catch(() => {});
+  }, [withinDays]);
+
+  return (
+    <section className="report-card">
+      <h2>Soon-expiring stock (FEFO)</h2>
+      <label style={{ fontSize: 13 }}>
+        Within{' '}
+        <select
+          value={withinDays}
+          onChange={(e) => setWithinDays(Number(e.target.value))}
+        >
+          <option value={7}>7 days</option>
+          <option value={14}>14 days</option>
+          <option value={30}>30 days</option>
+          <option value={60}>60 days</option>
+        </select>
+      </label>
+      {batches.length === 0 ? (
+        <p>No batches expiring in this window.</p>
+      ) : (
+        batches.map((batch, index) => (
+          <p key={`${batch.productId}-${index}`} style={{ fontSize: 13 }}>
+            <b>{batch.productName}</b>:{' '}
+            {formatStock(batch.remainingUnits, batch.soldBy, batch.unit)} —
+            expires {batch.expiresOn}
+          </p>
+        ))
+      )}
+      <p style={{ fontSize: 12, color: '#5f6d65' }}>
+        Recorded on incoming movements (Inventory → Receive stock → Expiry
+        date). Sell soonest-expiring batches first.
+      </p>
+    </section>
   );
 }

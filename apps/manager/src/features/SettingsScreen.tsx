@@ -851,7 +851,29 @@ export function SettingsScreen() {
                   </select>
                 </label>
               )}
+              <label>
+                Weigh label barcode
+                <select
+                  value={deviceSettings.weighBarcodeMode}
+                  onChange={(e) =>
+                    setDeviceSettings({
+                      ...deviceSettings,
+                      weighBarcodeMode: e.target
+                        .value as DeviceSettings['weighBarcodeMode'],
+                    })
+                  }
+                >
+                  <option value="price">Price-embedded (total $)</option>
+                  <option value="weight">Weight-embedded (quantity)</option>
+                </select>
+              </label>
             </div>
+            <p style={{ fontSize: '12px', color: '#5f6d65', marginTop: 2 }}>
+              Format for EAN weigh labels printed at the counter or by a label
+              scale (matches most CAS/Tor-Rey scales): price-embedded carries
+              the sale total; weight-embedded carries the weighed quantity and
+              re-prices at checkout.
+            </p>
             {deviceSettings.scaleMode !== 'none' && (
               <p style={{ fontSize: '13px', color: '#5f6d65' }}>
                 Status:{' '}

@@ -122,6 +122,9 @@ export const productPayloadSchema = z.object({
   unit: z.enum(['lb', 'oz', 'kg']).nullable().default(null),
   snapEligible: z.boolean().default(false),
   wicEligible: z.boolean().default(false),
+  plu: z.number().int().min(1).max(99_999).nullable().default(null),
+  salePriceCents: z.number().int().min(0).nullable().default(null),
+  saleLabel: z.string().nullable().default(null),
   createdAt: isoString,
   updatedAt: isoString,
   barcodes: z.array(productBarcodePayloadSchema).max(50),
@@ -142,6 +145,7 @@ export const inventoryMovementPayloadSchema = z.object({
   deviceId: uuidString.nullable(),
   relatedSaleId: uuidString.nullable(),
   notes: z.string().min(1).max(1000),
+  expiresOn: z.string().nullable().default(null),
   sequence: z.number().int().min(1),
 });
 export type InventoryMovementPayload = z.infer<

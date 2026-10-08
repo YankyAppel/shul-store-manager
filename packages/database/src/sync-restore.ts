@@ -284,8 +284,8 @@ function applyProduct(
     .prepare(
       `INSERT INTO products
         (id, category_id, name, secondary_name, image_id, purchase_cost_cents, selling_price_cents,
-         taxable, low_stock_threshold, active, sold_by, unit, snap_eligible, wic_eligible, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         taxable, low_stock_threshold, active, sold_by, unit, snap_eligible, wic_eligible, plu, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          category_id = excluded.category_id, name = excluded.name, secondary_name = excluded.secondary_name,
          image_id = excluded.image_id, purchase_cost_cents = excluded.purchase_cost_cents,
@@ -293,6 +293,7 @@ function applyProduct(
          low_stock_threshold = excluded.low_stock_threshold, active = excluded.active,
          sold_by = excluded.sold_by, unit = excluded.unit,
          snap_eligible = excluded.snap_eligible, wic_eligible = excluded.wic_eligible,
+         plu = excluded.plu,
          updated_at = excluded.updated_at`,
     )
     .run(
@@ -310,6 +311,7 @@ function applyProduct(
       payload.soldBy === 'weight' ? payload.unit : null,
       payload.snapEligible ? 1 : 0,
       payload.wicEligible ? 1 : 0,
+      payload.plu ?? null,
       payload.createdAt,
       payload.updatedAt,
     );
@@ -343,8 +345,8 @@ function applyInventoryMovement(
     .prepare(
       `INSERT INTO inventory_movements
         (id, operation_id, product_id, quantity_change, reason, occurred_at, device_id,
-         related_sale_id, notes, sequence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         related_sale_id, notes, expires_on, sequence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO NOTHING`,
     )
     .run(
@@ -357,6 +359,7 @@ function applyInventoryMovement(
       payload.deviceId,
       payload.relatedSaleId,
       payload.notes,
+      payload.expiresOn ?? null,
       payload.sequence,
     );
 }

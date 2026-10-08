@@ -3,6 +3,7 @@ import { processors, type RefundResult } from '@shul-store/payments';
 import {
   calculateCart,
   cartSnapshotSchema,
+  decodeWeighBarcode,
   errorMessage,
   PlaintextSecretStore,
   type CartSnapshot,
@@ -88,6 +89,7 @@ export interface PaymentLineRequest {
   productId: string;
   quantity: number;
   barcodeUsed?: string | null;
+  priceOverrideCents?: number | null;
 }
 
 export interface PaymentRequest {
@@ -322,14 +324,24 @@ export class PaymentService {
     // produces the same snapshot digest and the same reservation rows.
     const merged = new Map<
       string,
-      { productId: string; quantity: number; barcodeUsed: string | null }
+      {
+        productId: string;
+        quantity: number;
+        barcodeUsed: string | null;
+        priceOverrideCents: number | null;
+      }
     >();
     for (const line of parsed.lines) {
       const barcodeUsed = line.barcodeUsed?.trim() || null;
-      const key = `${line.productId}::${barcodeUsed ?? ''}`;
+      const key = `${line.productId}::${barcodeUsed ?? ''}::${line.priceOverrideCents ?? ''}`;
       const existing = merged.get(key);
       if (existing) existing.quantity += line.quantity;
-      else merged.set(key, { ...line, barcodeUsed });
+      else
+        merged.set(key, {
+          ...line,
+          barcodeUsed,
+          priceOverrideCents: line.priceOverrideCents ?? null,
+        });
     }
     const canonicalLines = [...merged.values()];
 
@@ -346,14 +358,22 @@ export class PaymentService {
         !product.barcodes.some(
           (barcode) =>
             barcode.value.toLowerCase() === line.barcodeUsed?.toLowerCase(),
-        )
+        ) &&
+        decodeWeighBarcode(line.barcodeUsed, 'price')?.plu !== product.plu
       )
         throw new PaymentError(
           'barcode-mismatch',
           'Barcode does not belong to the selected product.',
         );
       demand.set(product.id, (demand.get(product.id) ?? 0) + line.quantity);
-      return { product, quantity: line.quantity };
+      return {
+        product:
+          line.priceOverrideCents !== null &&
+          line.priceOverrideCents !== undefined
+            ? { ...product, salePriceCents: line.priceOverrideCents }
+            : product,
+        quantity: line.quantity,
+      };
     });
 
     const calculated = calculateCart(products, settings);
@@ -383,6 +403,7 @@ export class PaymentService {
         productId: line.productId,
         quantity: line.quantity,
         barcodeUsed: line.barcodeUsed,
+        priceOverrideCents: line.priceOverrideCents,
         productName: product.name,
         secondaryName: product.secondaryName,
         unitSellingPriceCents: product.sellingPriceCents,
@@ -443,10 +464,17 @@ export class PaymentService {
           typeof line.barcodeUsed !== 'string')
       )
         throw new PaymentError('invalid-request', 'Invalid payment line');
+      const priceOverrideCents =
+        typeof line.priceOverrideCents === 'number' &&
+        Number.isSafeInteger(line.priceOverrideCents) &&
+        line.priceOverrideCents >= 0
+          ? line.priceOverrideCents
+          : null;
       return {
         productId: line.productId,
         quantity: line.quantity,
         barcodeUsed: line.barcodeUsed ?? null,
+        priceOverrideCents,
       };
     });
     return {
@@ -709,6 +737,7 @@ export class PaymentService {
             productId: line.productId,
             quantity: line.quantity,
             barcodeUsed: line.barcodeUsed,
+            priceOverrideCents: line.priceOverrideCents ?? null,
           })),
           payment: {
             method: 'integrated_card',
