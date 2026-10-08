@@ -106,6 +106,8 @@ describe('printer settings', () => {
       scaleMode: 'none',
       scalePort: null,
       scaleUnit: 'lb',
+      eslMode: 'none',
+      eslBaseUrl: null,
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');
     expect(

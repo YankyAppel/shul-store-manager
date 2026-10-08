@@ -195,6 +195,16 @@ export const deviceSettingsSchema = z.object({
   scaleMode: z.enum(['none', 'simulated', 'serial']).default('none'),
   scalePort: z.string().trim().max(200).nullable().default(null),
   scaleUnit: weightUnitSchema.default('lb'),
+  /** Ink shelf tags: 'openepaperlink' talks to an ESP32 access point over
+   * plain HTTP on the LAN, so the base URL is http://host[:port]. */
+  eslMode: z.enum(['none', 'simulated', 'openepaperlink']).default('none'),
+  eslBaseUrl: z
+    .string()
+    .trim()
+    .max(200)
+    .regex(/^https?:\/\//, 'AP address must start with http:// or https://')
+    .nullable()
+    .default(null),
   idleLockMinutes: z.number().int().min(0).max(1440).default(5),
   staffModeEnabled: z.boolean().default(false),
   explainDismissals: z

@@ -36,6 +36,8 @@ describe('device settings', () => {
       scaleMode: 'none',
       scalePort: null,
       scaleUnit: 'lb',
+      eslMode: 'none',
+      eslBaseUrl: null,
     });
     expect(
       processorConfigInputSchema.safeParse('{"token":"value"}').success,

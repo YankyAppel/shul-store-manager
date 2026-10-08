@@ -64,6 +64,7 @@ import {
   isHttpsUpdateFeedUrl,
   labelPrintRequestSchema,
   labelsHtml,
+  priceTagAssignInputSchema,
   productInputSchema,
   receiptHtml,
   refundReceiptHtml,
@@ -186,6 +187,15 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'scale:readWeight': 'checkout',
   'scale:start': 'checkout',
   'scale:stop': 'checkout',
+  'esl:getStatus': 'public',
+  'esl:listTags': 'products.edit',
+  'esl:probe': 'owner',
+  'esl:flashLed': 'products.edit',
+  'esl:listLinks': 'public',
+  'esl:getLink': 'public',
+  'esl:assign': 'products.edit',
+  'esl:unbind': 'products.edit',
+  'esl:pushNow': 'products.edit',
   'payments:initiateCharge': 'checkout',
   'payments:getChargeStatus': 'checkout',
   'payments:getPendingTransactions': 'owner',
@@ -724,6 +734,7 @@ async function createWindow(): Promise<void> {
 
 import { initiateChargeInputSchema } from '@shul-store/shared';
 import { createScaleReader, type ScaleReader } from '@shul-store/hardware';
+import { createEslDriver, type EslDriver } from './esl.js';
 import type { ScaleReading, ScaleStatus } from '@shul-store/shared';
 
 let scaleReader: ScaleReader | null = null;
@@ -732,6 +743,19 @@ let scaleStatus: ScaleStatus = {
   connected: false,
   error: null,
 };
+
+let eslDriver: EslDriver | null = null;
+
+function broadcastEslStatus(status: unknown): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed()) continue;
+    try {
+      window.webContents.send('esl:status', status);
+    } catch {
+      // A window can close mid-broadcast.
+    }
+  }
+}
 
 function broadcastScale(
   channel: 'scale:reading' | 'scale:status',
@@ -1468,6 +1492,7 @@ function registerIpc(): void {
     );
     if (app.isPackaged) configureAutoUpdater(updated);
     void configureScaleFromSettings();
+    if (eslDriver) void eslDriver.applySettings();
     return updated;
   });
   ipcMain.handle('scale:getStatus', () => scaleStatus);
@@ -1480,6 +1505,35 @@ function registerIpc(): void {
   });
   ipcMain.handle('scale:stop', async () => {
     if (scaleReader) await scaleReader.stop();
+  });
+  ipcMain.handle('esl:getStatus', () => eslDriver?.status());
+  ipcMain.handle('esl:listTags', async () => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.listTags();
+  });
+  ipcMain.handle('esl:probe', async () => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.probe();
+  });
+  ipcMain.handle('esl:flashLed', (_event, mac) => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.flashLed(String(mac));
+  });
+  ipcMain.handle('esl:listLinks', () => database.listPriceTagLinks());
+  ipcMain.handle('esl:getLink', (_event, productId) =>
+    database.getPriceTagLink(String(productId)),
+  );
+  ipcMain.handle('esl:assign', (_event, input) => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.assign(priceTagAssignInputSchema.parse(input));
+  });
+  ipcMain.handle('esl:unbind', (_event, productId) => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.unbind(String(productId));
+  });
+  ipcMain.handle('esl:pushNow', async (_event, productId) => {
+    if (!eslDriver) throw new Error('Ink tags are disabled');
+    return eslDriver.pushNow(String(productId));
   });
   ipcMain.handle('settings:dismissExplanation', (_event, id) => {
     const explanationId = z.string().trim().min(1).max(100).parse(id);
@@ -2349,6 +2403,11 @@ app.whenReady().then(async () => {
   // Start the background sync loop immediately if cloud backup is enabled.
   recreateSyncEngine();
   void configureScaleFromSettings();
+  eslDriver = createEslDriver({
+    database: () => database,
+    broadcast: broadcastEslStatus,
+  });
+  void eslDriver.applySettings();
   mailWorker = new MailWorker(
     database,
     () => cloudAccount,

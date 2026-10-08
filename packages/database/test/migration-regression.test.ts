@@ -134,6 +134,8 @@ describe('migration upgrades and regressions', () => {
           scaleMode: 'none',
           scalePort: null,
           scaleUnit: 'lb',
+          eslMode: 'none',
+          eslBaseUrl: null,
         });
         expect(upgraded.getCardProcessorConfigJson()).toBe(
           '{"apiKey":"legacy"}',

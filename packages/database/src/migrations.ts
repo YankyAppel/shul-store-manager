@@ -1450,6 +1450,29 @@ export const migrations: Migration[] = [
       CREATE INDEX benefit_payments_sale_idx ON benefit_payments(sale_id);
     `,
   },
+  {
+    version: 33,
+    name: 'ink_price_tags',
+    sql: `
+      -- Ink/e-paper shelf tags (ESL): a product links to one tag; a tag serves
+      -- one product. push_status drives the Electron-side AP push loop.
+      ALTER TABLE device_settings ADD COLUMN esl_mode TEXT NOT NULL DEFAULT 'none' CHECK (esl_mode IN ('none','simulated','openepaperlink'));
+      ALTER TABLE device_settings ADD COLUMN esl_base_url TEXT CHECK (esl_base_url IS NULL OR length(esl_base_url) <= 200);
+      CREATE TABLE price_tag_links (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
+        tag_mac TEXT NOT NULL UNIQUE,
+        tag_type INTEGER,
+        push_status TEXT NOT NULL DEFAULT 'pending' CHECK (push_status IN ('pending','synced','error')),
+        push_error TEXT,
+        push_attempts INTEGER NOT NULL DEFAULT 0 CHECK (push_attempts >= 0),
+        last_pushed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX price_tag_links_status_idx ON price_tag_links(push_status);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

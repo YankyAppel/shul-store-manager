@@ -48,6 +48,9 @@ import {
   type Product,
   type ProductInput,
   type ProductPayload,
+  type PriceTagAssignInput,
+  priceTagAssignInputSchema,
+  type PriceTagLink,
   type ProcessorConfigStatus,
   type RecordAccountPaymentInput,
   type RecordRefundInput,
@@ -717,6 +720,14 @@ export class StoreDatabase {
         row.scale_unit === 'oz' || row.scale_unit === 'kg'
           ? row.scale_unit
           : 'lb',
+      eslMode:
+        row.esl_mode === 'simulated' || row.esl_mode === 'openepaperlink'
+          ? row.esl_mode
+          : 'none',
+      eslBaseUrl:
+        row.esl_base_url === undefined || row.esl_base_url === null
+          ? null
+          : String(row.esl_base_url),
     };
   }
 
@@ -727,7 +738,8 @@ export class StoreDatabase {
         `UPDATE device_settings
          SET update_feed_url = ?, automatic_updates_enabled = ?,
              idle_lock_minutes = ?, explain_dismissals_json = ?,
-             scale_mode = ?, scale_port = ?, scale_unit = ?, updated_at = ?
+             scale_mode = ?, scale_port = ?, scale_unit = ?,
+             esl_mode = ?, esl_base_url = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
@@ -738,6 +750,8 @@ export class StoreDatabase {
         value.scaleMode,
         value.scalePort,
         value.scaleUnit,
+        value.eslMode,
+        value.eslBaseUrl,
         now(),
       );
     return this.getDeviceSettings();
@@ -1305,8 +1319,9 @@ export class StoreDatabase {
     const value = productInputSchema.parse(input);
     try {
       this.connection.transaction(() => {
-        const currentBarcodes = this.getProduct(id)
-          .barcodes.map((b) => b.value.toLowerCase())
+        const previous = this.getProduct(id);
+        const currentBarcodes = previous.barcodes
+          .map((b) => b.value.toLowerCase())
           .sort();
         const nextBarcodes = value.barcodes.map((b) => b.toLowerCase()).sort();
         const barcodeSetChanged =
@@ -1349,6 +1364,13 @@ export class StoreDatabase {
           this.insertBarcodes(id, value.barcodes, now());
         }
         this.vendors.replaceProductVendors(id, value.vendors);
+        if (
+          previous.sellingPriceCents !== value.sellingPriceCents ||
+          previous.name !== value.name ||
+          previous.soldBy !== value.soldBy ||
+          previous.unit !== (value.soldBy === 'weight' ? value.unit : null)
+        )
+          this.markPriceTagPending(id);
         this.enqueueEntity('product', id);
         this.addAudit('product.updated', 'product', id, { name: value.name });
       })();
@@ -4901,6 +4923,154 @@ export class StoreDatabase {
       .get(id) as Row | undefined;
     if (!row) throw new Error('Product not found');
     return this.mapProduct(row);
+  }
+
+  private mapPriceTagLink(row: Row): PriceTagLink {
+    return {
+      id: String(row.id),
+      productId: String(row.product_id),
+      tagMac: String(row.tag_mac),
+      tagType:
+        row.tag_type === null || row.tag_type === undefined
+          ? null
+          : readSafeCents(row.tag_type, 'tagType'),
+      pushStatus:
+        row.push_status === 'synced' || row.push_status === 'error'
+          ? row.push_status
+          : 'pending',
+      pushError: row.push_error === null ? null : String(row.push_error),
+      pushAttempts: readSafeCents(row.push_attempts ?? 0, 'pushAttempts'),
+      lastPushedAt:
+        row.last_pushed_at === null ? null : String(row.last_pushed_at),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  listPriceTagLinks(): PriceTagLink[] {
+    return (
+      this.connection
+        .prepare('SELECT * FROM price_tag_links ORDER BY created_at')
+        .all() as Row[]
+    ).map((row) => this.mapPriceTagLink(row));
+  }
+
+  getPriceTagLink(productId: string): PriceTagLink | null {
+    const row = this.connection
+      .prepare('SELECT * FROM price_tag_links WHERE product_id = ?')
+      .get(productId) as Row | undefined;
+    return row ? this.mapPriceTagLink(row) : null;
+  }
+
+  /** One tag per product, one product per tag: re-assigning a product moves
+   * the link to the new tag, and re-assigning a tag moves the link to the
+   * new product. */
+  assignPriceTag(input: PriceTagAssignInput): PriceTagLink {
+    const value = priceTagAssignInputSchema.parse(input);
+    this.getProduct(value.productId);
+    const timestamp = now();
+    try {
+      this.connection.transaction(() => {
+        this.connection
+          .prepare(
+            'DELETE FROM price_tag_links WHERE tag_mac = ? AND product_id != ?',
+          )
+          .run(value.tagMac, value.productId);
+        this.connection
+          .prepare(
+            `INSERT INTO price_tag_links
+             (id, product_id, tag_mac, tag_type, push_status, push_error, push_attempts, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'pending', NULL, 0, ?, ?)
+           ON CONFLICT(product_id) DO UPDATE SET
+             tag_mac = excluded.tag_mac,
+             tag_type = excluded.tag_type,
+             push_status = 'pending',
+             push_error = NULL,
+             push_attempts = 0,
+             updated_at = excluded.updated_at`,
+          )
+          .run(
+            randomUUID(),
+            value.productId,
+            value.tagMac,
+            value.tagType ?? null,
+            timestamp,
+            timestamp,
+          );
+      })();
+    } catch (error) {
+      throw friendlyDatabaseError(error);
+    }
+    this.addAudit('price_tag.assigned', 'product', value.productId, {
+      tagMac: value.tagMac,
+    });
+    return this.getPriceTagLink(value.productId)!;
+  }
+
+  unbindPriceTag(productId: string): void {
+    this.connection
+      .prepare('DELETE FROM price_tag_links WHERE product_id = ?')
+      .run(productId);
+  }
+
+  /** Re-queue a linked tag for a fresh push — called when name/price change
+   * or on a manual 'push now'. */
+  markPriceTagPending(productId: string): void {
+    this.connection
+      .prepare(
+        `UPDATE price_tag_links
+         SET push_status = 'pending', push_error = NULL, updated_at = ?
+         WHERE product_id = ?`,
+      )
+      .run(now(), productId);
+  }
+
+  listPendingPriceTagPushes(limit = 25): PriceTagLink[] {
+    return (
+      this.connection
+        .prepare(
+          `SELECT * FROM price_tag_links
+           WHERE push_status = 'pending'
+           ORDER BY updated_at
+           LIMIT ?`,
+        )
+        .all(limit) as Row[]
+    ).map((row) => this.mapPriceTagLink(row));
+  }
+
+  countPendingPriceTagPushes(): number {
+    const row = this.connection
+      .prepare(
+        "SELECT COUNT(*) AS count FROM price_tag_links WHERE push_status = 'pending'",
+      )
+      .get() as Row;
+    return readSafeCents(row.count, 'pendingPushes');
+  }
+
+  /** A failed push retries until ~10 attempts, then parks as 'error' so the
+   * UI can surface it without the loop retrying a dead tag forever. */
+  recordPriceTagPush(linkId: string, ok: boolean, error?: string): void {
+    this.connection
+      .prepare(
+        `UPDATE price_tag_links
+         SET push_status = CASE WHEN ? THEN 'synced'
+                                WHEN push_attempts + 1 >= 10 THEN 'error'
+                                ELSE 'pending' END,
+             push_error = CASE WHEN ? THEN NULL ELSE ? END,
+             push_attempts = push_attempts + 1,
+             last_pushed_at = CASE WHEN ? THEN ? ELSE last_pushed_at END,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        ok ? 1 : 0,
+        ok ? 1 : 0,
+        ok ? null : (error ?? 'Push failed'),
+        ok ? 1 : 0,
+        now(),
+        now(),
+        linkId,
+      );
   }
 
   private mapProduct(row: Row): Product {

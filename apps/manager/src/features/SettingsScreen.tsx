@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import {
   LABEL_TEMPLATE_OPTIONS,
   type DeviceSettings,
+  type EslStatus,
   type ProcessorConfigStatus,
   type PrinterInfo,
   type ScaleStatus,
@@ -24,7 +25,7 @@ type SettingsTab =
   | 'backup'
   | 'security'
   | 'printers'
-  | 'scale'
+  | 'hardware'
   | 'processors'
   | 'order-emails';
 
@@ -35,7 +36,7 @@ const SETTINGS_TABS: [SettingsTab, string][] = [
   ['backup', 'Backup'],
   ['security', 'Security'],
   ['printers', 'Printers'],
-  ['scale', 'Scale'],
+  ['hardware', 'Hardware'],
   ['processors', 'Payment processors'],
   ['order-emails', 'Order emails'],
 ];
@@ -69,6 +70,8 @@ export function SettingsScreen() {
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [scaleStatus, setScaleStatus] = useState<ScaleStatus | null>(null);
+  const [eslStatus, setEslStatus] = useState<EslStatus | null>(null);
+  const [eslProbe, setEslProbe] = useState<string | null>(null);
   const [printerError, setPrinterError] = useState('');
   const [appVersion, setAppVersion] = useState('');
   const [logoError, setLogoError] = useState('');
@@ -100,6 +103,12 @@ export function SettingsScreen() {
     void window.storeApi.scale.getStatus().then(setScaleStatus);
     const unsubscribeScale =
       window.storeApi.scale.subscribeStatus(setScaleStatus);
+    void window.storeApi.priceTags
+      .getStatus()
+      .then(setEslStatus)
+      .catch(() => undefined);
+    const unsubscribeEsl =
+      window.storeApi.priceTags.subscribeStatus(setEslStatus);
     void window.storeApi.settings
       .listPrinters()
       .then(setPrinters)
@@ -107,8 +116,23 @@ export function SettingsScreen() {
     return () => {
       unsubscribe();
       unsubscribeScale();
+      unsubscribeEsl();
     };
   }, []);
+
+  async function testEslConnection() {
+    setEslProbe(null);
+    try {
+      const result = await window.storeApi.priceTags.probe();
+      setEslProbe(
+        result.ok
+          ? `Connected — ${result.tagCount ?? 0} tag(s) found`
+          : (result.detail ?? 'Could not reach the access point'),
+      );
+    } catch (error) {
+      setEslProbe(error instanceof Error ? error.message : 'Probe failed');
+    }
+  }
 
   if (!settings || !deviceSettings || !processorStatus) return <p>Loading…</p>;
 
@@ -763,7 +787,7 @@ export function SettingsScreen() {
             )}
           </>
         )}
-        {tab === 'scale' && (
+        {tab === 'hardware' && (
           <>
             <h3 style={{ margin: '0 0 4px 0' }}>Checkout scale</h3>
             <p
@@ -841,12 +865,94 @@ export function SettingsScreen() {
                 — save settings to apply.
               </p>
             )}
+
+            <h3 style={{ margin: '28px 0 4px 0' }}>Ink price tags</h3>
+            <p
+              style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: '13px' }}
+            >
+              Link e-ink shelf tags to products so the tag always shows the
+              current price. Works with an OpenEPaperLink access point on the
+              store network (ESP32 gateway + e-ink tags); simulated mode runs
+              without hardware for testing.
+            </p>
+            <div className="form-grid">
+              <label>
+                Ink tag mode
+                <select
+                  value={deviceSettings.eslMode}
+                  onChange={(e) =>
+                    setDeviceSettings({
+                      ...deviceSettings,
+                      eslMode: e.target.value as DeviceSettings['eslMode'],
+                    })
+                  }
+                >
+                  <option value="none">Disabled</option>
+                  <option value="simulated">Simulated (testing)</option>
+                  <option value="openepaperlink">OpenEPaperLink AP</option>
+                </select>
+              </label>
+              {deviceSettings.eslMode === 'openepaperlink' && (
+                <label>
+                  Access point address <em>e.g. http://192.168.1.50</em>
+                  <input
+                    type="text"
+                    value={deviceSettings.eslBaseUrl ?? ''}
+                    onChange={(e) =>
+                      setDeviceSettings({
+                        ...deviceSettings,
+                        eslBaseUrl: e.target.value.trim() || null,
+                      })
+                    }
+                    placeholder="http://192.168.1.50"
+                  />
+                </label>
+              )}
+            </div>
+            {deviceSettings.eslMode !== 'none' && (
+              <>
+                <p style={{ fontSize: '13px', color: '#5f6d65' }}>
+                  Status:{' '}
+                  {eslStatus?.connected ? (
+                    <strong style={{ color: '#1f5e3f' }}>
+                      Connected
+                      {eslStatus.tagCount !== null
+                        ? ` — ${eslStatus.tagCount} tag(s)`
+                        : ''}
+                    </strong>
+                  ) : (
+                    <strong style={{ color: '#a33d2a' }}>
+                      {eslStatus?.error ?? 'Not connected'}
+                    </strong>
+                  )}
+                  {eslStatus && eslStatus.pendingPushes > 0
+                    ? ` · ${eslStatus.pendingPushes} update(s) queued`
+                    : ''}{' '}
+                  — save settings to apply.
+                </p>
+                {deviceSettings.eslMode === 'openepaperlink' && (
+                  <p>
+                    <button
+                      type="button"
+                      onClick={() => void testEslConnection()}
+                    >
+                      Test connection
+                    </button>{' '}
+                    {eslProbe && (
+                      <span style={{ fontSize: '13px', color: '#5f6d65' }}>
+                        {eslProbe}
+                      </span>
+                    )}
+                  </p>
+                )}
+              </>
+            )}
           </>
         )}
         {(tab === 'profile' ||
           tab === 'general' ||
           tab === 'printers' ||
-          tab === 'scale') && (
+          tab === 'hardware') && (
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
             <button className="primary">Save settings</button>
             {saved && (

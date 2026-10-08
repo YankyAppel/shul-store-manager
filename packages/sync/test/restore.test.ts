@@ -102,6 +102,8 @@ describe('restore validation', () => {
       scaleMode: 'none',
       scalePort: null,
       scaleUnit: 'lb',
+      eslMode: 'none',
+      eslBaseUrl: null,
     });
     expect(db.getCardProcessorConfigStatus().configured).toBe(false);
     disposeDb(db, file);
