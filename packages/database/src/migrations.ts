@@ -1545,6 +1545,17 @@ export const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 35,
+    name: 'cash_drawer',
+    sql: `
+      -- Cash-drawer kick on cash tenders: 'receipt_printer' sends ESC/POS
+      -- kick bytes to the configured receipt printer (drawer plugs into its
+      -- RJ11 port); 'serial' writes them to a serial-attached drawer.
+      ALTER TABLE device_settings ADD COLUMN cash_drawer_mode TEXT NOT NULL DEFAULT 'none' CHECK (cash_drawer_mode IN ('none','receipt_printer','serial'));
+      ALTER TABLE device_settings ADD COLUMN cash_drawer_port TEXT CHECK (cash_drawer_port IS NULL OR length(cash_drawer_port) <= 200);
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

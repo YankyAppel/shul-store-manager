@@ -218,6 +218,9 @@ const api: StoreApi = {
       ipcRenderer.invoke('checkout:lookupBarcode', value),
     complete: (input) => ipcRenderer.invoke('checkout:complete', input),
   },
+  drawer: {
+    open: () => ipcRenderer.invoke('drawer:open'),
+  },
   scale: {
     getStatus: () => ipcRenderer.invoke('scale:getStatus'),
     readWeight: () => ipcRenderer.invoke('scale:readWeight'),

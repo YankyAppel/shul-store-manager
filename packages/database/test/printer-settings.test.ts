@@ -108,6 +108,8 @@ describe('printer settings', () => {
       scaleUnit: 'lb',
       eslMode: 'none',
       weighBarcodeMode: 'price',
+      cashDrawerMode: 'none',
+      cashDrawerPort: null,
       eslBaseUrl: null,
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');

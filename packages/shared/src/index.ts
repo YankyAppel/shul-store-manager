@@ -656,6 +656,10 @@ export interface StoreApi {
     lookupBarcode(value: string): Promise<BarcodeLookup | null>;
     complete(input: CompleteSaleInput): Promise<Sale>;
   };
+  drawer: {
+    /** Kicks the cash drawer (no-op when disabled in device settings). */
+    open(): Promise<{ success: boolean; error: string | null }>;
+  };
   scale: {
     getStatus(): Promise<ScaleStatus>;
     /** A single stable reading; resolves quickly for simulated scales. */

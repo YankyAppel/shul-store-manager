@@ -38,6 +38,8 @@ describe('device settings', () => {
       scaleUnit: 'lb',
       eslMode: 'none',
       weighBarcodeMode: 'price',
+      cashDrawerMode: 'none',
+      cashDrawerPort: null,
       eslBaseUrl: null,
     });
     expect(
