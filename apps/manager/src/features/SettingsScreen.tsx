@@ -70,6 +70,7 @@ export function SettingsScreen() {
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [scaleStatus, setScaleStatus] = useState<ScaleStatus | null>(null);
+  const [drawerTest, setDrawerTest] = useState<string | null>(null);
   const [eslStatus, setEslStatus] = useState<EslStatus | null>(null);
   const [eslProbe, setEslProbe] = useState<string | null>(null);
   const [printerError, setPrinterError] = useState('');
@@ -885,6 +886,88 @@ export function SettingsScreen() {
                   </strong>
                 )}{' '}
                 — save settings to apply.
+              </p>
+            )}
+
+            <h3 style={{ margin: '28px 0 4px 0' }}>Cash drawer</h3>
+            <p
+              style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: '13px' }}
+            >
+              Open the cash drawer automatically when a cash tender is taken at
+              this register. Most drawers plug into the receipt printer's RJ11
+              port — choose "Receipt printer" for that setup; choose "Serial
+              port" for a drawer wired to its own COM/USB port.
+            </p>
+            <div className="form-grid">
+              <label>
+                Cash drawer
+                <select
+                  value={deviceSettings.cashDrawerMode}
+                  onChange={(e) =>
+                    setDeviceSettings({
+                      ...deviceSettings,
+                      cashDrawerMode: e.target
+                        .value as DeviceSettings['cashDrawerMode'],
+                    })
+                  }
+                >
+                  <option value="none">Disabled</option>
+                  <option value="receipt_printer">
+                    Receipt printer (RJ11 kick)
+                  </option>
+                  <option value="serial">Serial port</option>
+                </select>
+              </label>
+              {deviceSettings.cashDrawerMode === 'serial' && (
+                <label>
+                  Serial port{' '}
+                  <em>e.g. COM4 on Windows, /dev/ttyUSB1 on Linux</em>
+                  <input
+                    type="text"
+                    value={deviceSettings.cashDrawerPort ?? ''}
+                    onChange={(e) =>
+                      setDeviceSettings({
+                        ...deviceSettings,
+                        cashDrawerPort: e.target.value.trim() || null,
+                      })
+                    }
+                    placeholder="COM4"
+                  />
+                </label>
+              )}
+            </div>
+            {deviceSettings.cashDrawerMode === 'receipt_printer' &&
+              !settings.receiptPrinterName && (
+                <p style={{ fontSize: '13px', color: '#a33d2a' }}>
+                  No receipt printer is configured — pick one on the Printers
+                  tab or the drawer kick has nothing to fire through.
+                </p>
+              )}
+            {deviceSettings.cashDrawerMode !== 'none' && (
+              <p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrawerTest(null);
+                    void window.storeApi.drawer
+                      .open()
+                      .then((result) =>
+                        setDrawerTest(
+                          result.success
+                            ? 'Drawer pulse sent.'
+                            : (result.error ?? 'Drawer kick failed.'),
+                        ),
+                      )
+                      .catch(() => setDrawerTest('Drawer kick failed.'));
+                  }}
+                >
+                  Test: open drawer
+                </button>{' '}
+                {drawerTest && (
+                  <span style={{ fontSize: '13px', color: '#5f6d65' }}>
+                    {drawerTest}
+                  </span>
+                )}
               </p>
             )}
 

@@ -515,6 +515,22 @@ export function CheckoutScreen({
         payment: paymentInput,
       };
 
+      // Cash tenders kick the drawer as soon as the tender is taken (the
+      // cashier needs it open to give change); a failure never blocks a sale.
+      const cashTaken =
+        payment === 'cash' ||
+        ((payment === 'snap_ebt' || payment === 'wic') &&
+          remainderCents > 0 &&
+          remainderMethod === 'cash');
+      if (cashTaken) {
+        void window.storeApi.drawer
+          .open()
+          .then((result) => {
+            if (!result.success) setError(result.error ?? 'Drawer failed');
+          })
+          .catch(() => undefined);
+      }
+
       const completed = await window.storeApi.checkout.complete(input);
       setSale(completed);
       await onInventoryChanged();

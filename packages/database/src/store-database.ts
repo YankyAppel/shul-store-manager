@@ -695,7 +695,8 @@ export class StoreDatabase {
         `SELECT update_feed_url, automatic_updates_enabled,
           idle_lock_minutes, staff_mode_enabled, explain_dismissals_json,
           scale_mode, scale_port, scale_unit,
-          esl_mode, esl_base_url, weigh_barcode_mode
+          esl_mode, esl_base_url, weigh_barcode_mode,
+          cash_drawer_mode, cash_drawer_port
          FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
@@ -747,6 +748,15 @@ export class StoreDatabase {
           : String(row.esl_base_url),
       weighBarcodeMode:
         row.weigh_barcode_mode === 'weight' ? 'weight' : 'price',
+      cashDrawerMode:
+        row.cash_drawer_mode === 'receipt_printer' ||
+        row.cash_drawer_mode === 'serial'
+          ? row.cash_drawer_mode
+          : 'none',
+      cashDrawerPort:
+        row.cash_drawer_port === undefined || row.cash_drawer_port === null
+          ? null
+          : String(row.cash_drawer_port),
     };
   }
 
@@ -758,7 +768,8 @@ export class StoreDatabase {
          SET update_feed_url = ?, automatic_updates_enabled = ?,
              idle_lock_minutes = ?, explain_dismissals_json = ?,
              scale_mode = ?, scale_port = ?, scale_unit = ?,
-             esl_mode = ?, esl_base_url = ?, weigh_barcode_mode = ?, updated_at = ?
+             esl_mode = ?, esl_base_url = ?, weigh_barcode_mode = ?,
+             cash_drawer_mode = ?, cash_drawer_port = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
@@ -772,6 +783,8 @@ export class StoreDatabase {
         value.eslMode,
         value.eslBaseUrl,
         value.weighBarcodeMode,
+        value.cashDrawerMode,
+        value.cashDrawerPort,
         now(),
       );
     return this.getDeviceSettings();

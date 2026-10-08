@@ -209,6 +209,12 @@ export const deviceSettingsSchema = z.object({
    * total price in cents ('price') or a measured quantity ('weight'). Labels
    * printed in-app can use either; scale-printed labels use 'weight'. */
   weighBarcodeMode: z.enum(['price', 'weight']).default('price'),
+  /** Cash drawer kick: 'none' disabled, 'receipt_printer' sends an ESC/POS
+   * drawer-kick to the configured receipt printer (the drawer cable plugs
+   * into the printer's RJ11 port), 'serial' writes the kick bytes to a
+   * serial-attached drawer on cashDrawerPort. */
+  cashDrawerMode: z.enum(['none', 'receipt_printer', 'serial']).default('none'),
+  cashDrawerPort: z.string().trim().max(200).nullable().default(null),
   idleLockMinutes: z.number().int().min(0).max(1440).default(5),
   staffModeEnabled: z.boolean().default(false),
   explainDismissals: z

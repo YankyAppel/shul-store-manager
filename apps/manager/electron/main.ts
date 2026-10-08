@@ -258,6 +258,7 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'labels:print': 'products.edit',
   'checkout:lookupBarcode': 'public',
   'checkout:complete': 'checkout',
+  'drawer:open': 'checkout',
   'quickKeys:list': 'public',
   'quickKeys:pin': 'checkout',
   'quickKeys:unpin': 'checkout',
@@ -760,6 +761,7 @@ async function createWindow(): Promise<void> {
 import { initiateChargeInputSchema } from '@shul-store/shared';
 import { createScaleReader, type ScaleReader } from '@shul-store/hardware';
 import { createEslDriver, type EslDriver } from './esl.js';
+import { openDrawer } from './drawer.js';
 import type { ScaleReading, ScaleStatus } from '@shul-store/shared';
 
 let scaleReader: ScaleReader | null = null;
@@ -1755,6 +1757,12 @@ function registerIpc(): void {
       >;
     }
   >;
+  ipcMain.handle('drawer:open', () =>
+    openDrawer(
+      database.getDeviceSettings(),
+      database.getSettings().receiptPrinterName,
+    ),
+  );
   ipcMain.handle('checkout:complete', (_event, input) =>
     database.completeSale(checkoutBoundarySchema.parse(input)),
   );
