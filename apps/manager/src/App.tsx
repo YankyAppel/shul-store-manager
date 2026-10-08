@@ -8,6 +8,8 @@ import {
 import type {
   AuthState,
   Category,
+  EslTag,
+  PriceTagLink,
   Product,
   StoredImage,
 } from '@shul-store/shared';
@@ -1276,6 +1278,9 @@ function ProductModal({
           barcodes={barcodes}
           setError={setError}
         />
+        {product && (
+          <PriceTagSection productId={product.id} setError={setError} />
+        )}
         <footer>
           <button type="button" onClick={() => void close()}>
             Cancel
@@ -1291,6 +1296,162 @@ function ProductModal({
         </footer>
       </form>
     </Modal>
+  );
+}
+
+function PriceTagSection({
+  productId,
+  setError,
+}: {
+  productId: string;
+  setError(value: string): void;
+}) {
+  const [link, setLink] = useState<PriceTagLink | null>(null);
+  const [tags, setTags] = useState<EslTag[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [flashBusy, setFlashBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.storeApi.priceTags
+      .getLink(productId)
+      .then(setLink)
+      .catch(() => setLink(null));
+  }, [productId]);
+
+  async function browseTags() {
+    setLoading(true);
+    try {
+      setTags(await window.storeApi.priceTags.listTags());
+    } catch (e) {
+      setError(messageFrom(e));
+      setTags(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+  async function identify(mac: string) {
+    setFlashBusy(mac);
+    try {
+      await window.storeApi.priceTags.flashLed(mac);
+    } catch (e) {
+      setError(messageFrom(e));
+    } finally {
+      setFlashBusy(null);
+    }
+  }
+  async function assign(tag: EslTag) {
+    try {
+      setLink(
+        await window.storeApi.priceTags.assign({
+          productId,
+          tagMac: tag.mac,
+          tagType: tag.hwType,
+        }),
+      );
+      setTags(null);
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+  }
+  async function unbind() {
+    await window.storeApi.priceTags.unbind(productId);
+    setLink(null);
+  }
+  async function pushNow() {
+    try {
+      setLink(await window.storeApi.priceTags.pushNow(productId));
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+  }
+
+  return (
+    <div className="barcode-box">
+      <label>
+        Ink price tag{' '}
+        <em>Links an e-ink shelf tag — price changes push automatically</em>
+        {link ? (
+          <div
+            style={{
+              display: 'flex',
+              gap: '10px',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+            }}
+          >
+            <code>{link.tagMac}</code>
+            <span
+              style={{
+                color:
+                  link.pushStatus === 'synced'
+                    ? '#1f5e3f'
+                    : link.pushStatus === 'error'
+                      ? '#a33d2a'
+                      : '#8a6d1f',
+                fontSize: '13px',
+              }}
+            >
+              {link.pushStatus === 'synced'
+                ? `Synced${link.lastPushedAt ? ` ${new Date(link.lastPushedAt).toLocaleString()}` : ''}`
+                : link.pushStatus === 'error'
+                  ? `Push error: ${link.pushError ?? 'unknown'}`
+                  : 'Update queued…'}
+            </span>
+            <button type="button" onClick={() => void pushNow()}>
+              Push now
+            </button>
+            <button type="button" onClick={() => void unbind()}>
+              Unbind
+            </button>
+            <button type="button" onClick={() => void browseTags()}>
+              {tags ? 'Hide tags' : 'Change tag'}
+            </button>
+          </div>
+        ) : (
+          <div>
+            <button type="button" onClick={() => void browseTags()}>
+              {loading ? 'Searching…' : 'Link ink tag'}
+            </button>
+          </div>
+        )}
+        {tags && (
+          <div className="chips" style={{ marginTop: '8px' }}>
+            {tags.length === 0 && <em>No tags found on the access point</em>}
+            {tags.map((tag) => (
+              <span
+                key={tag.mac}
+                style={{
+                  display: 'inline-flex',
+                  gap: '6px',
+                  alignItems: 'center',
+                  border: '1px solid #d8cfc0',
+                  borderRadius: '6px',
+                  padding: '4px 8px',
+                }}
+              >
+                <code>{tag.mac}</code>
+                {tag.alias && <em>{tag.alias}</em>}
+                {tag.widthPx && (
+                  <small>
+                    {tag.widthPx}×{tag.heightPx}
+                  </small>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void identify(tag.mac)}
+                  disabled={flashBusy === tag.mac}
+                >
+                  {flashBusy === tag.mac ? 'Flashing…' : 'Flash LED'}
+                </button>
+                <button type="button" onClick={() => void assign(tag)}>
+                  Link
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </label>
+    </div>
   );
 }
 

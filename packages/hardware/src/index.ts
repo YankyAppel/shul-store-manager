@@ -261,3 +261,18 @@ export function createScaleReader(options: ScaleReaderOptions): ScaleReader {
       return new NullScaleReader();
   }
 }
+
+export {
+  buildPriceTagTemplate,
+  createEslProvider,
+  OpenEpaperLinkProvider,
+  SimulatedEslProvider,
+} from './esl.js';
+export type {
+  EslProvider,
+  EslProviderOptions,
+  EslTagDescriptor,
+  FetchLike,
+  FetchResponse,
+  RawEslTag,
+} from './esl.js';

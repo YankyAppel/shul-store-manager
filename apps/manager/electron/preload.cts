@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   AuthState,
+  EslStatus,
   ScaleReading,
   ScaleStatus,
   StoreApi,
@@ -201,6 +202,23 @@ const api: StoreApi = {
       ) => listener(status);
       ipcRenderer.on('scale:status', handler);
       return () => ipcRenderer.removeListener('scale:status', handler);
+    },
+  },
+  priceTags: {
+    getStatus: () => ipcRenderer.invoke('esl:getStatus'),
+    listTags: () => ipcRenderer.invoke('esl:listTags'),
+    probe: () => ipcRenderer.invoke('esl:probe'),
+    flashLed: (mac) => ipcRenderer.invoke('esl:flashLed', mac),
+    listLinks: () => ipcRenderer.invoke('esl:listLinks'),
+    getLink: (productId) => ipcRenderer.invoke('esl:getLink', productId),
+    assign: (input) => ipcRenderer.invoke('esl:assign', input),
+    unbind: (productId) => ipcRenderer.invoke('esl:unbind', productId),
+    pushNow: (productId) => ipcRenderer.invoke('esl:pushNow', productId),
+    subscribeStatus: (listener) => {
+      const handler = (_event: Electron.IpcRendererEvent, status: EslStatus) =>
+        listener(status);
+      ipcRenderer.on('esl:status', handler);
+      return () => ipcRenderer.removeListener('esl:status', handler);
     },
   },
   sales: {

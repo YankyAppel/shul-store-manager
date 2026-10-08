@@ -32,6 +32,13 @@ import type {
 } from './sync.js';
 import type { KioskServerSettings } from './kiosk.js';
 import type {
+  EslProbeResult,
+  EslStatus,
+  EslTag,
+  PriceTagAssignInput,
+  PriceTagLink,
+} from './esl.js';
+import type {
   LocalBackup,
   LocalBackupAttempt,
   LocalRestoreResult,
@@ -61,6 +68,7 @@ import type {
 export * from './barcode.js';
 export * from './backups.js';
 export * from './checkout.js';
+export * from './esl.js';
 export type { BarcodeSuggestion } from './cloud-account.js';
 export * from './customers.js';
 export * from './html-templates.js';
@@ -591,6 +599,19 @@ export interface StoreApi {
     stop(): Promise<void>;
     subscribe(listener: (reading: ScaleReading) => void): () => void;
     subscribeStatus(listener: (status: ScaleStatus) => void): () => void;
+  };
+  priceTags: {
+    getStatus(): Promise<EslStatus>;
+    listTags(): Promise<EslTag[]>;
+    probe(): Promise<EslProbeResult>;
+    /** Blink a tag's LED so staff can identify the physical tag. */
+    flashLed(mac: string): Promise<void>;
+    listLinks(): Promise<PriceTagLink[]>;
+    getLink(productId: string): Promise<PriceTagLink | null>;
+    assign(input: PriceTagAssignInput): Promise<PriceTagLink>;
+    unbind(productId: string): Promise<void>;
+    pushNow(productId: string): Promise<PriceTagLink>;
+    subscribeStatus(listener: (status: EslStatus) => void): () => void;
   };
   sales: {
     list(): Promise<Sale[]>;
