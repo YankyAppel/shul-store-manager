@@ -104,6 +104,42 @@ const api: StoreApi = {
       ipcRenderer.invoke('products:setActive', id, active),
     generateInternalBarcode: () =>
       ipcRenderer.invoke('products:generateBarcode'),
+    ensurePlu: (id) => ipcRenderer.invoke('products:ensurePlu', id),
+  },
+  salePrices: {
+    list: (productId) => ipcRenderer.invoke('salePrices:list', productId),
+    create: (input) => ipcRenderer.invoke('salePrices:create', input),
+    remove: (id) => ipcRenderer.invoke('salePrices:remove', id),
+  },
+  quickKeys: {
+    list: () => ipcRenderer.invoke('quickKeys:list'),
+    pin: (productId) => ipcRenderer.invoke('quickKeys:pin', productId),
+    unpin: (productId) => ipcRenderer.invoke('quickKeys:unpin', productId),
+  },
+  suspendedSales: {
+    park: (input) => ipcRenderer.invoke('suspendedSales:park', input),
+    list: () => ipcRenderer.invoke('suspendedSales:list'),
+    resume: (id) => ipcRenderer.invoke('suspendedSales:resume', id),
+    discard: (id) => ipcRenderer.invoke('suspendedSales:discard', id),
+  },
+  stockCounts: {
+    start: (notes) => ipcRenderer.invoke('stockCounts:start', notes),
+    list: () => ipcRenderer.invoke('stockCounts:list'),
+    get: (id) => ipcRenderer.invoke('stockCounts:get', id),
+    recordLine: (countId, productId, countedUnits) =>
+      ipcRenderer.invoke(
+        'stockCounts:recordLine',
+        countId,
+        productId,
+        countedUnits,
+      ),
+    finish: (id) => ipcRenderer.invoke('stockCounts:finish', id),
+    apply: (id) => ipcRenderer.invoke('stockCounts:apply', id),
+    cancel: (id) => ipcRenderer.invoke('stockCounts:cancel', id),
+  },
+  cashDrawer: {
+    record: (input) => ipcRenderer.invoke('cashDrawer:record', input),
+    list: (limit) => ipcRenderer.invoke('cashDrawer:list', limit),
   },
   inventory: {
     addMovement: (input) => ipcRenderer.invoke('inventory:addMovement', input),
@@ -335,6 +371,8 @@ const api: StoreApi = {
       ipcRenderer.invoke('backups:restore', filename, confirmation),
   },
   reports: {
+    expiringStock: (withinDays) =>
+      ipcRenderer.invoke('reports:expiringStock', withinDays),
     daily: (businessDate, openingFloatCents) =>
       ipcRenderer.invoke('reports:daily', {
         businessDate,

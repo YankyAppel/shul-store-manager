@@ -112,7 +112,7 @@ export function createEslDriver(options: {
     const { width, height } = await descriptor(link.tagType);
     const ops = buildPriceTagTemplate({
       name: product.name,
-      priceText: priceText(product.sellingPriceCents),
+      priceText: priceText(product.salePriceCents ?? product.sellingPriceCents),
       unitLabel: product.soldBy === 'weight' ? `/ ${product.unit}` : null,
       width,
       height,
@@ -124,6 +124,7 @@ export function createEslDriver(options: {
     if (pushing) return;
     pushing = true;
     try {
+      db().markSaleBoundaryPriceTags();
       const pending = db().listPendingPriceTagPushes();
       for (const link of pending) {
         try {

@@ -11,8 +11,10 @@ import type {
   EslTag,
   PriceTagLink,
   Product,
+  SalePrice,
   StoredImage,
 } from '@shul-store/shared';
+import { encodeWeighBarcode } from '@shul-store/shared';
 import { CheckoutScreen } from './features/CheckoutScreen';
 import { LabelPrintModal } from './features/labels/LabelPrintModal';
 import { SalesHistory } from './features/SalesHistory';
@@ -69,6 +71,7 @@ export function App() {
   const [inventoryProduct, setInventoryProduct] = useState<
     Product | undefined
   >();
+  const [stockCountOpen, setStockCountOpen] = useState(false);
   const [labelProductIds, setLabelProductIds] = useState<
     string[] | undefined
   >();
@@ -689,6 +692,13 @@ export function App() {
         )}
 
         {view === 'inventory' && (
+          <div style={{ marginBottom: 10 }}>
+            <button onClick={() => setStockCountOpen(true)}>
+              Physical stock count…
+            </button>
+          </div>
+        )}
+        {view === 'inventory' && (
           <div className="inventory-grid">
             {visibleProducts.map((product) => (
               <article className="inventory-card" key={product.id}>
@@ -764,6 +774,17 @@ export function App() {
           }
           onClose={() => setLabelProductIds(undefined)}
           onProductsChanged={refresh}
+          setError={setError}
+        />
+      )}
+      {stockCountOpen && (
+        <StockCountModal
+          products={products.filter((p) => p.active)}
+          onClose={() => setStockCountOpen(false)}
+          onApplied={async () => {
+            setStockCountOpen(false);
+            await refresh();
+          }}
           setError={setError}
         />
       )}
@@ -1279,6 +1300,10 @@ function ProductModal({
           setError={setError}
         />
         {product && (
+          <SalePriceSection productId={product.id} setError={setError} />
+        )}
+        {product && <CounterSection product={product} setError={setError} />}
+        {product && (
           <PriceTagSection productId={product.id} setError={setError} />
         )}
         <footer>
@@ -1296,6 +1321,249 @@ function ProductModal({
         </footer>
       </form>
     </Modal>
+  );
+}
+
+function SalePriceSection({
+  productId,
+  setError,
+}: {
+  productId: string;
+  setError(value: string): void;
+}) {
+  const [sales, setSales] = useState<SalePrice[]>([]);
+  const [priceText, setPriceText] = useState('');
+  const [percentText, setPercentText] = useState('');
+  const [startsAt, setStartsAt] = useState('');
+  const [endsAt, setEndsAt] = useState('');
+  const [label, setLabel] = useState('');
+
+  const refresh = () =>
+    window.storeApi.salePrices
+      .list(productId)
+      .then(setSales)
+      .catch(() => {});
+  useEffect(() => {
+    void refresh();
+  }, [productId]);
+
+  async function addSale(e: FormEvent) {
+    e.preventDefault();
+    const dollars = Number(priceText);
+    const percent = Number(percentText);
+    if (!(dollars > 0) && !(percent > 0)) {
+      setError('Set a sale price or a percent off.');
+      return;
+    }
+    if (!startsAt) {
+      setError('Pick when the sale starts.');
+      return;
+    }
+    try {
+      await window.storeApi.salePrices.create({
+        productId,
+        priceCents: dollars > 0 ? Math.round(dollars * 100) : null,
+        percentOffBps: dollars > 0 ? null : Math.round(percent * 100),
+        startsAt: new Date(startsAt).toISOString(),
+        endsAt: endsAt ? new Date(endsAt).toISOString() : null,
+        label: label.trim() || null,
+      });
+      setPriceText('');
+      setPercentText('');
+      setStartsAt('');
+      setEndsAt('');
+      setLabel('');
+      setError('');
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Save failed');
+    }
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 12 }}>
+      <h4>Sale prices</h4>
+      <p style={{ fontSize: 12, color: '#5f6d65' }}>
+        Scheduled prices that apply automatically while active — the lowest
+        active one wins.
+      </p>
+      {sales.map((sale) => (
+        <div
+          key={sale.id}
+          style={{
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            padding: '4px 0',
+            borderBottom: '1px solid #eee',
+            fontSize: 13,
+          }}
+        >
+          <b>
+            {sale.priceCents !== null
+              ? `$${(sale.priceCents / 100).toFixed(2)}`
+              : `${(sale.percentOffBps! / 100).toFixed(0)}% off`}
+          </b>
+          <span>
+            {new Date(sale.startsAt).toLocaleString([], {
+              month: 'short',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+            })}
+            {' → '}
+            {sale.endsAt
+              ? new Date(sale.endsAt).toLocaleString([], {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                })
+              : 'open-ended'}
+          </span>
+          {sale.label && <span>({sale.label})</span>}
+          <button
+            style={{ marginLeft: 'auto' }}
+            onClick={() =>
+              void window.storeApi.salePrices
+                .remove(sale.id)
+                .then(refresh)
+                .catch(() => {})
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <form
+        onSubmit={(e) => void addSale(e)}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
+          gap: 6,
+          marginTop: 8,
+        }}
+      >
+        <input
+          type="number"
+          step="0.01"
+          min="0"
+          placeholder="Sale price $"
+          value={priceText}
+          onChange={(e) => setPriceText(e.target.value)}
+        />
+        <input
+          type="number"
+          step="1"
+          min="0"
+          max="99"
+          placeholder="or % off"
+          value={percentText}
+          onChange={(e) => setPercentText(e.target.value)}
+        />
+        <input
+          type="datetime-local"
+          value={startsAt}
+          onChange={(e) => setStartsAt(e.target.value)}
+        />
+        <input
+          type="datetime-local"
+          value={endsAt}
+          onChange={(e) => setEndsAt(e.target.value)}
+        />
+        <input
+          type="text"
+          maxLength={40}
+          placeholder="Label (e.g. Shabbos)"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <button type="submit">Add</button>
+      </form>
+    </section>
+  );
+}
+
+function CounterSection({
+  product,
+  setError,
+}: {
+  product: Product;
+  setError(value: string): void;
+}) {
+  const [isKey, setIsKey] = useState<boolean | null>(null);
+  const [plu, setPlu] = useState(product.plu);
+
+  useEffect(() => {
+    window.storeApi.quickKeys
+      .list()
+      .then((keys) =>
+        setIsKey(keys.some((key) => key.productId === product.id)),
+      )
+      .catch(() => {});
+  }, [product.id]);
+
+  async function toggleKey() {
+    try {
+      if (isKey) await window.storeApi.quickKeys.unpin(product.id);
+      else await window.storeApi.quickKeys.pin(product.id);
+      setIsKey(!isKey);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed');
+    }
+  }
+
+  async function printWeighLabel() {
+    try {
+      const pluValue =
+        plu ?? (await window.storeApi.products.ensurePlu(product.id));
+      setPlu(pluValue);
+      const settings = await window.storeApi.settings.getDevice();
+      const unitPrice = product.salePriceCents ?? product.sellingPriceCents;
+      const barcode =
+        settings.weighBarcodeMode === 'weight'
+          ? encodeWeighBarcode(pluValue, { milliQty: 1000 })
+          : encodeWeighBarcode(pluValue, { priceCents: unitPrice });
+      await window.storeApi.labels.print({
+        items: [
+          {
+            productId: product.id,
+            name: `${product.name} (sample 1 ${product.unit ?? 'lb'})`,
+            sellingPriceCents: unitPrice,
+            barcode,
+            quantity: 1,
+          },
+        ],
+        template: 'thermal_40x30',
+      });
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Print failed');
+    }
+  }
+
+  return (
+    <section className="panel" style={{ marginTop: 12 }}>
+      <h4>Counter</h4>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={() => void toggleKey()} disabled={isKey === null}>
+          {isKey ? 'Remove from quick keys' : 'Pin to quick keys'}
+        </button>
+        {product.soldBy === 'weight' && (
+          <>
+            <button onClick={() => void printWeighLabel()}>
+              {plu ? `Print weigh label (PLU ${plu})` : 'Assign PLU & print'}
+            </button>
+          </>
+        )}
+      </div>
+      {product.soldBy === 'weight' && plu && (
+        <p style={{ fontSize: 12, color: '#5f6d65', margin: '6px 0 0' }}>
+          PLU {plu} — scale and printed weigh labels both resolve to this
+          product.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -1455,6 +1723,231 @@ function PriceTagSection({
   );
 }
 
+function StockCountModal({
+  products,
+  onClose,
+  onApplied,
+  setError,
+}: {
+  products: Product[];
+  onClose(): void;
+  onApplied(): Promise<void>;
+  setError(value: string): void;
+}) {
+  const [stage, setStage] = useState<'count' | 'review' | 'done'>('count');
+  const [countId, setCountId] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [quantities, setQuantities] = useState<Record<string, string>>({});
+  const [lines, setLines] = useState<
+    import('@shul-store/shared').StockCountLine[]
+  >([]);
+  const [starting, setStarting] = useState(false);
+
+  async function begin() {
+    setStarting(true);
+    try {
+      const count = await window.storeApi.stockCounts.start();
+      setCountId(count.id);
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+    setStarting(false);
+  }
+
+  useEffect(() => {
+    void begin();
+  }, []);
+
+  const matching = products.filter(
+    (product) =>
+      !search ||
+      product.name.toLowerCase().includes(search.toLowerCase()) ||
+      product.barcodes.some((barcode) => barcode.value.includes(search)),
+  );
+
+  async function record(product: Product, raw: string) {
+    if (!countId || raw === '') return;
+    const qty = Math.round(
+      Number(raw) * (product.soldBy === 'weight' ? 1000 : 1),
+    );
+    if (!Number.isFinite(qty) || qty < 0) return;
+    try {
+      await window.storeApi.stockCounts.recordLine(countId, product.id, qty);
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+  }
+
+  async function finish() {
+    if (!countId) return;
+    try {
+      const { lines: finished } =
+        await window.storeApi.stockCounts.finish(countId);
+      setLines(finished);
+      setStage('review');
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+  }
+
+  async function apply() {
+    if (!countId) return;
+    try {
+      await window.storeApi.stockCounts.apply(countId);
+      setStage('done');
+      await onApplied();
+    } catch (e) {
+      setError(messageFrom(e));
+    }
+  }
+
+  async function cancel() {
+    if (countId && stage === 'count')
+      await window.storeApi.stockCounts.cancel(countId).catch(() => {});
+    onClose();
+  }
+
+  const variances = lines.filter(
+    (line) => (line.expectedUnits ?? 0) !== line.countedUnits,
+  );
+
+  return (
+    <Modal title="Physical stock count" onClose={() => void cancel()}>
+      {stage === 'count' && (
+        <>
+          <p style={{ fontSize: 13, color: '#5f6d65' }}>
+            Enter the shelf count per product. Each entry saves as you type —
+            when everything is counted, finish to review variances.
+          </p>
+          <label className="search">
+            ⌕
+            <input
+              placeholder="Search by name or barcode…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </label>
+          <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+            {matching.map((product) => (
+              <div
+                key={product.id}
+                style={{
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'center',
+                  padding: '6px 0',
+                  borderBottom: '1px solid #eee',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <b>{product.name}</b>
+                  <br />
+                  <small>
+                    Book:{' '}
+                    {formatStock(
+                      product.stockQuantity,
+                      product.soldBy,
+                      product.unit,
+                    )}
+                  </small>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  step={product.soldBy === 'weight' ? '0.001' : '1'}
+                  style={{ width: 90 }}
+                  placeholder={
+                    product.soldBy === 'weight' ? (product.unit ?? 'lb') : 'qty'
+                  }
+                  value={quantities[product.id] ?? ''}
+                  onChange={(e) =>
+                    setQuantities((q) => ({
+                      ...q,
+                      [product.id]: e.target.value,
+                    }))
+                  }
+                  onBlur={(e) => void record(product, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter')
+                      void record(product, e.currentTarget.value);
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button
+              className="primary"
+              disabled={!countId || starting}
+              onClick={() => void finish()}
+            >
+              Finish count — review variances
+            </button>
+            <button onClick={() => void cancel()}>Cancel count</button>
+          </div>
+        </>
+      )}
+      {stage === 'review' && (
+        <>
+          <h4>
+            {variances.length === 0
+              ? 'No variances — everything counted matches the books.'
+              : `${variances.length} variance${variances.length === 1 ? '' : 's'} — corrections apply on confirm.`}
+          </h4>
+          <div style={{ maxHeight: 320, overflowY: 'auto' }}>
+            {variances.map((line) => {
+              const product = products.find((p) => p.id === line.productId);
+              return (
+                <div
+                  key={line.productId}
+                  style={{
+                    display: 'flex',
+                    gap: 8,
+                    padding: '6px 0',
+                    borderBottom: '1px solid #eee',
+                  }}
+                >
+                  <b style={{ flex: 1 }}>{line.productName}</b>
+                  <span>
+                    expected{' '}
+                    {formatStock(
+                      line.expectedUnits ?? 0,
+                      product?.soldBy ?? 'each',
+                      product?.unit ?? null,
+                    )}{' '}
+                    → counted{' '}
+                    {formatStock(
+                      line.countedUnits,
+                      product?.soldBy ?? 'each',
+                      product?.unit ?? null,
+                    )}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="primary" onClick={() => void apply()}>
+              Apply corrections
+            </button>
+            <button onClick={() => void cancel()}>
+              Close without applying
+            </button>
+          </div>
+        </>
+      )}
+      {stage === 'done' && (
+        <>
+          <p>Corrections applied — the movement log has them.</p>
+          <button className="primary" onClick={onClose}>
+            Close
+          </button>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 const reasonLabels: Record<string, string> = {
   stock_received: 'Stock received',
   damaged: 'Damaged',
@@ -1480,6 +1973,7 @@ function InventoryModal({
   const [quantity, setQuantity] = useState('');
   const [counted, setCounted] = useState('');
   const [notes, setNotes] = useState('');
+  const [expiresOn, setExpiresOn] = useState('');
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<
     import('@shul-store/shared').InventoryMovement[]
@@ -1513,6 +2007,7 @@ function InventoryModal({
         quantityChange,
         reason: reason as any,
         notes,
+        ...(expiresOn ? { expiresOn } : {}),
       });
       await onSaved();
     } catch (e) {
@@ -1587,6 +2082,16 @@ function InventoryModal({
               required
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
+            />
+          </label>
+        )}
+        {(reason === 'stock_received' || reason === 'customer_return') && (
+          <label>
+            Expiry date <em>Optional — batches report as soon-expiring</em>
+            <input
+              type="date"
+              value={expiresOn}
+              onChange={(e) => setExpiresOn(e.target.value)}
             />
           </label>
         )}

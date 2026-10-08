@@ -135,6 +135,7 @@ describe('migration upgrades and regressions', () => {
           scalePort: null,
           scaleUnit: 'lb',
           eslMode: 'none',
+          weighBarcodeMode: 'price',
           eslBaseUrl: null,
         });
         expect(upgraded.getCardProcessorConfigJson()).toBe(

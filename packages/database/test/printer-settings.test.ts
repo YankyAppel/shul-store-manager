@@ -107,6 +107,7 @@ describe('printer settings', () => {
       scalePort: null,
       scaleUnit: 'lb',
       eslMode: 'none',
+      weighBarcodeMode: 'price',
       eslBaseUrl: null,
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');

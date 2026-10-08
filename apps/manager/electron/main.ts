@@ -65,6 +65,10 @@ import {
   labelPrintRequestSchema,
   labelsHtml,
   priceTagAssignInputSchema,
+  suspendSaleInputSchema,
+  salePriceInputSchema,
+  cashMovementInputSchema,
+  decodeWeighBarcode,
   productInputSchema,
   receiptHtml,
   refundReceiptHtml,
@@ -254,6 +258,27 @@ export const channelRequirements: Record<string, IpcRequirement> = {
   'labels:print': 'products.edit',
   'checkout:lookupBarcode': 'public',
   'checkout:complete': 'checkout',
+  'quickKeys:list': 'public',
+  'quickKeys:pin': 'checkout',
+  'quickKeys:unpin': 'checkout',
+  'suspendedSales:park': 'checkout',
+  'suspendedSales:list': 'checkout',
+  'suspendedSales:resume': 'checkout',
+  'suspendedSales:discard': 'checkout',
+  'salePrices:list': 'public',
+  'salePrices:create': 'products.edit',
+  'salePrices:remove': 'products.edit',
+  'stockCounts:start': 'inventory.adjust',
+  'stockCounts:list': 'inventory.adjust',
+  'stockCounts:get': 'inventory.adjust',
+  'stockCounts:recordLine': 'inventory.adjust',
+  'stockCounts:finish': 'inventory.adjust',
+  'stockCounts:apply': 'inventory.adjust',
+  'stockCounts:cancel': 'inventory.adjust',
+  'cashDrawer:record': 'reports.close',
+  'cashDrawer:list': 'reports.view',
+  'reports:expiringStock': 'reports.view',
+  'products:ensurePlu': 'products.edit',
   'sales:list': 'sales.history',
   'sales:get': 'sales.history',
   'sales:receipt': 'sales.history',
@@ -1594,9 +1619,80 @@ function registerIpc(): void {
 
   // Checkout
   ipcMain.handle('checkout:lookupBarcode', (_event, value) =>
-    database.lookupProductByBarcode(
+    database.lookupCheckoutBarcode(
       z.string().trim().min(1).max(100).parse(value),
     ),
+  );
+  ipcMain.handle('quickKeys:list', () => database.listQuickKeys());
+  ipcMain.handle('quickKeys:pin', (_event, productId) =>
+    database.pinQuickKey(z.string().parse(productId)),
+  );
+  ipcMain.handle('quickKeys:unpin', (_event, productId) =>
+    database.unpinQuickKey(z.string().parse(productId)),
+  );
+  ipcMain.handle('suspendedSales:park', (_event, input) =>
+    database.parkSale(suspendSaleInputSchema.parse(input)),
+  );
+  ipcMain.handle('suspendedSales:list', () => database.listSuspendedSales());
+  ipcMain.handle('suspendedSales:resume', (_event, id) =>
+    database.resumeSuspendedSale(z.string().parse(id)),
+  );
+  ipcMain.handle('suspendedSales:discard', (_event, id) =>
+    database.discardSuspendedSale(z.string().parse(id)),
+  );
+  ipcMain.handle('salePrices:list', (_event, productId) =>
+    database.listSalePrices(
+      productId === undefined ? undefined : z.string().parse(productId),
+    ),
+  );
+  ipcMain.handle('salePrices:create', (_event, input) =>
+    database.createSalePrice(salePriceInputSchema.parse(input)),
+  );
+  ipcMain.handle('salePrices:remove', (_event, id) =>
+    database.deleteSalePrice(z.string().parse(id)),
+  );
+  ipcMain.handle('stockCounts:start', (_event, notes) =>
+    database.startStockCount(
+      notes === undefined || notes === null
+        ? undefined
+        : z.string().parse(notes),
+    ),
+  );
+  ipcMain.handle('stockCounts:list', () => database.listStockCounts());
+  ipcMain.handle('stockCounts:get', (_event, id) =>
+    database.getStockCount(z.string().parse(id)),
+  );
+  ipcMain.handle(
+    'stockCounts:recordLine',
+    (_event, countId, productId, countedUnits) =>
+      database.recordStockCountLine(
+        z.string().parse(countId),
+        z.string().parse(productId),
+        z.number().int().parse(countedUnits),
+      ),
+  );
+  ipcMain.handle('stockCounts:finish', (_event, id) =>
+    database.finishStockCount(z.string().parse(id)),
+  );
+  ipcMain.handle('stockCounts:apply', (_event, id) =>
+    database.applyStockCount(z.string().parse(id)),
+  );
+  ipcMain.handle('stockCounts:cancel', (_event, id) =>
+    database.cancelStockCount(z.string().parse(id)),
+  );
+  ipcMain.handle('cashDrawer:record', (_event, input) =>
+    database.recordCashMovement(cashMovementInputSchema.parse(input)),
+  );
+  ipcMain.handle('cashDrawer:list', (_event, limit) =>
+    database.listCashMovements(
+      limit === undefined ? undefined : z.number().int().parse(limit),
+    ),
+  );
+  ipcMain.handle('reports:expiringStock', (_event, withinDays) =>
+    database.expiringStock(z.number().int().min(1).max(365).parse(withinDays)),
+  );
+  ipcMain.handle('products:ensurePlu', (_event, productId) =>
+    database.ensureProductPlu(z.string().parse(productId)),
   );
   const checkoutBoundarySchema = completeSaleInputSchema.extend({
     payment: z.discriminatedUnion('method', [
@@ -2021,19 +2117,22 @@ function buildLabelsHtml(request: LabelPrintRequest): string {
     if (!product) {
       throw new Error('Product not found.');
     }
+    const isWeighBarcode =
+      product.plu !== null &&
+      decodeWeighBarcode(item.barcode, 'price')?.plu === product.plu;
     const barcode = product.barcodes.find(
       (entry) => entry.value.toLowerCase() === item.barcode.toLowerCase(),
     );
-    if (!barcode) {
+    if (!barcode && !isWeighBarcode) {
       throw new Error(
         `Barcode ${item.barcode} does not belong to ${product.name}.`,
       );
     }
     return {
-      name: product.name,
-      secondaryName: product.secondaryName,
-      sellingPriceCents: product.sellingPriceCents,
-      barcode: barcode.value,
+      name: item.name ?? product.name,
+      secondaryName: item.secondaryName ?? product.secondaryName,
+      sellingPriceCents: item.sellingPriceCents ?? product.sellingPriceCents,
+      barcode: barcode?.value ?? item.barcode,
       quantity: item.quantity,
     };
   });

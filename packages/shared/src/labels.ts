@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { isCode128Encodable, renderCode128Svg } from './barcode.js';
+import { isEan13, renderEan13Svg } from './weigh-barcode.js';
 import { formatMoneyCents } from './checkout.js';
 import { escapeHtml } from './html-templates.js';
 
@@ -43,6 +44,11 @@ export const labelPrintItemSchema = z.object({
     message: 'Barcode contains characters that cannot be encoded as Code 128.',
   }),
   quantity: z.number().int().min(1).max(500),
+  /** Optional overrides — weigh labels carry a generated EAN-13 that is not a
+   * stored product barcode, plus the weighed quantity/price to display. */
+  name: z.string().trim().max(200).optional(),
+  secondaryName: z.string().trim().max(200).optional(),
+  sellingPriceCents: z.number().int().min(0).optional(),
 });
 export type LabelPrintItem = z.infer<typeof labelPrintItemSchema>;
 
@@ -133,12 +139,15 @@ function labelInnerHtml(instance: LabelInstance): string {
   const secondary = instance.secondaryName
     ? `<div class="secondary">${escapeHtml(instance.secondaryName)}</div>`
     : '';
+  const bars = isEan13(instance.barcode)
+    ? renderEan13Svg(instance.barcode)
+    : renderCode128Svg(instance.barcode);
   return `<div class="label-inner">
     <div class="store">${escapeHtml(instance.storeName)}</div>
     <div class="name">${escapeHtml(instance.name)}</div>
     ${secondary}
     <div class="price">${escapeHtml(priceText)}</div>
-    <div class="bars">${renderCode128Svg(instance.barcode)}</div>
+    <div class="bars">${bars}</div>
     <div class="digits">${escapeHtml(instance.barcode)}</div>
   </div>`;
 }

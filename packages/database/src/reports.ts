@@ -193,6 +193,16 @@ export function dailyReport(
       )
       .get(input.from, input.to),
   );
+  const drawer = row<{ pay_in: number; pay_out: number }>(
+    connection
+      .prepare(
+        `SELECT COALESCE(SUM(CASE WHEN kind = 'pay_in' THEN amount_cents ELSE 0 END), 0) AS pay_in,
+                COALESCE(SUM(CASE WHEN kind IN ('pay_out','drop') THEN amount_cents ELSE 0 END), 0) AS pay_out
+         FROM cash_movements
+         WHERE created_at >= ? AND created_at < ?;`,
+      )
+      .get(input.from, input.to),
+  );
   const accountPayments = allRows<AccountPaymentRow>(
     connection,
     `SELECT method,
@@ -408,6 +418,8 @@ export function dailyReport(
       input.openingFloatCents +
       cashSalesCents +
       cashAccountPaymentsCents -
-      cashRefundsCents,
+      cashRefundsCents +
+      integer(drawer.pay_in, 'Drawer pay-ins') -
+      integer(drawer.pay_out, 'Drawer pay-outs'),
   };
 }

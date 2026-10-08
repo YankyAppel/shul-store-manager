@@ -1473,6 +1473,78 @@ export const migrations: Migration[] = [
       CREATE INDEX price_tag_links_status_idx ON price_tag_links(push_status);
     `,
   },
+  {
+    version: 34,
+    name: 'grocery_counter_features',
+    sql: `
+      -- Weigh barcodes: products carry a 1–5 digit PLU embedded in EAN-13
+      -- "02+PLU+value" labels; the setting chooses what the value means.
+      ALTER TABLE products ADD COLUMN plu INTEGER;
+      CREATE UNIQUE INDEX products_plu_idx ON products(plu) WHERE plu IS NOT NULL;
+      ALTER TABLE device_settings ADD COLUMN weigh_barcode_mode TEXT NOT NULL DEFAULT 'price' CHECK (weigh_barcode_mode IN ('price','weight'));
+
+      -- Batch expiry on received stock (FEFO report allocates depletions
+      -- oldest-expiry-first across the append-only movement log).
+      ALTER TABLE inventory_movements ADD COLUMN expires_on TEXT;
+      CREATE INDEX inventory_movements_expiry_idx ON inventory_movements(expires_on) WHERE expires_on IS NOT NULL;
+
+      -- Scheduled sale prices; the lowest active one wins at ring-up.
+      CREATE TABLE sale_prices (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        price_cents INTEGER CHECK (price_cents IS NULL OR price_cents > 0),
+        percent_off_bps INTEGER CHECK (percent_off_bps IS NULL OR (percent_off_bps > 0 AND percent_off_bps < 10000)),
+        starts_at TEXT NOT NULL,
+        ends_at TEXT,
+        label TEXT,
+        created_at TEXT NOT NULL,
+        CHECK ((price_cents IS NULL) != (percent_off_bps IS NULL))
+      );
+      CREATE INDEX sale_prices_product_idx ON sale_prices(product_id);
+
+      -- Checkout quick keys (register-local favorites grid).
+      CREATE TABLE quick_keys (
+        product_id TEXT PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL
+      );
+
+      -- Parked sales (register-local; a cart JSON the cashier resumes later).
+      CREATE TABLE suspended_sales (
+        id TEXT PRIMARY KEY,
+        label TEXT,
+        customer_id TEXT REFERENCES customers(id),
+        cart_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      -- Physical inventory counts; applying writes stock_count_correction
+      -- movements (which do sync).
+      CREATE TABLE stock_counts (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','applied','cancelled')),
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        notes TEXT
+      );
+      CREATE TABLE stock_count_lines (
+        count_id TEXT NOT NULL REFERENCES stock_counts(id) ON DELETE CASCADE,
+        product_id TEXT NOT NULL REFERENCES products(id),
+        expected_units INTEGER,
+        counted_units INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (count_id, product_id)
+      );
+
+      -- Cash drawer movements (pay-in / pay-out / drop) folded into the
+      -- daily close's expected-cash math.
+      CREATE TABLE cash_movements (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('pay_in','pay_out','drop')),
+        amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 export function runMigrations(db: SqliteDatabase): void {
   db.pragma('foreign_keys = ON');

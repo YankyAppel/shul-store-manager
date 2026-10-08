@@ -51,6 +51,22 @@ import {
   type PriceTagAssignInput,
   priceTagAssignInputSchema,
   type PriceTagLink,
+  type BarcodeLookup,
+  type CashMovement,
+  type CashMovementInput,
+  cashMovementInputSchema,
+  type ExpiringBatch,
+  type QuickKey,
+  type SalePrice,
+  type SalePriceInput,
+  salePriceInputSchema,
+  resolveSalePriceCents,
+  type StockCount,
+  type StockCountLine,
+  type SuspendedSale,
+  type SuspendSaleInput,
+  suspendSaleInputSchema,
+  decodeWeighBarcode,
   type ProcessorConfigStatus,
   type RecordAccountPaymentInput,
   type RecordRefundInput,
@@ -678,7 +694,8 @@ export class StoreDatabase {
       .prepare(
         `SELECT update_feed_url, automatic_updates_enabled,
           idle_lock_minutes, staff_mode_enabled, explain_dismissals_json,
-          scale_mode, scale_port, scale_unit
+          scale_mode, scale_port, scale_unit,
+          esl_mode, esl_base_url, weigh_barcode_mode
          FROM device_settings WHERE singleton_id = 1`,
       )
       .get() as Row;
@@ -728,6 +745,8 @@ export class StoreDatabase {
         row.esl_base_url === undefined || row.esl_base_url === null
           ? null
           : String(row.esl_base_url),
+      weighBarcodeMode:
+        row.weigh_barcode_mode === 'weight' ? 'weight' : 'price',
     };
   }
 
@@ -739,7 +758,7 @@ export class StoreDatabase {
          SET update_feed_url = ?, automatic_updates_enabled = ?,
              idle_lock_minutes = ?, explain_dismissals_json = ?,
              scale_mode = ?, scale_port = ?, scale_unit = ?,
-             esl_mode = ?, esl_base_url = ?, updated_at = ?
+             esl_mode = ?, esl_base_url = ?, weigh_barcode_mode = ?, updated_at = ?
          WHERE singleton_id = 1`,
       )
       .run(
@@ -752,6 +771,7 @@ export class StoreDatabase {
         value.scaleUnit,
         value.eslMode,
         value.eslBaseUrl,
+        value.weighBarcodeMode,
         now(),
       );
     return this.getDeviceSettings();
@@ -1271,7 +1291,10 @@ export class StoreDatabase {
       `,
       )
       .all() as Row[];
-    return rows.map((row) => this.mapProduct(row));
+    const sales = this.activeSaleMap(now());
+    return rows.map((row) =>
+      this.mapProduct(row, sales.get(String(row.id)) ?? null),
+    );
   }
 
   createProduct(input: ProductInput): Product {
@@ -1610,8 +1633,8 @@ export class StoreDatabase {
     this.connection
       .prepare(
         `INSERT INTO inventory_movements
-            (id, operation_id, product_id, quantity_change, reason, occurred_at, device_id, related_sale_id, notes, sequence)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements))`,
+            (id, operation_id, product_id, quantity_change, reason, occurred_at, device_id, related_sale_id, notes, expires_on, sequence)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM inventory_movements))`,
       )
       .run(
         id,
@@ -1623,6 +1646,7 @@ export class StoreDatabase {
         value.deviceId ?? null,
         value.relatedSaleId ?? null,
         value.notes,
+        value.expiresOn ?? null,
       );
     this.enqueueEntity('inventory_movement', id);
     this.addAudit('inventory.movement_added', 'product', value.productId, {
@@ -2493,11 +2517,16 @@ export class StoreDatabase {
         // Merge cart lines with normalized barcode provenance
         const merged = new Map<
           string,
-          { product: Product; quantity: number; barcodeUsed: string | null }
+          {
+            product: Product;
+            quantity: number;
+            barcodeUsed: string | null;
+            priceOverrideCents: number | null;
+          }
         >();
         for (const line of value.lines) {
           const cleanBarcode = line.barcodeUsed?.trim() || null;
-          const key = `${line.productId}::${cleanBarcode ?? ''}`;
+          const key = `${line.productId}::${cleanBarcode ?? ''}::${line.priceOverrideCents ?? ''}`;
           const current = merged.get(key);
           if (current) {
             current.quantity += line.quantity;
@@ -2506,6 +2535,7 @@ export class StoreDatabase {
               product: this.getProduct(line.productId),
               quantity: line.quantity,
               barcodeUsed: cleanBarcode,
+              priceOverrideCents: line.priceOverrideCents ?? null,
             });
           }
         }
@@ -2554,7 +2584,9 @@ export class StoreDatabase {
             !line.product.barcodes.some(
               (barcode) =>
                 barcode.value.toLowerCase() === line.barcodeUsed?.toLowerCase(),
-            )
+            ) &&
+            decodeWeighBarcode(line.barcodeUsed, 'price')?.plu !==
+              line.product.plu
           ) {
             throw new Error('Barcode does not belong to the selected product.');
           }
@@ -2564,7 +2596,13 @@ export class StoreDatabase {
           snapshot?.totals ||
           calculateCart(
             snapshots.map((line) => ({
-              product: line.product,
+              product:
+                line.priceOverrideCents !== null
+                  ? {
+                      ...line.product,
+                      salePriceCents: line.priceOverrideCents,
+                    }
+                  : line.product,
               quantity: line.quantity,
             })),
             settings,
@@ -2806,7 +2844,9 @@ export class StoreDatabase {
               line.product.secondaryName,
               line.barcodeUsed ?? null,
               line.quantity,
-              line.product.sellingPriceCents,
+              line.priceOverrideCents ??
+                line.product.salePriceCents ??
+                line.product.sellingPriceCents,
               line.product.purchaseCostCents,
               line.product.taxable ? 1 : 0,
               eligible ? 0 : calculated.taxCents,
@@ -5073,7 +5113,545 @@ export class StoreDatabase {
       );
   }
 
-  private mapProduct(row: Row): Product {
+  /* -------- Grocery counter features: weigh barcodes, sale prices, parked
+   * sales, quick keys, stock counts, expiry, cash drawer -------- */
+
+  /** Lowest active sale per product (id → resolved price/label). One query;
+   * the resolver picks the cheapest of base/price/percent rows. */
+  private activeSaleMap(
+    at: string,
+  ): Map<string, { priceCents: number; label: string | null }> {
+    const rows = this.connection
+      .prepare(
+        `SELECT sp.*, p.selling_price_cents
+         FROM sale_prices sp JOIN products p ON p.id = sp.product_id
+         WHERE sp.starts_at <= ? AND (sp.ends_at IS NULL OR sp.ends_at > ?)`,
+      )
+      .all(at, at) as Row[];
+    const byProduct = new Map<
+      string,
+      { priceCents: number; label: string | null }
+    >();
+    const grouped = new Map<string, Row[]>();
+    for (const row of rows) {
+      const key = String(row.product_id);
+      grouped.set(key, [...(grouped.get(key) ?? []), row]);
+    }
+    for (const [productId, group] of grouped) {
+      const resolved = resolveSalePriceCents(
+        readSafeCents(group[0]!.selling_price_cents, 'sellingPriceCents'),
+        group.map((row) => this.mapSalePrice(row)),
+        at,
+      );
+      if (resolved) byProduct.set(productId, resolved);
+    }
+    return byProduct;
+  }
+
+  private activeSaleEntryFor(
+    productId: string,
+    at: string,
+  ): { priceCents: number; label: string | null } | null {
+    const rows = this.connection
+      .prepare(
+        `SELECT * FROM sale_prices
+         WHERE product_id = ? AND starts_at <= ? AND (ends_at IS NULL OR ends_at > ?)`,
+      )
+      .all(productId, at, at) as Row[];
+    if (rows.length === 0) return null;
+    const product = this.connection
+      .prepare('SELECT selling_price_cents FROM products WHERE id = ?')
+      .get(productId) as Row | undefined;
+    if (!product) return null;
+    return resolveSalePriceCents(
+      readSafeCents(product.selling_price_cents, 'sellingPriceCents'),
+      rows.map((row) => this.mapSalePrice(row)),
+      at,
+    );
+  }
+
+  private mapSalePrice(row: Row): SalePrice {
+    return {
+      id: String(row.id),
+      productId: String(row.product_id),
+      priceCents: row.price_cents === null ? null : Number(row.price_cents),
+      percentOffBps:
+        row.percent_off_bps === null ? null : Number(row.percent_off_bps),
+      startsAt: String(row.starts_at),
+      endsAt: row.ends_at === null ? null : String(row.ends_at),
+      label: row.label === null ? null : String(row.label),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  listSalePrices(productId?: string): SalePrice[] {
+    const rows = (
+      productId
+        ? this.connection
+            .prepare(
+              'SELECT * FROM sale_prices WHERE product_id = ? ORDER BY starts_at',
+            )
+            .all(productId)
+        : this.connection
+            .prepare('SELECT * FROM sale_prices ORDER BY product_id, starts_at')
+            .all()
+    ) as Row[];
+    return rows.map((row) => this.mapSalePrice(row));
+  }
+
+  createSalePrice(input: SalePriceInput): SalePrice {
+    const value = salePriceInputSchema.parse(input);
+    this.getProduct(value.productId);
+    if (value.endsAt !== null && value.endsAt <= value.startsAt)
+      throw new Error('Sale end must be after the start time');
+    const id = randomUUID();
+    this.connection
+      .prepare(
+        `INSERT INTO sale_prices
+         (id, product_id, price_cents, percent_off_bps, starts_at, ends_at, label, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        value.productId,
+        value.priceCents,
+        value.percentOffBps,
+        value.startsAt,
+        value.endsAt,
+        value.label,
+        now(),
+      );
+    this.markPriceTagPending(value.productId);
+    this.enqueueEntity('product', value.productId);
+    this.addAudit('sale_price.created', 'product', value.productId, {
+      salePriceId: id,
+    });
+    return this.mapSalePrice(
+      this.connection
+        .prepare('SELECT * FROM sale_prices WHERE id = ?')
+        .get(id) as Row,
+    );
+  }
+
+  deleteSalePrice(id: string): void {
+    const row = this.connection
+      .prepare('SELECT product_id FROM sale_prices WHERE id = ?')
+      .get(id) as Row | undefined;
+    if (!row) return;
+    this.connection.prepare('DELETE FROM sale_prices WHERE id = ?').run(id);
+    this.markPriceTagPending(String(row.product_id));
+    this.enqueueEntity('product', String(row.product_id));
+  }
+
+  /** Ink tags re-push when a sale starts or ends: any link whose last push
+   * predates a sale boundary on its product goes back to pending. */
+  markSaleBoundaryPriceTags(): void {
+    this.connection
+      .prepare(
+        `UPDATE price_tag_links SET push_status = 'pending', updated_at = ?
+         WHERE push_status IN ('synced','error') AND EXISTS (
+           SELECT 1 FROM sale_prices sp
+           WHERE sp.product_id = price_tag_links.product_id
+             AND ((sp.starts_at > COALESCE(price_tag_links.last_pushed_at,'') AND sp.starts_at <= ?)
+               OR (sp.ends_at IS NOT NULL AND sp.ends_at > COALESCE(price_tag_links.last_pushed_at,'') AND sp.ends_at <= ?))
+         )`,
+      )
+      .run(now(), now(), now());
+  }
+
+  /* Suspended sales */
+  parkSale(input: SuspendSaleInput): SuspendedSale {
+    const value = suspendSaleInputSchema.parse(input);
+    const id = randomUUID();
+    const createdAt = now();
+    this.connection
+      .prepare(
+        'INSERT INTO suspended_sales (id, label, customer_id, cart_json, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(
+        id,
+        value.label,
+        value.customerId,
+        JSON.stringify(value.lines),
+        createdAt,
+      );
+    return this.getSuspendedSale(id)!;
+  }
+
+  private mapSuspended(row: Row): SuspendedSale {
+    let lines: SuspendedSale['lines'] = [];
+    try {
+      const parsed: unknown = JSON.parse(String(row.cart_json));
+      if (Array.isArray(parsed)) lines = parsed as SuspendedSale['lines'];
+    } catch {
+      lines = [];
+    }
+    return {
+      id: String(row.id),
+      label: row.label === null ? null : String(row.label),
+      customerId: row.customer_id === null ? null : String(row.customer_id),
+      lines,
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private getSuspendedSale(id: string): SuspendedSale | null {
+    const row = this.connection
+      .prepare('SELECT * FROM suspended_sales WHERE id = ?')
+      .get(id) as Row | undefined;
+    return row ? this.mapSuspended(row) : null;
+  }
+
+  listSuspendedSales(): SuspendedSale[] {
+    return (
+      this.connection
+        .prepare('SELECT * FROM suspended_sales ORDER BY created_at')
+        .all() as Row[]
+    ).map((row) => this.mapSuspended(row));
+  }
+
+  /** Returns the parked sale and removes it — a resume consumes the park. */
+  resumeSuspendedSale(id: string): SuspendedSale {
+    const sale = this.getSuspendedSale(id);
+    if (!sale) throw new Error('Parked sale not found');
+    this.connection.prepare('DELETE FROM suspended_sales WHERE id = ?').run(id);
+    return sale;
+  }
+
+  discardSuspendedSale(id: string): void {
+    this.connection.prepare('DELETE FROM suspended_sales WHERE id = ?').run(id);
+  }
+
+  /* Quick keys */
+  listQuickKeys(): QuickKey[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT product_id, position FROM quick_keys ORDER BY position',
+        )
+        .all() as Row[]
+    ).map((row) => ({
+      productId: String(row.product_id),
+      position: Number(row.position),
+    }));
+  }
+
+  pinQuickKey(productId: string): void {
+    this.getProduct(productId);
+    this.connection
+      .prepare(
+        `INSERT INTO quick_keys (product_id, position)
+         VALUES (?, (SELECT COALESCE(MAX(position), 0) + 1 FROM quick_keys))
+         ON CONFLICT(product_id) DO NOTHING`,
+      )
+      .run(productId);
+  }
+
+  unpinQuickKey(productId: string): void {
+    this.connection
+      .prepare('DELETE FROM quick_keys WHERE product_id = ?')
+      .run(productId);
+  }
+
+  /* PLU for weigh barcodes */
+  ensureProductPlu(productId: string): number {
+    const product = this.getProduct(productId);
+    if (product.plu !== null) return product.plu;
+    const row = this.connection
+      .prepare('SELECT MAX(plu) AS m FROM products')
+      .get() as Row;
+    const next = Number(row.m ?? 0) + 1;
+    if (next > 99_999) throw new Error('No free PLU codes left');
+    this.connection
+      .prepare('UPDATE products SET plu = ?, updated_at = ? WHERE id = ?')
+      .run(next, now(), productId);
+    this.enqueueEntity('product', productId);
+    return next;
+  }
+
+  /** Barcode → product. Exact barcode match first, then the 02-EAN weigh
+   * format decoded by the configured mode and resolved by PLU. */
+  lookupCheckoutBarcode(value: string): BarcodeLookup | null {
+    const direct = this.lookupProductByBarcode(value);
+    if (direct) return { product: direct, weigh: null };
+    const decoded = decodeWeighBarcode(
+      value,
+      this.getDeviceSettings().weighBarcodeMode,
+    );
+    if (!decoded) return null;
+    const row = this.connection
+      .prepare('SELECT id FROM products WHERE plu = ?')
+      .get(decoded.plu) as Row | undefined;
+    if (!row) return null;
+    const product = this.getProduct(String(row.id));
+    if (!product.active) return null;
+    return {
+      product,
+      weigh:
+        decoded.mode === 'price'
+          ? {
+              mode: 'price',
+              plu: decoded.plu,
+              priceCents: decoded.priceCents,
+              milliQty: null,
+            }
+          : {
+              mode: 'weight',
+              plu: decoded.plu,
+              priceCents: null,
+              milliQty: decoded.milliQty,
+            },
+    };
+  }
+
+  /* Physical stock counts */
+  startStockCount(notes?: string): StockCount {
+    const id = randomUUID();
+    this.connection
+      .prepare(
+        'INSERT INTO stock_counts (id, status, started_at, notes) VALUES (?, ?, ?, ?)',
+      )
+      .run(id, 'open', now(), notes ?? null);
+    return this.getStockCountRow(id)!;
+  }
+
+  private getStockCountRow(id: string): StockCount | null {
+    const row = this.connection
+      .prepare('SELECT * FROM stock_counts WHERE id = ?')
+      .get(id) as Row | undefined;
+    return row ? this.mapStockCount(row) : null;
+  }
+
+  private mapStockCount(row: Row): StockCount {
+    return {
+      id: String(row.id),
+      status: String(row.status) as StockCount['status'],
+      startedAt: String(row.started_at),
+      completedAt: row.completed_at === null ? null : String(row.completed_at),
+      notes: row.notes === null ? null : String(row.notes),
+    };
+  }
+
+  private mapCountLine(row: Row): StockCountLine {
+    return {
+      countId: String(row.count_id),
+      productId: String(row.product_id),
+      productName: String(row.product_name),
+      expectedUnits:
+        row.expected_units === null ? null : Number(row.expected_units),
+      countedUnits: Number(row.counted_units),
+    };
+  }
+
+  listStockCounts(): StockCount[] {
+    return (
+      this.connection
+        .prepare('SELECT * FROM stock_counts ORDER BY started_at DESC')
+        .all() as Row[]
+    ).map((row) => this.mapStockCount(row));
+  }
+
+  getStockCount(id: string): { count: StockCount; lines: StockCountLine[] } {
+    const count = this.getStockCountRow(id);
+    if (!count) throw new Error('Stock count not found');
+    const lines = (
+      this.connection
+        .prepare(
+          `SELECT l.*, p.name AS product_name FROM stock_count_lines l
+           JOIN products p ON p.id = l.product_id
+           WHERE l.count_id = ? ORDER BY p.name COLLATE NOCASE`,
+        )
+        .all(id) as Row[]
+    ).map((row) => this.mapCountLine(row));
+    return { count, lines };
+  }
+
+  recordStockCountLine(
+    countId: string,
+    productId: string,
+    countedUnits: number,
+  ): void {
+    const count = this.getStockCountRow(countId);
+    if (!count) throw new Error('Stock count not found');
+    if (count.status !== 'open') throw new Error('Count is not open');
+    if (!Number.isInteger(countedUnits) || countedUnits < 0)
+      throw new Error('Counted units must be a whole number of milli-units');
+    this.getProduct(productId);
+    this.connection
+      .prepare(
+        `INSERT INTO stock_count_lines (count_id, product_id, counted_units)
+         VALUES (?, ?, ?)
+         ON CONFLICT(count_id, product_id) DO UPDATE SET counted_units = excluded.counted_units`,
+      )
+      .run(countId, productId, countedUnits);
+  }
+
+  /** Snapshots expected stock per counted product; count becomes reviewable. */
+  finishStockCount(id: string): { count: StockCount; lines: StockCountLine[] } {
+    const count = this.getStockCountRow(id);
+    if (!count) throw new Error('Stock count not found');
+    if (count.status !== 'open') throw new Error('Count is not open');
+    this.connection.transaction(() => {
+      const lines = this.connection
+        .prepare('SELECT product_id FROM stock_count_lines WHERE count_id = ?')
+        .all(id) as Row[];
+      for (const line of lines) {
+        const product = this.getProduct(String(line.product_id));
+        this.connection
+          .prepare(
+            'UPDATE stock_count_lines SET expected_units = ? WHERE count_id = ? AND product_id = ?',
+          )
+          .run(product.stockQuantity, id, String(line.product_id));
+      }
+      this.connection
+        .prepare("UPDATE stock_counts SET status = 'applied' WHERE id = ?")
+        .run(id);
+    })();
+    return this.getStockCount(id);
+  }
+
+  /** Writes stock_count_correction movements for every variance (these do
+   * sync via the existing inventory_movement entity). */
+  applyStockCount(id: string): StockCount {
+    const { count, lines } = this.getStockCount(id);
+    if (count.status !== 'applied')
+      throw new Error('Finish the count before applying corrections');
+    this.connection.transaction(() => {
+      for (const line of lines) {
+        const expected = line.expectedUnits ?? 0;
+        const variance = line.countedUnits - expected;
+        if (variance === 0) continue;
+        this.insertInventoryMovement({
+          productId: line.productId,
+          quantityChange: variance,
+          reason: 'stock_count_correction',
+          notes: `Stock count ${count.startedAt.slice(0, 10)}: expected ${expected}, counted ${line.countedUnits}`,
+        });
+      }
+      this.connection
+        .prepare('UPDATE stock_counts SET completed_at = ? WHERE id = ?')
+        .run(now(), id);
+    })();
+    return this.getStockCountRow(id)!;
+  }
+
+  cancelStockCount(id: string): void {
+    this.connection
+      .prepare(
+        "UPDATE stock_counts SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'open'",
+      )
+      .run(now(), id);
+  }
+
+  /* Cash drawer movements */
+  recordCashMovement(input: CashMovementInput): CashMovement {
+    const value = cashMovementInputSchema.parse(input);
+    const id = randomUUID();
+    const createdAt = now();
+    this.connection
+      .prepare(
+        'INSERT INTO cash_movements (id, kind, amount_cents, reason, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(id, value.kind, value.amountCents, value.reason, createdAt);
+    this.addAudit('cash.movement', 'settings', 'settings', {
+      kind: value.kind,
+      amountCents: value.amountCents,
+    });
+    return this.mapCashMovement(
+      this.connection
+        .prepare('SELECT * FROM cash_movements WHERE id = ?')
+        .get(id) as Row,
+    );
+  }
+
+  private mapCashMovement(row: Row): CashMovement {
+    return {
+      id: String(row.id),
+      kind: String(row.kind) as CashMovement['kind'],
+      amountCents: Number(row.amount_cents),
+      reason: String(row.reason),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  listCashMovements(limit = 200): CashMovement[] {
+    return (
+      this.connection
+        .prepare(
+          'SELECT * FROM cash_movements ORDER BY created_at DESC LIMIT ?',
+        )
+        .all(limit) as Row[]
+    ).map((row) => this.mapCashMovement(row));
+  }
+
+  /* Expiring stock — FEFO: allocate each depletion against the batch with the
+   * earliest expiry first (null-expiry batches last). */
+  expiringStock(withinDays: number): ExpiringBatch[] {
+    const horizon = new Date(Date.now() + withinDays * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const products = this.listProducts(true);
+    const result: ExpiringBatch[] = [];
+    for (const product of products) {
+      const movements = this.connection
+        .prepare(
+          `SELECT * FROM inventory_movements
+           WHERE product_id = ? ORDER BY occurred_at, sequence`,
+        )
+        .all(product.id) as Row[];
+      // Build receipt batches (positive movements carrying an expiry).
+      const batches: { expiresOn: string; remaining: number }[] = [];
+      const sorted = movements.slice();
+      for (const movement of movements) {
+        const qty = Number(movement.quantity_change);
+        if (qty > 0 && movement.expires_on) {
+          batches.push({
+            expiresOn: String(movement.expires_on),
+            remaining: qty,
+          });
+        }
+      }
+      if (batches.length === 0) continue;
+      // Depletions consume earliest-expiry batches first.
+      batches.sort((a, b) => a.expiresOn.localeCompare(b.expiresOn));
+      let depletions = sorted.reduce(
+        (sum, m) => sum + Math.max(0, -Number(m.quantity_change)),
+        0,
+      );
+      const totalReceived = sorted.reduce(
+        (sum, m) => sum + Math.max(0, Number(m.quantity_change)),
+        0,
+      );
+      // Depletions beyond expiry-tracked stock eat the untracked portion first.
+      const tracked = batches.reduce((sum, b) => sum + b.remaining, 0);
+      depletions = Math.max(0, depletions - (totalReceived - tracked));
+      for (const batch of batches) {
+        const used = Math.min(batch.remaining, depletions);
+        batch.remaining -= used;
+        depletions -= used;
+        if (batch.remaining > 0 && batch.expiresOn <= horizon) {
+          result.push({
+            productId: product.id,
+            productName: product.name,
+            expiresOn: batch.expiresOn,
+            remainingUnits: batch.remaining,
+            soldBy: product.soldBy,
+            unit: product.unit,
+          });
+        }
+      }
+    }
+    return result.sort((a, b) => a.expiresOn.localeCompare(b.expiresOn));
+  }
+
+  private mapProduct(
+    row: Row,
+    resolvedSale?: { priceCents: number; label: string | null } | null,
+  ): Product {
+    const sale =
+      resolvedSale === undefined
+        ? this.activeSaleEntryFor(String(row.id), now())
+        : resolvedSale;
     const barcodes = this.connection
       .prepare(
         'SELECT id, value, kind FROM product_barcodes WHERE product_id = ? ORDER BY position',
@@ -5111,6 +5689,12 @@ export class StoreDatabase {
             : null,
       snapEligible: Boolean(row.snap_eligible ?? 0),
       wicEligible: Boolean(row.wic_eligible ?? 0),
+      plu:
+        typeof row.plu === 'number' && row.plu > 0
+          ? Math.trunc(Number(row.plu))
+          : null,
+      salePriceCents: sale?.priceCents ?? null,
+      saleLabel: sale?.label ?? null,
       barcodes: barcodes.map((barcode): Barcode => ({
         id: String(barcode.id),
         value: String(barcode.value),
@@ -5385,6 +5969,9 @@ export class StoreDatabase {
           : null,
       snapEligible: Boolean(row.snap_eligible ?? 0),
       wicEligible: Boolean(row.wic_eligible ?? 0),
+      plu: row.plu === null ? null : Number(row.plu),
+      salePriceCents: null,
+      saleLabel: null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
       barcodes: barcodes.map((barcode) => ({
@@ -5733,6 +6320,7 @@ function mapMovement(row: Row): InventoryMovement {
     quantityChange: Number(row.quantity_change),
     reason: String(row.reason) as InventoryMovement['reason'],
     notes: String(row.notes),
+    expiresOn: row.expires_on === null ? null : String(row.expires_on),
     occurredAt: String(row.occurred_at),
     deviceId: row.device_id === null ? null : String(row.device_id),
     relatedSaleId:
@@ -5748,6 +6336,7 @@ function mapMovementPayload(row: Row): InventoryMovementPayload {
     productId: String(row.product_id),
     quantityChange: Number(row.quantity_change),
     reason: String(row.reason) as InventoryMovementPayload['reason'],
+    expiresOn: row.expires_on === null ? null : String(row.expires_on),
     occurredAt: String(row.occurred_at),
     deviceId: row.device_id === null ? null : String(row.device_id),
     relatedSaleId:

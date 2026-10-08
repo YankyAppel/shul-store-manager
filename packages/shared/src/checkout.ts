@@ -205,6 +205,10 @@ export const deviceSettingsSchema = z.object({
     .regex(/^https?:\/\//, 'AP address must start with http:// or https://')
     .nullable()
     .default(null),
+  /** Whether the 5-digit value inside a weigh EAN-13 (02+PLU+value) is a
+   * total price in cents ('price') or a measured quantity ('weight'). Labels
+   * printed in-app can use either; scale-printed labels use 'weight'. */
+  weighBarcodeMode: z.enum(['price', 'weight']).default('price'),
   idleLockMinutes: z.number().int().min(0).max(1440).default(5),
   staffModeEnabled: z.boolean().default(false),
   explainDismissals: z
@@ -233,6 +237,15 @@ export const checkoutLineSchema = z.object({
   productId: z.string().uuid(),
   quantity: quantitySchema,
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
+  /** Whole-line price embedded in a scale-printed '02' EAN barcode — wins
+   * over any product price when present. */
+  priceOverrideCents: z
+    .number()
+    .int()
+    .min(0)
+    .max(99_999)
+    .nullable()
+    .default(null),
 });
 export type CheckoutLine = z.infer<typeof checkoutLineSchema>;
 
@@ -295,12 +308,13 @@ export const completeSaleInputSchema = z.object({
     }),
   ]),
 });
-export type CompleteSaleInput = z.infer<typeof completeSaleInputSchema>;
+export type CompleteSaleInput = z.input<typeof completeSaleInputSchema>;
 
 export const cartSnapshotLineSchema = z.object({
   productId: z.string().uuid(),
   quantity: quantitySchema,
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
+  priceOverrideCents: z.number().int().min(0).nullable().default(null),
   productName: z.string(),
   secondaryName: z.string().nullable(),
   unitSellingPriceCents: z.number().int().safe().nonnegative(),
@@ -334,6 +348,8 @@ export interface CartProduct {
   name: string;
   secondaryName: string | null;
   sellingPriceCents: number;
+  /** Active scheduled sale price when one applies; null keeps the base. */
+  salePriceCents?: number | null;
   taxable: boolean;
   stockQuantity: number;
   active: boolean;
@@ -395,7 +411,10 @@ export function calculateCart(
   let tax = 0n;
   let total = 0n;
   const calculated = lines.map(({ product, quantity }) => {
-    const price = safeBigInt(product.sellingPriceCents, 'Unit price');
+    const price = safeBigInt(
+      product.salePriceCents ?? product.sellingPriceCents,
+      'Unit price',
+    );
     const qtyMilli = quantityToMilli(quantity);
     if (qtyMilli < 1n) throw new Error('Quantity must be positive');
     const displayedBig = roundRatioBig(price * qtyMilli, 1000n);
@@ -420,7 +439,7 @@ export function calculateCart(
     return {
       productId: product.id,
       quantity,
-      unitPriceCents: product.sellingPriceCents,
+      unitPriceCents: product.salePriceCents ?? product.sellingPriceCents,
       subtotalCents,
       taxCents,
       totalCents,
