@@ -9,6 +9,8 @@ import {
 } from '@shul-store/brand';
 import {
   type KioskCartLine,
+  type KioskCatalog,
+  type KioskChargeResult,
   type KioskPriceQuote,
   type KioskPublicState,
   type KioskReaderConfig,
@@ -900,6 +902,15 @@ function App() {
   const [categoryId, setCategoryId] = useState<string>();
   const [adminOpen, setAdminOpen] = useState(false);
   const [rePairing, setRePairing] = useState(false);
+  const [weighProduct, setWeighProduct] = useState<
+    KioskCatalog['products'][number] | null
+  >(null);
+  const [weighBarcode, setWeighBarcode] = useState<string | null>(null);
+  const [manualWeight, setManualWeight] = useState('');
+  const [scaleReading, setScaleReading] =
+    useState<import('@shul-store/shared').ScaleReading | null>(null);
+  const [scaleStatus, setScaleStatus] =
+    useState<import('@shul-store/shared').ScaleStatus | null>(null);
   const scannerBuffer = useRef('');
   const scannerTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
@@ -914,9 +925,20 @@ function App() {
     const unsubscribe = window.kioskApi.subscribe((next) => {
       if (active) setState(next);
     });
+    void window.kioskApi.scaleGetStatus().then((status) => {
+      if (active) setScaleStatus(status);
+    });
+    const unsubReading = window.kioskApi.subscribeScale((reading) => {
+      if (active) setScaleReading(reading);
+    });
+    const unsubStatus = window.kioskApi.subscribeScaleStatus((status) => {
+      if (active) setScaleStatus(status);
+    });
     return () => {
       active = false;
       unsubscribe();
+      unsubReading();
+      unsubStatus();
     };
   }, []);
 
@@ -1003,6 +1025,31 @@ function App() {
     setScreen('shopping');
   }
 
+  function openWeigh(
+    product: KioskCatalog['products'][number],
+    barcodeUsed: string | null,
+  ) {
+    setWeighProduct(product);
+    setWeighBarcode(barcodeUsed);
+    setManualWeight('');
+    setMessage('');
+  }
+
+  function confirmWeigh(quantity: number) {
+    if (!weighProduct || !(quantity > 0) || quantity > 10000) return;
+    const productId = weighProduct.id;
+    const barcode = weighBarcode;
+    setCart((current) => [
+      ...current,
+      barcode
+        ? { productId, barcode, quantity }
+        : { productId, quantity },
+    ]);
+    setWeighProduct(null);
+    setWeighBarcode(null);
+    setManualWeight('');
+  }
+
   async function addBarcode(barcode: string) {
     const result = await window.kioskApi.priceCart([{ barcode, quantity: 1 }]);
     if (!result.ok) {
@@ -1011,6 +1058,13 @@ function App() {
     }
     const productId = result.quote.lines[0]?.productId;
     if (!productId) return;
+    const product = products.find(
+      (candidate) => candidate.id === productId,
+    );
+    if (product?.soldBy === 'weight') {
+      openWeigh(product, barcode);
+      return;
+    }
     setCart((current) => {
       const existing = current.find((line) => line.productId === productId);
       if (existing)
@@ -1041,30 +1095,49 @@ function App() {
     setScreen('paying');
     setMessage('');
     const result = await window.kioskApi.charge(cart);
+    await handleChargeResult(result);
+  }
+
+  async function payWithBenefit(method: 'snap_ebt' | 'wic') {
+    if (!cart.length) return;
+    setScreen('paying');
+    setMessage('');
+    const result = await window.kioskApi.benefitCharge(cart, method);
+    await handleChargeResult(result, true);
+  }
+
+  async function handleChargeResult(
+    result: KioskChargeResult,
+    benefit = false,
+  ) {
     if (!result.ok) {
       setMessage(result.message);
       setScreen(
-        result.code === 'manager-unreachable' ||
-          result.code === 'in-flight-charge'
-          ? 'recovery'
-          : 'unreachable',
+        benefit && result.code === 'error'
+          ? 'shopping'
+          : result.code === 'manager-unreachable' ||
+              result.code === 'in-flight-charge'
+            ? 'recovery'
+            : 'unreachable',
       );
       return;
     }
     if (result.outcome.status === 'approved') {
       setCart([]);
       setScreen('approved');
-    } else if (result.outcome.status === 'declined') {
-      setScreen('declined');
-    } else {
-      setMessage(
-        result.outcome.status === 'needs-attention' ||
-          result.outcome.status === 'voided'
-          ? 'The manager must resolve this payment. Please see the shames.'
-          : '',
-      );
-      setScreen('recovery');
+      return;
     }
+    if (result.outcome.status === 'declined') {
+      setScreen('declined');
+      return;
+    }
+    setMessage(
+      result.outcome.status === 'needs-attention' ||
+        result.outcome.status === 'voided'
+        ? 'The manager must resolve this payment. Please see the shames.'
+        : (result.outcome.errorMessage ?? ''),
+    );
+    setScreen('recovery');
   }
 
   function tapStoreName() {
@@ -1299,7 +1372,11 @@ function App() {
                 type="button"
                 className="product-tile"
                 key={product.id}
-                onClick={() =>
+                onClick={() => {
+                  if (product.soldBy === 'weight') {
+                    openWeigh(product, null);
+                    return;
+                  }
                   setCart((current) => {
                     const existing = current.find(
                       (line) => line.productId === product.id,
@@ -1311,14 +1388,18 @@ function App() {
                           : line,
                       );
                     return [...current, { productId: product.id, quantity: 1 }];
-                  })
-                }
+                  });
+                }}
               >
                 <strong>{product.name}</strong>
                 {product.secondaryName && (
                   <small>{product.secondaryName}</small>
                 )}
-                <b>{money(product.priceCents)}</b>
+                <b>
+                  {product.soldBy === 'weight'
+                    ? `${money(product.priceCents)}/${product.unit ?? 'lb'}`
+                    : money(product.priceCents)}
+                </b>
               </button>
             ))}
           </div>
@@ -1329,30 +1410,54 @@ function App() {
             <p>Scan an item or touch a product to begin.</p>
           ) : (
             <ul className="cart-list">
-              {cart.map((line) => {
+              {cart.map((line, index) => {
                 const product = productFor(line);
                 const productId = line.productId ?? '';
+                const byWeight = product?.soldBy === 'weight';
                 return (
-                  <li key={productId}>
+                  <li key={`${productId}-${index}`}>
                     <div>
                       <strong>{product?.name ?? 'Item'}</strong>
-                      <span>{money(product?.priceCents ?? 0)} each</span>
+                      <span>
+                        {byWeight
+                          ? `${money(product?.priceCents ?? 0)}/${product?.unit ?? 'lb'}`
+                          : `${money(product?.priceCents ?? 0)} each`}
+                      </span>
                     </div>
-                    <div className="quantity-controls">
-                      <button
-                        type="button"
-                        onClick={() => changeQuantity(productId, -1)}
-                      >
-                        −
-                      </button>
-                      <b>{line.quantity}</b>
-                      <button
-                        type="button"
-                        onClick={() => changeQuantity(productId, 1)}
-                      >
-                        +
-                      </button>
-                    </div>
+                    {byWeight ? (
+                      <div className="quantity-controls">
+                        <b>
+                          {line.quantity.toFixed(3)} {product?.unit ?? 'lb'}
+                        </b>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCart((current) =>
+                              current.filter((_, i) => i !== index),
+                            );
+                            if (product) openWeigh(product, null);
+                          }}
+                        >
+                          Reweigh
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="quantity-controls">
+                        <button
+                          type="button"
+                          onClick={() => changeQuantity(productId, -1)}
+                        >
+                          −
+                        </button>
+                        <b>{line.quantity}</b>
+                        <button
+                          type="button"
+                          onClick={() => changeQuantity(productId, 1)}
+                        >
+                          +
+                        </button>
+                      </div>
+                    )}
                   </li>
                 );
               })}
@@ -1371,6 +1476,26 @@ function App() {
           >
             Pay with card
           </button>
+          {state.catalog?.snapAccepted && (
+            <button
+              type="button"
+              className="secondary wide-button"
+              disabled={!quote || !cart.length}
+              onClick={() => void payWithBenefit('snap_ebt')}
+            >
+              Pay with SNAP / EBT
+            </button>
+          )}
+          {state.catalog?.wicAccepted && (
+            <button
+              type="button"
+              className="secondary wide-button"
+              disabled={!quote || !cart.length}
+              onClick={() => void payWithBenefit('wic')}
+            >
+              Pay with WIC
+            </button>
+          )}
           <button
             type="button"
             className="secondary wide-button"
@@ -1380,6 +1505,76 @@ function App() {
           </button>
         </aside>
       </div>
+      {weighProduct && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-title">Weigh — {weighProduct.name}</div>
+            <p>
+              {money(weighProduct.priceCents)}/{weighProduct.unit ?? 'lb'} —
+              place the item on the scale
+            </p>
+            {scaleStatus?.connected && scaleReading ? (
+              <p className="weigh-reading">
+                {scaleReading.weight.toFixed(3)} {scaleReading.unit}
+                {!scaleReading.stable && <small> — settling…</small>}
+              </p>
+            ) : (
+              <p>
+                {scaleStatus?.error
+                  ? `Scale: ${scaleStatus.error}`
+                  : 'No scale connected — enter the weight.'}
+              </p>
+            )}
+            <label>
+              Weight ({weighProduct.unit ?? 'lb'})
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={
+                  manualWeight ||
+                  (scaleReading?.stable
+                    ? scaleReading.weight.toFixed(3)
+                    : manualWeight)
+                }
+                onChange={(e) => setManualWeight(e.target.value)}
+                autoFocus
+              />
+            </label>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+              <button
+                type="button"
+                className="primary"
+                disabled={
+                  !(
+                    Number(manualWeight) > 0 ||
+                    (scaleReading?.stable && scaleReading.weight > 0)
+                  )
+                }
+                onClick={() =>
+                  confirmWeigh(
+                    Number(manualWeight) > 0
+                      ? Number(manualWeight)
+                      : scaleReading!.weight,
+                  )
+                }
+              >
+                Add to cart
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setWeighProduct(null);
+                  setWeighBarcode(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

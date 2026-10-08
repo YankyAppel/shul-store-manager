@@ -25,6 +25,7 @@ import {
   type VendorLinkDraft,
 } from './features/vendors/ProductVendorsField';
 import { FirstOwnerSetup, LockScreen } from './features/AuthScreens';
+import { formatStock } from './utils/formatters';
 import { CloudAccountOnboarding } from './features/CloudAccountOnboarding';
 import { sumaCoinIconUrl } from '@shul-store/brand';
 
@@ -660,7 +661,11 @@ export function App() {
                             : 'stock'
                         }
                       >
-                        {product.stockQuantity}
+                        {formatStock(
+                          product.stockQuantity,
+                          product.soldBy,
+                          product.unit,
+                        )}
                       </span>
                     </td>
                     <td className="row-actions">
@@ -696,7 +701,11 @@ export function App() {
                       : 'big-stock'
                   }
                 >
-                  {product.stockQuantity}
+                  {formatStock(
+                    product.stockQuantity,
+                    product.soldBy,
+                    product.unit,
+                  )}
                   <small>in stock</small>
                 </div>
                 <button onClick={() => setInventoryProduct(product)}>
@@ -967,9 +976,23 @@ function ProductModal({
     product ? (product.sellingPriceCents / 100).toFixed(2) : '0.00',
   );
   const [threshold, setThreshold] = useState(
-    String(product?.lowStockThreshold ?? 0),
+    product?.soldBy === 'weight'
+      ? String(product.lowStockThreshold / 1000)
+      : String(product?.lowStockThreshold ?? 0),
   );
   const [taxable, setTaxable] = useState(product?.taxable ?? false);
+  const [soldBy, setSoldBy] = useState<'each' | 'weight'>(
+    product?.soldBy ?? 'each',
+  );
+  const [unit, setUnit] = useState<'lb' | 'oz' | 'kg'>(
+    product?.unit ?? 'lb',
+  );
+  const [snapEligible, setSnapEligible] = useState(
+    product?.snapEligible ?? false,
+  );
+  const [wicEligible, setWicEligible] = useState(
+    product?.wicEligible ?? false,
+  );
   const images = useImageLifecycle(product?.imageId ?? null);
   const [barcodes, setBarcodes] = useState(
     product?.barcodes.map((b) => b.value) ?? [],
@@ -1012,7 +1035,14 @@ function ProductModal({
         purchaseCostCents: Math.round(Number(cost) * 100),
         sellingPriceCents: Math.round(Number(price) * 100),
         taxable,
-        lowStockThreshold: Number(threshold),
+        lowStockThreshold:
+          soldBy === 'weight'
+            ? Math.round(Number(threshold) * 1000)
+            : Number(threshold),
+        soldBy,
+        unit: soldBy === 'weight' ? unit : null,
+        snapEligible,
+        wicEligible,
         barcodes,
         vendors: draftsToLinks(vendorLinks),
       };
@@ -1117,18 +1147,18 @@ function ProductModal({
             )}
           </label>
           <label>
-            Low-stock alert
+            Low-stock alert{soldBy === 'weight' ? ` (${unit})` : ''}
             <input
               type="number"
               min="0"
-              step="1"
+              step={soldBy === 'weight' ? '0.001' : '1'}
               required
               value={threshold}
               onChange={(e) => setThreshold(e.target.value)}
             />
           </label>
           <label>
-            Purchase cost ($)
+            Purchase cost ($){soldBy === 'weight' ? ` per ${unit}` : ''}
             <input
               type="number"
               min="0"
@@ -1139,7 +1169,7 @@ function ProductModal({
             />
           </label>
           <label>
-            Selling price ($)
+            Selling price ($){soldBy === 'weight' ? ` per ${unit}` : ''}
             <input
               type="number"
               min="0"
@@ -1158,6 +1188,49 @@ function ProductModal({
           />{' '}
           This product is taxable
         </label>
+        <div className="grid">
+          <label>
+            Sold by
+            <select
+              value={soldBy}
+              onChange={(e) => setSoldBy(e.target.value as 'each' | 'weight')}
+            >
+              <option value="each">Each (unit price)</option>
+              <option value="weight">Weight (price per unit)</option>
+            </select>
+          </label>
+          {soldBy === 'weight' && (
+            <label>
+              Priced per
+              <select
+                value={unit}
+                onChange={(e) => setUnit(e.target.value as 'lb' | 'oz' | 'kg')}
+              >
+                <option value="lb">Pound (lb)</option>
+                <option value="oz">Ounce (oz)</option>
+                <option value="kg">Kilogram (kg)</option>
+              </select>
+            </label>
+          )}
+        </div>
+        <div className="grid">
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={snapEligible}
+              onChange={(e) => setSnapEligible(e.target.checked)}
+            />{' '}
+            SNAP/EBT eligible
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={wicEligible}
+              onChange={(e) => setWicEligible(e.target.checked)}
+            />{' '}
+            WIC eligible
+          </label>
+        </div>
         <div className="barcode-box">
           <label>
             Barcodes <em>Scan or type, then press Enter</em>
@@ -1262,7 +1335,10 @@ function InventoryModal({
       .catch((e) => setError(messageFrom(e)));
   }, [product.id, setError]);
 
-  const correction = Number(counted) - product.stockQuantity;
+  const isWeight = product.soldBy === 'weight';
+  const unitFactor = isWeight ? 1000 : 1;
+  const correction =
+    Math.round(Number(counted) * unitFactor) - product.stockQuantity;
   const isCount = reason === 'stock_count_correction';
   const negative = reason === 'damaged' || reason === 'manual_decrease';
 
@@ -1270,7 +1346,8 @@ function InventoryModal({
     event.preventDefault();
     const quantityChange = isCount
       ? correction
-      : Math.abs(Number(quantity)) * (negative ? -1 : 1);
+      : Math.round(Math.abs(Number(quantity)) * unitFactor) *
+        (negative ? -1 : 1);
     if (quantityChange === 0) return;
     setSaving(true);
     try {
@@ -1297,7 +1374,13 @@ function InventoryModal({
           </div>
           <div>
             <small>Current calculated stock</small>
-            <b>{product.stockQuantity}</b>
+            <b>
+              {formatStock(
+                product.stockQuantity,
+                product.soldBy,
+                product.unit,
+              )}
+            </b>
           </div>
         </div>
         <label>
@@ -1315,11 +1398,12 @@ function InventoryModal({
           <>
             <label>
               Actual physical quantity counted
+              {isWeight ? ` (${product.unit ?? 'units'})` : ''}
               <input
                 autoFocus
                 type="number"
                 min="0"
-                step="1"
+                step={isWeight ? '0.001' : '1'}
                 required
                 value={counted}
                 onChange={(e) => setCounted(e.target.value)}
@@ -1330,23 +1414,23 @@ function InventoryModal({
                 Calculated adjustment:{' '}
                 <b>
                   {correction > 0 ? '+' : ''}
-                  {correction}
+                  {formatStock(correction, product.soldBy, product.unit)}
                 </b>
                 <br />
                 {correction === 0
                   ? 'No correction is required; stock already matches the count.'
-                  : `Resulting stock: ${Number(counted)}`}
+                  : `Resulting stock: ${Number(counted)}${isWeight ? ` ${product.unit ?? ''}` : ''}`}
               </p>
             )}
           </>
         ) : (
           <label>
-            Quantity
+            Quantity{isWeight ? ` (${product.unit ?? 'units'})` : ''}
             <input
               autoFocus
               type="number"
-              min="1"
-              step="1"
+              min={isWeight ? '0.001' : '1'}
+              step={isWeight ? '0.001' : '1'}
               required
               value={quantity}
               onChange={(e) => setQuantity(e.target.value)}
@@ -1393,9 +1477,19 @@ function InventoryModal({
                       className={movement.quantityChange < 0 ? 'low-text' : ''}
                     >
                       {movement.quantityChange > 0 ? '+' : ''}
-                      {movement.quantityChange}
+                      {formatStock(
+                        movement.quantityChange,
+                        product.soldBy,
+                        product.unit,
+                      )}
                     </td>
-                    <td>{movement.resultingStock}</td>
+                    <td>
+                      {formatStock(
+                        movement.resultingStock,
+                        product.soldBy,
+                        product.unit,
+                      )}
+                    </td>
                     <td>{movement.notes}</td>
                   </tr>
                 ))}

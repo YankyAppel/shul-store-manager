@@ -4,6 +4,7 @@ import {
   type DeviceSettings,
   type ProcessorConfigStatus,
   type PrinterInfo,
+  type ScaleStatus,
   type StoreSettings,
   type UpdateCheckResult,
 } from '@shul-store/shared';
@@ -23,6 +24,7 @@ type SettingsTab =
   | 'backup'
   | 'security'
   | 'printers'
+  | 'scale'
   | 'processors'
   | 'order-emails';
 
@@ -33,6 +35,7 @@ const SETTINGS_TABS: [SettingsTab, string][] = [
   ['backup', 'Backup'],
   ['security', 'Security'],
   ['printers', 'Printers'],
+  ['scale', 'Scale'],
   ['processors', 'Payment processors'],
   ['order-emails', 'Order emails'],
 ];
@@ -65,6 +68,7 @@ export function SettingsScreen() {
   const [checkingReader, setCheckingReader] = useState(false);
   const [saved, setSaved] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
+  const [scaleStatus, setScaleStatus] = useState<ScaleStatus | null>(null);
   const [printerError, setPrinterError] = useState('');
   const [appVersion, setAppVersion] = useState('');
   const [logoError, setLogoError] = useState('');
@@ -93,11 +97,18 @@ export function SettingsScreen() {
     void window.storeApi.app.getVersion().then(setAppVersion);
     void window.storeApi.updates.getState().then(setUpdateResult);
     const unsubscribe = window.storeApi.updates.subscribe(setUpdateResult);
+    void window.storeApi.scale.getStatus().then(setScaleStatus);
+    const unsubscribeScale = window.storeApi.scale.subscribeStatus(
+      setScaleStatus,
+    );
     void window.storeApi.settings
       .listPrinters()
       .then(setPrinters)
       .catch((error) => setPrinterError(messageFrom(error)));
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      unsubscribeScale();
+    };
   }, []);
 
   if (!settings || !deviceSettings || !processorStatus) return <p>Loading…</p>;
@@ -670,6 +681,29 @@ export function SettingsScreen() {
         )}
         {tab === 'general' && (
           <>
+            <h3 style={{ margin: '0 0 4px 0' }}>Benefits acceptance</h3>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={settings.snapAccepted}
+                onChange={(e) =>
+                  setSettings({ ...settings, snapAccepted: e.target.checked })
+                }
+              />{' '}
+              Accept SNAP/EBT — eligible food items can be paid by EBT card,
+              remainder by another tender
+            </label>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={settings.wicAccepted}
+                onChange={(e) =>
+                  setSettings({ ...settings, wicAccepted: e.target.checked })
+                }
+              />{' '}
+              Accept WIC — processed on the state WIC terminal and recorded here
+              as a manual tender
+            </label>
             <h3 style={{ margin: '0 0 4px 0' }}>Updates</h3>
             <label>
               Update feed URL{' '}
@@ -730,7 +764,89 @@ export function SettingsScreen() {
             )}
           </>
         )}
-        {(tab === 'profile' || tab === 'general' || tab === 'printers') && (
+        {tab === 'scale' && (
+          <>
+            <h3 style={{ margin: '0 0 4px 0' }}>Checkout scale</h3>
+            <p
+              style={{ margin: '0 0 10px', color: '#5f6d65', fontSize: '13px' }}
+            >
+              Connect a serial/USB scale for items sold by weight (per lb, oz,
+              or kg). Simulated mode generates a weight for testing without
+              hardware. Sales by weight need a legal-for-trade (NTEP certified)
+              scale.
+            </p>
+            <div className="form-grid">
+              <label>
+                Scale mode
+                <select
+                  value={deviceSettings.scaleMode}
+                  onChange={(e) =>
+                    setDeviceSettings({
+                      ...deviceSettings,
+                      scaleMode: e.target.value as DeviceSettings['scaleMode'],
+                    })
+                  }
+                >
+                  <option value="none">No scale</option>
+                  <option value="simulated">Simulated (testing)</option>
+                  <option value="serial">Serial / USB scale</option>
+                </select>
+              </label>
+              {deviceSettings.scaleMode === 'serial' && (
+                <label>
+                  Serial port{' '}
+                  <em>e.g. COM3 on Windows, /dev/ttyUSB0 on Linux</em>
+                  <input
+                    type="text"
+                    value={deviceSettings.scalePort ?? ''}
+                    onChange={(e) =>
+                      setDeviceSettings({
+                        ...deviceSettings,
+                        scalePort: e.target.value.trim() || null,
+                      })
+                    }
+                    placeholder="COM3"
+                  />
+                </label>
+              )}
+              {deviceSettings.scaleMode !== 'none' && (
+                <label>
+                  Scale unit
+                  <select
+                    value={deviceSettings.scaleUnit}
+                    onChange={(e) =>
+                      setDeviceSettings({
+                        ...deviceSettings,
+                        scaleUnit: e.target.value as DeviceSettings['scaleUnit'],
+                      })
+                    }
+                  >
+                    <option value="lb">Pounds (lb)</option>
+                    <option value="oz">Ounces (oz)</option>
+                    <option value="kg">Kilograms (kg)</option>
+                  </select>
+                </label>
+              )}
+            </div>
+            {deviceSettings.scaleMode !== 'none' && (
+              <p style={{ fontSize: '13px', color: '#5f6d65' }}>
+                Status:{' '}
+                {scaleStatus?.connected ? (
+                  <strong style={{ color: '#1f5e3f' }}>Connected</strong>
+                ) : (
+                  <strong style={{ color: '#a33d2a' }}>
+                    {scaleStatus?.error ?? 'Not connected'}
+                  </strong>
+                )}{' '}
+                — save settings to apply.
+              </p>
+            )}
+          </>
+        )}
+        {(tab === 'profile' ||
+          tab === 'general' ||
+          tab === 'printers' ||
+          tab === 'scale') && (
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
             <button className="primary">Save settings</button>
             {saved && (

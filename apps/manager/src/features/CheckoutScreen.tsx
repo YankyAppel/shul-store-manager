@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  benefitEligibility,
   calculateCart,
   calculateCashChange,
   describePrintResult,
@@ -13,7 +14,7 @@ import {
   type StoredImage,
 } from '@shul-store/shared';
 import { CustomerEditorModal } from './customers/CustomerEditorModal';
-import { formatMoney } from '../utils/formatters';
+import { formatMoney, formatQuantity } from '../utils/formatters';
 
 const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
@@ -58,8 +59,26 @@ export function CheckoutScreen({
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const [payment, setPayment] = useState<
-    'cash' | 'external_terminal' | 'account' | 'integrated_card' | null
+    | 'cash'
+    | 'external_terminal'
+    | 'account'
+    | 'integrated_card'
+    | 'snap_ebt'
+    | 'wic'
+    | null
   >(null);
+  const [weighTarget, setWeighTarget] = useState<{
+    product: Product;
+    barcodeUsed: string | null;
+  } | null>(null);
+  const [scaleReading, setScaleReading] =
+    useState<import('@shul-store/shared').ScaleReading | null>(null);
+  const [scaleStatus, setScaleStatus] =
+    useState<import('@shul-store/shared').ScaleStatus | null>(null);
+  const [manualWeight, setManualWeight] = useState('');
+  const [remainderMethod, setRemainderMethod] = useState<
+    'cash' | 'external_terminal'
+  >('cash');
 
   const [chargeReference, setChargeReference] = useState<string | null>(null);
   const [chargeStatus, setChargeStatus] = useState<
@@ -91,6 +110,13 @@ export function CheckoutScreen({
 
   useEffect(() => {
     void window.storeApi.settings.get().then(setSettings);
+    void window.storeApi.scale.getStatus().then(setScaleStatus);
+    const unsubReading = window.storeApi.scale.subscribe(setScaleReading);
+    const unsubStatus = window.storeApi.scale.subscribeStatus(setScaleStatus);
+    return () => {
+      unsubReading();
+      unsubStatus();
+    };
   }, []);
 
   async function scan(value: string) {
@@ -128,6 +154,11 @@ export function CheckoutScreen({
       setError('Inactive products cannot be sold.');
       return;
     }
+    if (product.soldBy === 'weight') {
+      setWeighTarget({ product, barcodeUsed });
+      setManualWeight('');
+      return;
+    }
     setCart((lines) => {
       const current = lines.find(
         (line) =>
@@ -141,6 +172,17 @@ export function CheckoutScreen({
         );
       return [...lines, { product, quantity: amount, barcodeUsed }];
     });
+  }
+
+  function addWeighted(quantity: number) {
+    if (!weighTarget || !(quantity > 0) || quantity > 10000) return;
+    const { product, barcodeUsed } = weighTarget;
+    setCart((lines) => [
+      ...lines,
+      { product, quantity, barcodeUsed },
+    ]);
+    setWeighTarget(null);
+    setManualWeight('');
   }
 
   function quantity(index: number, change: number) {
@@ -157,14 +199,30 @@ export function CheckoutScreen({
 
   useScannerCapture(scan);
 
-  const insufficient = cart.some(
-    (line) => line.quantity > line.product.stockQuantity,
+  const insufficient = cart.some((line) =>
+    line.product.soldBy === 'weight'
+      ? line.quantity * 1000 > line.product.stockQuantity
+      : line.quantity > line.product.stockQuantity,
   );
+
   const cashReceivedCents = safeCash(cash);
   const totals = useMemo(
     () => (settings ? calculateCart(cart, settings) : null),
     [cart, settings],
   );
+
+  const benefit =
+    (payment === 'snap_ebt' || payment === 'wic') && settings
+      ? benefitEligibility(cart, settings, payment)
+      : null;
+  const benefitEligibleCents = benefit?.eligibleSubtotalCents ?? 0;
+  const benefitWaivedTaxCents = benefit?.waivedTaxCents ?? 0;
+  const benefitCoversCents = Math.min(
+    benefitEligibleCents,
+    (totals?.totalCents ?? 0) - benefitWaivedTaxCents,
+  );
+  const remainderCents =
+    (totals?.totalCents ?? 0) - benefitCoversCents - benefitWaivedTaxCents;
 
   // Customer search with race-condition protection
   useEffect(() => {
@@ -246,6 +304,38 @@ export function CheckoutScreen({
       } else if (payment === 'integrated_card') {
         if (!chargeReference) return;
         paymentInput = { method: 'integrated_card', chargeReference };
+      } else if (payment === 'snap_ebt' || payment === 'wic') {
+        if (benefitEligibleCents <= 0) {
+          setError(
+            payment === 'snap_ebt'
+              ? 'No SNAP-eligible items in this sale.'
+              : 'No WIC-eligible items in this sale.',
+          );
+          return;
+        }
+        let remainder:
+          | import('@shul-store/shared').RemainderPayment
+          | undefined;
+        if (remainderCents > 0) {
+          if (remainderMethod === 'cash') {
+            remainder = {
+              method: 'cash' as const,
+              cashReceivedCents: cashReceivedCents ?? -1,
+            };
+          } else {
+            remainder = {
+              method: 'external_terminal' as const,
+              approved: true,
+              terminalReference: null,
+            };
+          }
+        }
+        paymentInput = {
+          method: payment,
+          approved: true,
+          terminalReference: reference.trim() || null,
+          remainder,
+        };
       } else {
         return;
       }
@@ -263,6 +353,7 @@ export function CheckoutScreen({
       const completed = await window.storeApi.checkout.complete(input);
       setSale(completed);
       await onInventoryChanged();
+      return;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Sale failed');
     } finally {
@@ -453,17 +544,45 @@ export function CheckoutScreen({
                 <div>
                   <b>{line.product.name}</b>
                   <small>
-                    {money(line.product.sellingPriceCents)} each ·{' '}
-                    {line.product.stockQuantity} available
+                    {line.product.soldBy === 'weight'
+                      ? `${money(line.product.sellingPriceCents)}/${line.product.unit ?? 'lb'}`
+                      : `${money(line.product.sellingPriceCents)} each`}{' '}
+                    ·{' '}
+                    {line.product.soldBy === 'weight'
+                      ? `${(line.product.stockQuantity / 1000).toFixed(3)} ${line.product.unit ?? 'lb'} available`
+                      : `${line.product.stockQuantity} available`}
                   </small>
                 </div>
-                <div className="stepper">
-                  <button onClick={() => quantity(index, -1)}>−</button>
-                  <b>{line.quantity}</b>
-                  <button onClick={() => quantity(index, 1)}>+</button>
-                </div>
+                {line.product.soldBy === 'weight' ? (
+                  <div className="stepper">
+                    <b>
+                      {line.quantity.toFixed(3)} {line.product.unit ?? 'lb'}
+                    </b>
+                    <button
+                      onClick={() =>
+                        setWeighTarget({
+                          product: line.product,
+                          barcodeUsed: line.barcodeUsed,
+                        })
+                      }
+                    >
+                      Reweigh
+                    </button>
+                  </div>
+                ) : (
+                  <div className="stepper">
+                    <button onClick={() => quantity(index, -1)}>−</button>
+                    <b>{line.quantity}</b>
+                    <button onClick={() => quantity(index, 1)}>+</button>
+                  </div>
+                )}
                 <strong>
-                  {money(line.product.sellingPriceCents * line.quantity)}
+                  {money(
+                    Math.round(
+                      (line.product.sellingPriceCents * line.quantity * 1000) /
+                        1000,
+                    ),
+                  )}
                 </strong>
                 <button
                   onClick={() => setCart(cart.filter((_, i) => i !== index))}
@@ -537,6 +656,117 @@ export function CheckoutScreen({
             >
               Put on account
             </button>
+
+            {settings?.snapAccepted && (
+              <button
+                disabled={!cart.length || insufficient}
+                onClick={() => setPayment('snap_ebt')}
+              >
+                SNAP / EBT
+              </button>
+            )}
+            {settings?.wicAccepted && (
+              <button
+                disabled={!cart.length || insufficient}
+                onClick={() => setPayment('wic')}
+              >
+                WIC
+              </button>
+            )}
+          </div>
+        ) : payment === 'snap_ebt' || payment === 'wic' ? (
+          <div className="pay-box">
+            <h4>
+              {payment === 'snap_ebt' ? 'SNAP / EBT payment' : 'WIC payment'}
+            </h4>
+            <p style={{ fontSize: '13px' }}>
+              Eligible subtotal: <b>{money(benefitCoversCents)}</b>
+              {benefitWaivedTaxCents > 0 && (
+                <>
+                  {' '}
+                  (tax waived: {money(benefitWaivedTaxCents)})
+                </>
+              )}
+              <br />
+              {remainderCents > 0 ? (
+                <>
+                  Remaining balance: <b>{money(remainderCents)}</b> — pay by
+                  another tender
+                </>
+              ) : (
+                'Benefit covers the full sale.'
+              )}
+            </p>
+            {payment === 'wic' && (
+              <p style={{ fontSize: '12px', color: '#5f6d65' }}>
+                Run the WIC amount on the state WIC terminal, then record it
+                here.
+              </p>
+            )}
+            <label>
+              Terminal / transaction reference (optional)
+              <input
+                type="text"
+                value={reference}
+                onChange={(e) => setReference(e.target.value)}
+                placeholder="Auth / trace #"
+              />
+            </label>
+            {remainderCents > 0 && (
+              <>
+                <label>
+                  Remainder paid by
+                  <select
+                    value={remainderMethod}
+                    onChange={(e) =>
+                      setRemainderMethod(
+                        e.target.value === 'cash' ? 'cash' : 'external_terminal',
+                      )
+                    }
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="external_terminal">
+                      External card terminal
+                    </option>
+                  </select>
+                </label>
+                {remainderMethod === 'cash' && (
+                  <label>
+                    Cash received for remainder ($)
+                    <input
+                      type="number"
+                      min={remainderCents / 100}
+                      step="0.01"
+                      value={cash}
+                      onChange={(e) => setCash(e.target.value)}
+                    />
+                  </label>
+                )}
+              </>
+            )}
+            {benefitEligibleCents <= 0 && (
+              <div className="alert">
+                No {payment === 'snap_ebt' ? 'SNAP' : 'WIC'}-eligible items in
+                this sale.
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                className="primary"
+                disabled={
+                  completing ||
+                  benefitEligibleCents <= 0 ||
+                  (remainderCents > 0 &&
+                    remainderMethod === 'cash' &&
+                    (cashReceivedCents === null ||
+                      cashReceivedCents < remainderCents))
+                }
+                onClick={() => void complete()}
+              >
+                {completing ? 'Completing…' : 'Complete sale'}
+              </button>
+              <button onClick={() => setPayment(null)}>Back</button>
+            </div>
           </div>
         ) : payment === 'cash' ? (
           <div className="pay-box">
@@ -936,6 +1166,81 @@ export function CheckoutScreen({
           setError={setError}
         />
       )}
+      {weighTarget && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-title">
+              Weigh — {weighTarget.product.name}
+            </div>
+            <p style={{ fontSize: '13px', margin: '0 0 12px' }}>
+              {money(weighTarget.product.sellingPriceCents)}/
+              {weighTarget.product.unit ?? 'lb'} · place the item on the scale
+            </p>
+            {scaleStatus?.connected && scaleReading ? (
+              <p style={{ fontSize: '28px', fontWeight: 'bold', margin: '0' }}>
+                {scaleReading.weight.toFixed(3)} {scaleReading.unit}
+                {!scaleReading.stable && (
+                  <small
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: 'normal',
+                      color: '#a33d2a',
+                    }}
+                  >
+                    {' '}
+                    settling…
+                  </small>
+                )}
+              </p>
+            ) : (
+              <p style={{ fontSize: '13px', color: '#5f6d65' }}>
+                {scaleStatus?.error
+                  ? `Scale: ${scaleStatus.error}`
+                  : 'No scale connected — enter the weight manually.'}
+              </p>
+            )}
+            <label>
+              Weight ({weighTarget.product.unit ?? 'lb'})
+              <input
+                type="number"
+                min="0.001"
+                step="0.001"
+                value={
+                  manualWeight ||
+                  (scaleReading?.stable
+                    ? scaleReading.weight.toFixed(3)
+                    : manualWeight)
+                }
+                onChange={(e) => setManualWeight(e.target.value)}
+                autoFocus
+              />
+            </label>
+            <div
+              style={{ display: 'flex', gap: '8px', marginTop: '12px' }}
+            >
+              <button
+                className="primary"
+                disabled={
+                  !(
+                    Number(manualWeight) > 0 ||
+                    (scaleReading?.stable && scaleReading.weight > 0)
+                  )
+                }
+                onClick={() =>
+                  addWeighted(
+                    Number(manualWeight) > 0
+                      ? Number(manualWeight)
+                      : scaleReading!.weight,
+                  )
+                }
+              >
+                Add to sale
+              </button>
+              <button onClick={() => setWeighTarget(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1046,6 +1351,10 @@ function InlineProductModal({
         sellingPriceCents,
         taxable,
         lowStockThreshold: Number(threshold),
+        soldBy: 'each' as const,
+        unit: null,
+        snapEligible: false,
+        wicEligible: false,
         barcodes: [barcode],
         vendors: [],
       };
@@ -1301,7 +1610,8 @@ function Receipt({
         {sale.items.map((item) => (
           <p key={item.id}>
             <span>
-              {item.productName} × {item.quantity}
+              {item.productName} ×{' '}
+              {formatQuantity(item.quantity, item.soldBy, item.unit)}
             </span>
             <b>{money(item.lineTotalCents)}</b>
           </p>
@@ -1327,7 +1637,47 @@ function Receipt({
             marginTop: '10px',
           }}
         >
-          {sale.payment.method === 'cash' ? (
+          {sale.benefitPayment ? (
+            <div>
+              <p
+                style={{
+                  fontWeight: 'bold',
+                  color: '#1f5e3f',
+                  margin: '4px 0',
+                }}
+              >
+                <span>
+                  {sale.benefitPayment.method === 'snap_ebt'
+                    ? 'SNAP / EBT'
+                    : 'WIC'}
+                </span>
+                <span>{money(sale.benefitPayment.amountCents)}</span>
+              </p>
+              {sale.benefitPayment.terminalReference && (
+                <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                  <span>Reference</span>
+                  <span>{sale.benefitPayment.terminalReference}</span>
+                </p>
+              )}
+              {sale.payment.method === 'cash' && (
+                <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                  <span>Remainder (cash)</span>
+                  <span>
+                    {money(sale.payment.cashReceivedCents ?? 0)} · Change{' '}
+                    {money(sale.payment.changeDueCents ?? 0)}
+                  </span>
+                </p>
+              )}
+              {sale.payment.method === 'external_terminal' &&
+                sale.payment.terminalReference !==
+                  sale.benefitPayment.terminalReference && (
+                  <p style={{ margin: '4px 0', fontSize: '13px' }}>
+                    <span>Remainder (card)</span>
+                    <span>Approved</span>
+                  </p>
+                )}
+            </div>
+          ) : sale.payment.method === 'cash' ? (
             <p>
               <span>Cash</span>
               <b>

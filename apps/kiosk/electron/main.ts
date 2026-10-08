@@ -60,7 +60,13 @@ import {
   type SecretStore,
   isTerminalKioskChargeStatus,
   verifyScryptPinHash,
+  type ScaleReading,
+  type ScaleStatus,
 } from '@shul-store/shared';
+import {
+  createScaleReader,
+  type ScaleReader,
+} from '@shul-store/hardware';
 import {
   cardknoxBbposConfigSchema,
   checkCardknoxBbposReader,
@@ -113,6 +119,12 @@ const CLOUD_SITE_URL = 'https://sumasystems.com';
 let discoverySocket: dgram.Socket | null = null;
 let discoveryTimer: ReturnType<typeof setInterval> | null = null;
 let updateInitialTimer: ReturnType<typeof setTimeout> | null = null;
+let scaleReader: ScaleReader | null = null;
+let scaleStatus: ScaleStatus = {
+  mode: 'none',
+  connected: false,
+  error: null,
+};
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 const discoveredManagers = new Map<string, KioskDiscoveredManager>();
 const DISCOVERY_STALE_MS = 7000;
@@ -493,6 +505,54 @@ function publish(): void {
   window?.webContents.send('kiosk:state', publicState());
 }
 
+function broadcastScale(
+  channel: 'scale:reading' | 'scale:status',
+  payload: unknown,
+): void {
+  if (!window || window.isDestroyed()) return;
+  try {
+    window.webContents.send(channel, payload);
+  } catch {
+    // Window may be mid-teardown.
+  }
+}
+
+async function configureScaleFromSettings(): Promise<void> {
+  const settings =
+    localDatabase?.getDeviceSettings() ??
+    ({
+      scaleMode: 'none',
+      scalePort: null,
+      scaleUnit: 'lb',
+    } as const);
+  if (scaleReader) await scaleReader.stop().catch(() => undefined);
+  scaleReader = createScaleReader({
+    mode: settings.scaleMode,
+    port: settings.scalePort,
+    unit: settings.scaleUnit,
+    onWeight: (reading) => broadcastScale('scale:reading', reading),
+    onStatus: (status) => {
+      scaleStatus = status;
+      broadcastScale('scale:status', status);
+    },
+  });
+  if (settings.scaleMode === 'none') {
+    scaleStatus = { mode: 'none', connected: false, error: null };
+    broadcastScale('scale:status', scaleStatus);
+    return;
+  }
+  try {
+    await scaleReader.start();
+  } catch (error) {
+    scaleStatus = {
+      mode: settings.scaleMode,
+      connected: false,
+      error: error instanceof Error ? error.message : 'Scale unavailable',
+    };
+    broadcastScale('scale:status', scaleStatus);
+  }
+}
+
 function persist(): Promise<void> {
   writeQueue = writeQueue.then(async () => {
     const persisted: KioskStateFile = {
@@ -620,6 +680,8 @@ function localCatalog(): ReturnType<typeof kioskCatalogResponseSchema.parse> {
   return {
     storeName: settings.storeName,
     storeLogoDataUrl: settings.logoDataUrl ?? null,
+    snapAccepted: settings.snapAccepted,
+    wicAccepted: settings.wicAccepted,
     categories: localDatabase.listCategories().map((category) => ({
       id: category.id,
       name: category.name,
@@ -632,6 +694,10 @@ function localCatalog(): ReturnType<typeof kioskCatalogResponseSchema.parse> {
       secondaryName: product.secondaryName,
       priceCents: product.sellingPriceCents,
       barcodes: product.barcodes.map((barcode) => barcode.value),
+      soldBy: product.soldBy,
+      unit: product.unit,
+      snapEligible: product.snapEligible,
+      wicEligible: product.wicEligible,
     })),
   };
 }
@@ -1139,6 +1205,59 @@ async function priceCart(lines: KioskCartLine[]): Promise<KioskPriceResult> {
   }
 }
 
+async function benefitCharge(
+  lines: KioskCartLine[],
+  method: 'snap_ebt' | 'wic',
+): Promise<KioskChargeResult> {
+  const canStart = refuseKioskCharge(state.inFlightCharge);
+  if (!canStart.ok) return canStart;
+  const resolved = resolveLines(lines);
+  if (!resolved.ok)
+    return {
+      ok: false,
+      code: resolved.result.code,
+      message: resolved.result.message,
+    };
+  if (!localDatabase)
+    return {
+      ok: false,
+      code: 'error',
+      message: 'The kiosk database is not ready.',
+    };
+  try {
+    const sale = localDatabase.completeSale(
+      {
+        completionKey: randomUUID(),
+        lines: resolved.lines,
+        payment: {
+          method,
+          approved: true,
+          terminalReference: null,
+        },
+      },
+      undefined,
+      state.kioskId,
+    );
+    const outcome = kioskChargeOutcomeSchema.parse({
+      status: 'approved',
+      chargeReference: randomUUID(),
+      totalCents: sale.totalCents,
+      receiptNumber: sale.receiptNumber,
+    });
+    return { ok: true, outcome };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Sale failed.';
+    return {
+      ok: false,
+      code: 'error',
+      message: message.includes('remainder')
+        ? 'Part of this sale is not benefit-eligible — please see the cashier.'
+        : message,
+    };
+  }
+}
+
 async function charge(lines: KioskCartLine[]): Promise<KioskChargeResult> {
   const canStart = refuseKioskCharge(state.inFlightCharge);
   if (!canStart.ok) return canStart;
@@ -1356,6 +1475,16 @@ function registerIpc(): void {
       allowQuit = true;
       app.quit();
     },
+    benefitCharge,
+    scaleGetStatus: async () => scaleStatus,
+    scaleReadWeight: async () => scaleReader?.lastReading() ?? null,
+    scaleStart: async () => {
+      await configureScaleFromSettings();
+      return scaleStatus;
+    },
+    scaleStop: async () => {
+      if (scaleReader) await scaleReader.stop();
+    },
     restart: async () => {
       if (!unlocked) throw new Error('Unlock required');
       allowQuit = true;
@@ -1411,11 +1540,28 @@ function registerIpc(): void {
   ipcMain.handle('kiosk:charge', (_event, lines: KioskCartLine[]) =>
     handlers.charge(lines),
   );
+  ipcMain.handle(
+    'kiosk:benefitCharge',
+    (_event, lines: KioskCartLine[], method: 'snap_ebt' | 'wic') =>
+      handlers.benefitCharge(lines, method),
+  );
   ipcMain.handle('kiosk:verifyAdminPin', (_event, pin: string) =>
     handlers.verifyAdminPin(pin),
   );
   ipcMain.handle('kiosk:exit', () => handlers.exitKiosk());
   ipcMain.handle('kiosk:restart', () => handlers.restart());
+  ipcMain.handle('scale:getStatus', () => scaleStatus);
+  ipcMain.handle(
+    'scale:readWeight',
+    (): ScaleReading | null => scaleReader?.lastReading() ?? null,
+  );
+  ipcMain.handle('scale:start', async () => {
+    await configureScaleFromSettings();
+    return scaleStatus;
+  });
+  ipcMain.handle('scale:stop', async () => {
+    if (scaleReader) await scaleReader.stop();
+  });
 }
 
 async function createWindow(): Promise<void> {
@@ -1511,6 +1657,7 @@ app.whenReady().then(async () => {
     connection = 'online';
   }
   registerIpc();
+  void configureScaleFromSettings();
   await createWindow();
   window?.webContents.send('kiosk:state', publicState());
   startAutomaticUpdates();

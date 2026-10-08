@@ -68,6 +68,10 @@ export const settingsPayloadSchema = storeSettingsSchema.extend({
   // overwrite a device's processor choice with schema defaults.
   cardProcessingEnabled: z.boolean().optional(),
   cardProcessorId: z.string().nullable().optional(),
+  // Optional so events from before benefit tenders existed don't reset a
+  // device's acceptance switches.
+  snapAccepted: z.boolean().optional(),
+  wicAccepted: z.boolean().optional(),
 });
 export type SettingsPayload = z.infer<typeof settingsPayloadSchema>;
 
@@ -114,6 +118,10 @@ export const productPayloadSchema = z.object({
   taxable: z.boolean(),
   lowStockThreshold: z.number().int().min(0).max(1_000_000),
   active: z.boolean(),
+  soldBy: z.enum(['each', 'weight']).default('each'),
+  unit: z.enum(['lb', 'oz', 'kg']).nullable().default(null),
+  snapEligible: z.boolean().default(false),
+  wicEligible: z.boolean().default(false),
   createdAt: isoString,
   updatedAt: isoString,
   barcodes: z.array(productBarcodePayloadSchema).max(50),
@@ -164,20 +172,24 @@ export const saleItemPayloadSchema = z.object({
   productName: z.string().min(1).max(200),
   secondaryName: z.string().nullable(),
   barcodeUsed: z.string().nullable(),
-  quantity: z.number().int().min(1),
+  quantity: z.number().positive().max(10000),
   unitSellingPriceCents: nonNegativeCents,
   unitPurchaseCostCents: nonNegativeCents,
   taxable: z.boolean(),
   taxCents: nonNegativeCents,
   lineSubtotalCents: nonNegativeCents,
   lineTotalCents: nonNegativeCents,
+  soldBy: z.enum(['each', 'weight']).default('each'),
+  unit: z.enum(['lb', 'oz', 'kg']).nullable().default(null),
+  snapEligible: z.boolean().default(false),
+  wicEligible: z.boolean().default(false),
 });
 export type SaleItemPayload = z.infer<typeof saleItemPayloadSchema>;
 
 /** Present only for cash / external_terminal sales (account sales carry no row). */
 export const salePaymentPayloadSchema = z
   .object({
-    method: z.enum(['cash', 'external_terminal']),
+    method: z.enum(['cash', 'external_terminal', 'snap_ebt', 'wic']),
     amountCents: nonNegativeCents,
     cashReceivedCents: nonNegativeCents.nullable(),
     changeDueCents: cents.nullable(),
@@ -235,6 +247,7 @@ export const salePayloadSchema = z.object({
   ]),
   items: z.array(saleItemPayloadSchema),
   payment: salePaymentPayloadSchema,
+  benefitPayment: salePaymentPayloadSchema.optional(),
   inventoryMovements: z.array(inventoryMovementPayloadSchema),
   ledgerEntry: ledgerEntryPayloadSchema.nullable(),
 });

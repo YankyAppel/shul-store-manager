@@ -103,6 +103,9 @@ describe('printer settings', () => {
       idleLockMinutes: 5,
       staffModeEnabled: false,
       explainDismissals: [],
+      scaleMode: 'none',
+      scalePort: null,
+      scaleUnit: 'lb',
     });
     expect(store.getCardProcessorConfigJson()).toBe('{"token":"secret"}');
     expect(

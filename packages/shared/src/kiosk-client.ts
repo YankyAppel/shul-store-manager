@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { kioskCatalogResponseSchema } from './kiosk.js';
+import { quantitySchema } from './checkout.js';
 import type { UpdateCheckResult } from './index.js';
 
 export type KioskConnection =
@@ -16,7 +17,7 @@ export const kioskCartLineSchema = z
   .object({
     productId: z.string().uuid().optional(),
     barcode: z.string().trim().min(1).max(100).optional(),
-    quantity: z.number().int().positive().max(10000),
+    quantity: quantitySchema,
   })
   .strict()
   .refine((line) => Boolean(line.productId || line.barcode));
@@ -24,7 +25,7 @@ export type KioskCartLine = z.infer<typeof kioskCartLineSchema>;
 
 export const kioskResolvedLineSchema = z.object({
   productId: z.string().uuid(),
-  quantity: z.number().int().positive(),
+  quantity: quantitySchema,
   barcodeUsed: z.string().nullable(),
 });
 export type KioskResolvedLine = z.infer<typeof kioskResolvedLineSchema>;
@@ -33,7 +34,7 @@ export const kioskPriceResponseSchema = z.object({
   lines: z.array(
     z.object({
       productId: z.string().uuid(),
-      quantity: z.number().int().positive(),
+      quantity: quantitySchema,
       unitPriceCents: z.number().int().nonnegative(),
       subtotalCents: z.number().int().nonnegative(),
       taxCents: z.number().int().nonnegative(),
@@ -233,6 +234,10 @@ export interface KioskMainHandlers {
   refreshCatalog(): Promise<KioskPublicState>;
   priceCart(lines: KioskCartLine[]): Promise<KioskPriceResult>;
   charge(lines: KioskCartLine[]): Promise<KioskChargeResult>;
+  benefitCharge(
+    lines: KioskCartLine[],
+    method: 'snap_ebt' | 'wic',
+  ): Promise<KioskChargeResult>;
   verifyAdminPin(pin: string): Promise<KioskAdminResult>;
   exitKiosk(): Promise<void>;
   restart(): Promise<void>;
@@ -257,6 +262,10 @@ export interface KioskMainHandlers {
   checkReader(): Promise<{ ok: boolean; message: string }>;
   getExplanationDismissed(id: string): Promise<boolean>;
   dismissExplanation(id: string): Promise<void>;
+  scaleGetStatus(): Promise<import('./index.js').ScaleStatus>;
+  scaleReadWeight(): Promise<import('./index.js').ScaleReading | null>;
+  scaleStart(): Promise<import('./index.js').ScaleStatus>;
+  scaleStop(): Promise<void>;
 }
 
 export interface KioskApi extends KioskMainHandlers {
@@ -266,6 +275,12 @@ export interface KioskApi extends KioskMainHandlers {
     subscribe(listener: (state: UpdateCheckResult) => void): () => void;
   };
   subscribe(listener: (state: KioskPublicState) => void): () => void;
+  subscribeScale(
+    listener: (reading: import('./index.js').ScaleReading) => void,
+  ): () => void;
+  subscribeScaleStatus(
+    listener: (status: import('./index.js').ScaleStatus) => void,
+  ): () => void;
 }
 
 export const SCRYPT_N = 16384;

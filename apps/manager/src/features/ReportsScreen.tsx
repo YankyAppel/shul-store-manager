@@ -6,7 +6,12 @@ import type {
   ProductMarginLine,
 } from '@shul-store/shared';
 import { parseUsdToCents } from '@shul-store/shared';
-import { formatMoney, messageFrom } from '../utils/formatters';
+import {
+  formatMoney,
+  formatQuantity,
+  formatStock,
+  messageFrom,
+} from '../utils/formatters';
 
 function today(): string {
   const date = new Date();
@@ -178,7 +183,9 @@ function MarginSection() {
                       : formatMoney(line.marginCents)}
                   </td>
                   <td>{formatPercent(line.marginRatio)}</td>
-                  <td>{line.stockQuantity}</td>
+                  <td>
+                    {formatStock(line.stockQuantity, line.soldBy, line.unit)}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -404,7 +411,8 @@ export function ReportsScreen() {
           <h2>Top items</h2>
           {displayReport.topItems.map((item) => (
             <p key={`${item.productId}-${item.productName}`}>
-              {item.productName}: {item.quantity} (
+              {item.productName}:{' '}
+              {formatQuantity(item.quantity, item.soldBy, item.unit)} (
               {formatMoney(item.totalCents)})
             </p>
           ))}

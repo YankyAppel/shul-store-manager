@@ -5,8 +5,35 @@ export const paymentMethodSchema = z.enum([
   'external_terminal',
   'account',
   'integrated_card',
+  'snap_ebt',
+  'wic',
 ]);
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
+
+export const soldBySchema = z.enum(['each', 'weight']);
+export type SoldBy = z.infer<typeof soldBySchema>;
+export const weightUnitSchema = z.enum(['lb', 'oz', 'kg']);
+export type WeightUnit = z.infer<typeof weightUnitSchema>;
+
+/** Quantities are counted in thousandths (grams / milli-units) so weighted
+ * items like 2.35 lb stay exact under integer-cent math. */
+export const quantitySchema = z
+  .number()
+  .safe()
+  .positive()
+  .max(10000)
+  .refine(
+    (value) => Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-6,
+    'Quantity supports at most 3 decimal places',
+  );
+
+/** Convert a validated quantity to integer milli-units for bigint math. */
+export function quantityToMilli(quantity: number): bigint {
+  const milli = Math.round(quantity * 1000);
+  if (!Number.isSafeInteger(milli) || milli < 0)
+    throw new Error('Quantity must be a non-negative safe integer');
+  return BigInt(milli);
+}
 
 export const receiptPaperWidthMmSchema = z.union([
   z.literal(58),
@@ -70,6 +97,10 @@ export const storeSettingsSchema = z.object({
   defaultLabelTemplate: z
     .enum(['thermal_40x30', 'thermal_57x32', 'letter_avery_5160'])
     .default('thermal_40x30'),
+  /** Whether the store may ring up WIC sales (manual tender). */
+  wicAccepted: z.boolean().default(false),
+  /** Whether the store is USDA FNS-authorized for SNAP/EBT. */
+  snapAccepted: z.boolean().default(false),
   cardProcessingEnabled: z.boolean().default(false),
   cardProcessorId: z.string().nullable().default(null),
   logoDataUrl: storeLogoSchema.nullable().default(null),
@@ -158,6 +189,12 @@ export const deviceSettingsSchema = z.object({
     .transform((value) => (value && value.length > 0 ? value : null))
     .default(null),
   automaticUpdatesEnabled: z.boolean().default(true),
+  /** Checkout scale: 'none' disables it, 'simulated' generates weight on
+   * demand, 'serial' reads a continuous ASCII weight stream from a USB-serial
+   * scale (Brecknell/CAS-style NCI protocol). */
+  scaleMode: z.enum(['none', 'simulated', 'serial']).default('none'),
+  scalePort: z.string().trim().max(200).nullable().default(null),
+  scaleUnit: weightUnitSchema.default('lb'),
   idleLockMinutes: z.number().int().min(0).max(1440).default(5),
   staffModeEnabled: z.boolean().default(false),
   explainDismissals: z
@@ -184,7 +221,7 @@ export type ProcessorConfigInput = z.infer<typeof processorConfigInputSchema>;
 
 export const checkoutLineSchema = z.object({
   productId: z.string().uuid(),
-  quantity: z.number().int().safe().positive().max(10000),
+  quantity: quantitySchema,
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
 });
 export type CheckoutLine = z.infer<typeof checkoutLineSchema>;
@@ -197,6 +234,19 @@ export const initiateChargeInputSchema = z.object({
 export type InitiateChargeInput = z.infer<typeof initiateChargeInputSchema>;
 
 export const getChargeStatusInputSchema = z.string().uuid();
+
+const remainderPaymentSchema = z.discriminatedUnion('method', [
+  z.object({
+    method: z.literal('cash'),
+    cashReceivedCents: z.number().int().safe().nonnegative(),
+  }),
+  z.object({
+    method: z.literal('external_terminal'),
+    approved: z.literal(true),
+    terminalReference: z.string().trim().max(100).nullable(),
+  }),
+]);
+export type RemainderPayment = z.infer<typeof remainderPaymentSchema>;
 
 export const completeSaleInputSchema = z.object({
   completionKey: z.string().uuid(),
@@ -220,19 +270,36 @@ export const completeSaleInputSchema = z.object({
       method: z.literal('integrated_card'),
       chargeReference: z.string().uuid(),
     }),
+    z.object({
+      method: z.literal('snap_ebt'),
+      approved: z.literal(true),
+      terminalReference: z.string().trim().max(100).nullable(),
+      /** How the non-eligible remainder is covered, when one exists. */
+      remainder: remainderPaymentSchema.optional(),
+    }),
+    z.object({
+      method: z.literal('wic'),
+      approved: z.literal(true),
+      terminalReference: z.string().trim().max(100).nullable(),
+      remainder: remainderPaymentSchema.optional(),
+    }),
   ]),
 });
 export type CompleteSaleInput = z.infer<typeof completeSaleInputSchema>;
 
 export const cartSnapshotLineSchema = z.object({
   productId: z.string().uuid(),
-  quantity: z.number().int().safe().positive().max(10000),
+  quantity: quantitySchema,
   barcodeUsed: z.string().trim().min(1).max(100).nullable(),
   productName: z.string(),
   secondaryName: z.string().nullable(),
   unitSellingPriceCents: z.number().int().safe().nonnegative(),
   unitPurchaseCostCents: z.number().int().safe().nonnegative(),
   taxable: z.boolean(),
+  soldBy: soldBySchema.default('each'),
+  unit: weightUnitSchema.nullable().default(null),
+  snapEligible: z.boolean().default(false),
+  wicEligible: z.boolean().default(false),
   unitPriceCents: z.number().int().safe().nonnegative(),
   subtotalCents: z.number().int().safe().nonnegative(),
   taxCents: z.number().int().safe().nonnegative(),
@@ -260,6 +327,10 @@ export interface CartProduct {
   taxable: boolean;
   stockQuantity: number;
   active: boolean;
+  soldBy: SoldBy;
+  unit: WeightUnit | null;
+  snapEligible: boolean;
+  wicEligible: boolean;
 }
 export interface CalculatedLine {
   productId: string;
@@ -289,13 +360,16 @@ function safeBigInt(value: number, label: string): bigint {
 }
 
 /** Tax rounds to the nearest cent, with exact half cents rounded upward. */
+function roundRatioBig(numerator: bigint, denominator: bigint): bigint {
+  if (numerator < 0n || denominator <= 0n)
+    throw new Error('Invalid financial ratio');
+  return (numerator + denominator / 2n) / denominator;
+}
+
 export function roundRatio(numerator: bigint, denominator: bigint): number {
   if (numerator < 0n || denominator <= 0n)
     throw new Error('Invalid financial ratio');
-  return safeNumber(
-    (numerator + denominator / 2n) / denominator,
-    'Rounded financial value',
-  );
+  return safeNumber(roundRatioBig(numerator, denominator), 'Rounded financial value');
 }
 
 export function calculateCart(
@@ -309,9 +383,9 @@ export function calculateCart(
   let total = 0n;
   const calculated = lines.map(({ product, quantity }) => {
     const price = safeBigInt(product.sellingPriceCents, 'Unit price');
-    const count = safeBigInt(quantity, 'Quantity');
-    if (count < 1n) throw new Error('Quantity must be a positive integer');
-    const displayedBig = price * count;
+    const qtyMilli = quantityToMilli(quantity);
+    if (qtyMilli < 1n) throw new Error('Quantity must be positive');
+    const displayedBig = roundRatioBig(price * qtyMilli, 1000n);
     const displayed = safeNumber(displayedBig, 'Line displayed amount');
     const taxCents = product.taxable
       ? settings.pricesIncludeTax
@@ -394,6 +468,38 @@ export interface SaleItem {
   taxCents: number;
   lineSubtotalCents: number;
   lineTotalCents: number;
+  soldBy?: SoldBy | undefined;
+  unit?: WeightUnit | null | undefined;
+  snapEligible?: boolean;
+  wicEligible?: boolean;
+}
+
+/** Eligibility breakdown for a benefit tender (SNAP/EBT or WIC): the amount
+ * the benefit may cover — eligible lines' subtotal after their tax is
+ * waived — plus how much tax the waiver removes. */
+export interface BenefitEligibility {
+  eligibleSubtotalCents: number;
+  waivedTaxCents: number;
+}
+export function benefitEligibility(
+  lines: Array<{ product: CartProduct; quantity: number }>,
+  settings: Pick<StoreSettings, 'taxRateBps' | 'pricesIncludeTax'>,
+  method: 'snap_ebt' | 'wic',
+): BenefitEligibility {
+  const cart = calculateCart(lines, settings);
+  let eligibleSubtotal = 0n;
+  let waivedTax = 0n;
+  for (const [index, line] of cart.lines.entries()) {
+    const product = lines[index]!.product;
+    const eligible = method === 'snap_ebt' ? product.snapEligible : product.wicEligible;
+    if (!eligible) continue;
+    eligibleSubtotal += BigInt(line.subtotalCents);
+    waivedTax += BigInt(line.taxCents);
+  }
+  return {
+    eligibleSubtotalCents: safeNumber(eligibleSubtotal, 'Eligible subtotal'),
+    waivedTaxCents: safeNumber(waivedTax, 'Waived tax'),
+  };
 }
 
 export interface SaleCustomerSnapshot {
@@ -436,6 +542,9 @@ export interface Sale {
   kioskId: string | null;
   items: SaleItem[];
   payment: SalePayment;
+  /** Benefit-tender row (SNAP/EBT or WIC) when the sale used one; the
+   * conventional `payment` then covers only the remainder. */
+  benefitPayment?: SalePayment | null;
   customer: SaleCustomerSnapshot | null;
 }
 

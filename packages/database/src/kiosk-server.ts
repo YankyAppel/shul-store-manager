@@ -337,9 +337,12 @@ export class KioskServer {
       }
 
       if (req.method === 'GET' && url.pathname === '/api/catalog') {
+        const settings = this.db.getSettings();
         return json(res, 200, {
-          storeName: this.db.getSettings().storeName,
-          storeLogoDataUrl: this.db.getSettings().logoDataUrl ?? null,
+          storeName: settings.storeName,
+          storeLogoDataUrl: settings.logoDataUrl ?? null,
+          snapAccepted: settings.snapAccepted,
+          wicAccepted: settings.wicAccepted,
           categories: this.db.listCategories().map((category) => ({
             id: category.id,
             name: category.name,
@@ -352,6 +355,10 @@ export class KioskServer {
             secondaryName: product.secondaryName,
             priceCents: product.sellingPriceCents,
             barcodes: product.barcodes.map((barcode) => barcode.value),
+            soldBy: product.soldBy,
+            unit: product.unit,
+            snapEligible: product.snapEligible,
+            wicEligible: product.wicEligible,
           })),
         });
       }
