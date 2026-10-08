@@ -1143,11 +1143,17 @@ export async function checkUsaepayDevice(
   }
 }
 
-export const processors: PaymentProcessor<any>[] = [
-  simulatedProcessor,
-  cardknoxBbposProcessor,
-  usaepayPaymentEngineProcessor,
-];
+export function createProcessors(
+  fetchImpl: FetchImplementation = fetch,
+): PaymentProcessor<any>[] {
+  return [
+    simulatedProcessor,
+    createCardknoxBbposProcessor(fetchImpl),
+    createUsaepayPaymentEngineProcessor(fetchImpl),
+  ];
+}
+
+export const processors: PaymentProcessor<any>[] = createProcessors();
 
 export const processorConnectionConfigSchema = z.object({
   processorId: z.enum(['sola', 'cardknox', 'usaepay', 'other']),
