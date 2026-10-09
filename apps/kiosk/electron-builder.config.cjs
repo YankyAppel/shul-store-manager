@@ -11,7 +11,8 @@ const artifactSuffix = process.env.ARTIFACT_SUFFIX || '';
 const buildArch = process.env.BUILD_ARCH
   ? [process.env.BUILD_ARCH]
   : ['x64', 'arm64'];
-// AppX/MSIX packages only build on Windows or macOS hosts.
+// .appx packaging needs the Windows SDK tooling — electron-builder provides it
+// on Windows and macOS, not Linux (CI builds on Windows).
 const canBuildAppx =
   process.platform === 'win32' || process.platform === 'darwin';
 
@@ -64,9 +65,8 @@ module.exports = {
   },
   appx: {
     // Identity assigned by Partner Center → SUMA Self-Checkout → Product
-    // identity; override via env if the reserved name maps differently.
-    identityName:
-      process.env.KIOSK_APPX_IDENTITY_NAME || 'SUMASystems.SUMASelfCheckout',
+    // identity (product 9PHNVNWJBRQ6).
+    identityName: 'SUMASystems.SUMASelf-Checkout',
     publisher: 'CN=FDAA55E3-82C4-4B29-9A04-E2B143A8EB83',
     publisherDisplayName: 'SUMA Systems',
     displayName: 'SUMA Self-Checkout',
@@ -75,9 +75,9 @@ module.exports = {
     capabilities: [
       'internetClient',
       'internetClientServer',
-      // LAN access: manager pairing/discovery, network scales/printers.
+      // LAN access: pairing to the SUMA Manager on the local network.
       'privateNetworkClientServer',
-      // USB serial scales and cash-drawer kick over serial.
+      // USB serial scale for weighted items.
       'serialcommunication',
     ],
   },
