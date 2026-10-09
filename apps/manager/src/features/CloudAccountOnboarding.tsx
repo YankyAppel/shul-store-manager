@@ -69,10 +69,23 @@ export function CloudAccountOnboarding({
       setPassword('');
       setConfirmPassword('');
       if (mode === 'signUp' && !state.signedIn) {
-        setMessage(
-          'Account created — confirm the link in your email, then sign in.',
-        );
-        setStep('confirm');
+        // A sign-up with an already-registered email returns no session and
+        // sends no email (Supabase anti-enumeration); route those users to sign-in.
+        const exists = await window.storeApi.cloudAccount
+          .lookupEmail(email)
+          .catch(() => null);
+        if (exists) {
+          setMode('signIn');
+          setStep('account');
+          setMessage(
+            'That email already has an account — sign in instead, or use Google.',
+          );
+        } else {
+          setMessage(
+            'Account created — confirm the link in your email, then sign in.',
+          );
+          setStep('confirm');
+        }
       } else {
         await afterSignIn();
       }
