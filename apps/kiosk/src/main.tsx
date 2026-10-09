@@ -16,6 +16,7 @@ import {
   type KioskReaderConfig,
   type UpdateCheckResult,
 } from '@shul-store/shared';
+import { installDemoApi } from './demo-stub';
 import '@shul-store/brand/brand.css';
 import './style.css';
 
@@ -72,9 +73,11 @@ function Keypad({
 function PairingScreen({
   state,
   onPaired,
+  onDemo,
 }: {
   state: KioskPublicState;
   onPaired: (next: KioskPublicState) => void;
+  onDemo: () => void;
 }) {
   const [step, setStep] = useState<'welcome' | 'signIn' | 'local'>('welcome');
   const [host, setHost] = useState(state.host);
@@ -190,6 +193,13 @@ function PairingScreen({
               onClick={() => go('local')}
             >
               Pair over the local network instead
+            </button>
+            <button
+              type="button"
+              className="suma-button suma-button--link"
+              onClick={onDemo}
+            >
+              Explore the demo — no store needed
             </button>
           </>
         )}
@@ -902,6 +912,7 @@ function App() {
   const [categoryId, setCategoryId] = useState<string>();
   const [adminOpen, setAdminOpen] = useState(false);
   const [rePairing, setRePairing] = useState(false);
+  const [demo, setDemo] = useState(false);
   const [weighProduct, setWeighProduct] = useState<
     KioskCatalog['products'][number] | null
   >(null);
@@ -1169,6 +1180,10 @@ function App() {
     return (
       <PairingScreen
         state={state}
+        onDemo={() => {
+          setState(installDemoApi());
+          setDemo(true);
+        }}
         onPaired={(next) => {
           setState(next);
           setRePairing(false);
@@ -1265,6 +1280,9 @@ function App() {
   if (screen === 'attract')
     return (
       <main className="attract-screen">
+        {demo && (
+          <div className="demo-chip">Demo — restart the app to exit</div>
+        )}
         {adminOpen && (
           <AdminOverlay
             readerStatus={state.readerStatus}
@@ -1318,6 +1336,7 @@ function App() {
     );
   return (
     <main className="shopping-screen">
+      {demo && <div className="demo-chip">Demo — restart the app to exit</div>}
       {adminOpen && (
         <AdminOverlay
           readerStatus={state.readerStatus}

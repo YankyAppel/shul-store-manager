@@ -489,3 +489,15 @@ input {
 .suma-shell .manager-list {
   width: 100%;
 }
+
+.demo-chip {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(232, 233, 228, 0.14);
+  color: var(--suma-cream);
+  font-size: 14px;
+  z-index: 10;
+}
