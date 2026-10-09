@@ -1,10 +1,15 @@
 const { version } = require('../../package.json');
 const { githubUpdateRepository } = require('./update-config.cjs');
 
+// The release pipeline builds each arch separately: SUMA_UPDATE_CHANNEL gives
+// each build its own updater manifest (kiosk.yml / kiosk-arm64.yml) and
+// ARTIFACT_SUFFIX keeps the artifact names distinct (…-Setup-<v>-arm64.exe).
+const artifactSuffix = process.env.ARTIFACT_SUFFIX || '';
+
 module.exports = {
   appId: 'org.shulstore.kiosk',
   productName: 'SUMA Kiosk',
-  artifactName: 'SUMA-Kiosk-POS-Setup-${version}.${ext}',
+  artifactName: `SUMA-Kiosk-POS-Setup-\${version}${artifactSuffix}.\${ext}`,
   asar: true,
   npmRebuild: false,
   directories: {
@@ -25,7 +30,7 @@ module.exports = {
     {
       provider: 'github',
       releaseType: 'release',
-      channel: 'kiosk',
+      channel: process.env.SUMA_UPDATE_CHANNEL || 'kiosk',
       ...githubUpdateRepository,
     },
   ],

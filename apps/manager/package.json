@@ -9,7 +9,8 @@
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/verify-preload.mjs && node scripts/verify-esm-named-imports.mjs",
     "build": "npm run build:electron && vite build",
     "package": "electron-builder --config electron-builder.config.cjs --win --x64",
-    "package:publish": "electron-builder --config electron-builder.config.cjs --win --publish always",
+    "package:publish": "electron-builder --config electron-builder.config.cjs --win --x64 --publish always",
+    "package:publish:arm64": "electron-builder --config electron-builder.config.cjs --win --arm64 --publish always",
     "test": "vitest run test --testTimeout 30000",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint electron src test --max-warnings=0"
