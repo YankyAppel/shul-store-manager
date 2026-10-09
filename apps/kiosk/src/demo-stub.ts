@@ -153,10 +153,16 @@ const api = {
 // Swaps window.kioskApi for the in-memory demo and returns the paired demo
 // state. Used by demo.html and by the in-app "Explore the demo" link so a
 // store (or a Store reviewer) can try the kiosk without pairing a manager.
-export function installDemoApi(): KioskPublicState {
-  // ?pairing (demo page only) renders the unpaired setup screens instead of
-  // the attract screen.
-  if (new URLSearchParams(location.search).has('pairing')) {
+const PAIRED_STATE = { ...STATE };
+
+export function installDemoApi(
+  startUnpaired = new URLSearchParams(location.search).has('pairing'),
+): KioskPublicState {
+  // The demo page passes ?pairing to render the unpaired setup screens
+  // instead of the attract screen; the in-app demo link forces `false`.
+  // Restore the paired defaults first so repeat calls stay predictable.
+  Object.assign(STATE, PAIRED_STATE);
+  if (startUnpaired) {
     STATE.connection = 'unpaired';
     STATE.catalog = null;
     STATE.storeName = '';

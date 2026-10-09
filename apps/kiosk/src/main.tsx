@@ -1181,7 +1181,7 @@ function App() {
       <PairingScreen
         state={state}
         onDemo={() => {
-          setState(installDemoApi());
+          setState(installDemoApi(false));
           setDemo(true);
         }}
         onPaired={(next) => {
