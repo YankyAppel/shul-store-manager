@@ -11,6 +11,9 @@ const artifactSuffix = process.env.ARTIFACT_SUFFIX || '';
 const buildArch = process.env.BUILD_ARCH
   ? [process.env.BUILD_ARCH]
   : ['x64', 'arm64'];
+// AppX/MSIX packages only build on Windows or macOS hosts.
+const canBuildAppx =
+  process.platform === 'win32' || process.platform === 'darwin';
 
 module.exports = {
   appId: 'org.shulstore.kiosk',
@@ -46,10 +49,36 @@ module.exports = {
   toolsets: { nsis: '1.2.1' },
   win: {
     icon: 'build/icon.ico',
+    // Never sign the .appx — the Microsoft Store re-signs it on ingest; signing
+    // it with a local cert only risks a publisher mismatch.
+    signExts: ['!.appx'],
     target: [
       { target: 'nsis', arch: buildArch },
       // Install-free zip — escape hatch when the NSIS stub can't complete.
       { target: 'zip', arch: buildArch },
+      // Microsoft Store package (.appx = MSIX format; the Store re-signs it on
+      // ingest, so no certificate is needed here). Updates for MSIX installs
+      // flow through the Store, not electron-updater.
+      ...(canBuildAppx ? [{ target: 'appx', arch: buildArch }] : []),
+    ],
+  },
+  appx: {
+    // Identity assigned by Partner Center → SUMA Self-Checkout → Product
+    // identity; override via env if the reserved name maps differently.
+    identityName:
+      process.env.KIOSK_APPX_IDENTITY_NAME || 'SUMASystems.SUMASelfCheckout',
+    publisher: 'CN=FDAA55E3-82C4-4B29-9A04-E2B143A8EB83',
+    publisherDisplayName: 'SUMA Systems',
+    displayName: 'SUMA Self-Checkout',
+    backgroundColor: '#1f5e3f',
+    languages: ['en-US'],
+    capabilities: [
+      'internetClient',
+      'internetClientServer',
+      // LAN access: manager pairing/discovery, network scales/printers.
+      'privateNetworkClientServer',
+      // USB serial scales and cash-drawer kick over serial.
+      'serialcommunication',
     ],
   },
   nsis: {
