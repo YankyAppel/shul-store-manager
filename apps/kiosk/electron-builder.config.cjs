@@ -11,7 +11,6 @@ const artifactSuffix = process.env.ARTIFACT_SUFFIX || '';
 const buildArch = process.env.BUILD_ARCH
   ? [process.env.BUILD_ARCH]
   : ['x64', 'arm64'];
-
 // .appx packaging needs the Windows SDK tooling — electron-builder provides it
 // on Windows and macOS, not Linux (CI builds on Windows).
 const canBuildAppx =
