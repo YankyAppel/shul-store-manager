@@ -40,18 +40,39 @@ jobs:
         env:
           SUMA_GOOGLE_CLIENT_ID: ${{ secrets.SUMA_GOOGLE_CLIENT_ID }}
           SUMA_GOOGLE_CLIENT_SECRET: ${{ secrets.SUMA_GOOGLE_CLIENT_SECRET }}
-      - name: Package manager installer
+      # Each arch is packaged separately so the installer stub itself is native:
+      # the universal (x64+arm64) NSIS stub is 32-bit x86 and its extraction
+      # dies under Windows-on-ARM emulation. Arm64 builds get their own update
+      # channel (latest-arm64.yml / kiosk-arm64.yml) so auto-update also lands
+      # the native installer.
+      - name: Package manager installer (x64)
         run: npm run package:publish -w @shul-store/manager
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      - name: Package kiosk installer
+      - name: Package manager installer (ARM64)
+        run: npm run package:publish:arm64 -w @shul-store/manager
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          SUMA_UPDATE_CHANNEL: latest-arm64
+          ARTIFACT_SUFFIX: -arm64
+      - name: Package kiosk installer (x64)
         run: npm run package:publish -w @shul-store/kiosk
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      - name: Package kiosk installer (ARM64)
+        run: npm run package:publish:arm64 -w @shul-store/kiosk
+        env:
+          GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          SUMA_UPDATE_CHANNEL: kiosk-arm64
+          ARTIFACT_SUFFIX: -arm64
       - uses: actions/upload-artifact@v4
         with:
           name: shul-store-windows-installers
