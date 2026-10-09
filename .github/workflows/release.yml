@@ -40,17 +40,18 @@ jobs:
         env:
           SUMA_GOOGLE_CLIENT_ID: ${{ secrets.SUMA_GOOGLE_CLIENT_ID }}
           SUMA_GOOGLE_CLIENT_SECRET: ${{ secrets.SUMA_GOOGLE_CLIENT_SECRET }}
-      # Each arch is packaged separately so the installer stub itself is native:
-      # the universal (x64+arm64) NSIS stub is 32-bit x86 and its extraction
-      # dies under Windows-on-ARM emulation. Arm64 builds get their own update
-      # channel (latest-arm64.yml / kiosk-arm64.yml) so auto-update also lands
-      # the native installer.
+      # BUILD_ARCH gives each arch its own single-arch installer (~half the
+      # download) and per-arch update channels (latest-arm64.yml /
+      # kiosk-arm64.yml) so ARM machines keep pulling the arm64 build. Each
+      # run also emits a zip payload — install-free escape hatch for machines
+      # where the NSIS stub can't complete.
       - name: Package manager installer (x64)
         run: npm run package:publish -w @shul-store/manager
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          BUILD_ARCH: x64
       - name: Package manager installer (ARM64)
         run: npm run package:publish:arm64 -w @shul-store/manager
         env:
@@ -59,12 +60,14 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           SUMA_UPDATE_CHANNEL: latest-arm64
           ARTIFACT_SUFFIX: -arm64
+          BUILD_ARCH: arm64
       - name: Package kiosk installer (x64)
         run: npm run package:publish -w @shul-store/kiosk
         env:
           GH_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          BUILD_ARCH: x64
       - name: Package kiosk installer (ARM64)
         run: npm run package:publish:arm64 -w @shul-store/kiosk
         env:
@@ -73,6 +76,7 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           SUMA_UPDATE_CHANNEL: kiosk-arm64
           ARTIFACT_SUFFIX: -arm64
+          BUILD_ARCH: arm64
       - uses: actions/upload-artifact@v4
         with:
           name: shul-store-windows-installers
