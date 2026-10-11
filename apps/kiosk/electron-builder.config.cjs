@@ -67,6 +67,9 @@ module.exports = {
     // Identity assigned by Partner Center → SUMA Self-Checkout → Product
     // identity (product 9PHNVNWJBRQ6).
     identityName: 'SUMASystems.SUMASelf-Checkout',
+    // Identity.Name allows dashes; the manifest's Application.Id does not —
+    // without this the build fails deriving one from the identity name.
+    applicationId: 'SUMASelfCheckout',
     publisher: 'CN=FDAA55E3-82C4-4B29-9A04-E2B143A8EB83',
     publisherDisplayName: 'SUMA Systems',
     displayName: 'SUMA Self-Checkout',
